@@ -88,6 +88,9 @@
 #endif
 #endif
 
+bool zombiesCanRespawn(struct chrdata *chr);
+bool zombiesIsActive(void);
+
 s32 g_RecentQuipsPlayed[5];
 u32 var8009cd84;
 u32 var8009cd88;
@@ -5060,6 +5063,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	// Disarm only hurts the victim in solo missions and if the victim is an NPC
 	if (gsetHasFunctionFlags(gset, FUNCFLAG_DISARM)
 			&& gset->weaponnum == WEAPON_UNARMED
+			&& !zombiesIsActive()
 			&& (vprop->type == PROPTYPE_PLAYER || g_Vars.normmplayerisrunning)) {
 		damage = 0;
 	}
@@ -5513,15 +5517,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				f32 boostscale;
 
 				// Handle player losing gun
-				if (gsetHasFunctionFlags(gset, FUNCFLAG_DISARM)) {
-					bgunDisarm(aprop);
-				}
+		if (gsetHasFunctionFlags(gset, FUNCFLAG_DISARM) && !zombiesIsActive()) {
+			bgunDisarm(aprop);
+		}
 
 				// Handle player dizziness
 				// (netplay: a client's player is drugged whatever the host's
 				// Tranquilizer Effect says; the amount goes in its local-player
 				// block and the client's own setting decides its screen)
-				if (makedizzy && g_Vars.currentplayer->invincible == false
+				if (makedizzy && !zombiesIsActive() && g_Vars.currentplayer->invincible == false
 						&& (modIsTranquilizerEffectOn() || !netIsLocalSlot(g_Vars.currentplayernum))) {
 					f32 blurscale = 1;
 					struct chrdata *achr = NULL;
@@ -9350,6 +9354,11 @@ void chrPunchInflictDamage(struct chrdata *chr, s32 damage, s32 range, u8 revers
 	if (chr->aibot) {
 		gset.weaponnum = chr->aibot->weaponnum;
 		gset.weaponfunc = chr->aibot->gunfunc;
+
+		// Zombies hit much harder than the original game's fists
+		if (zombiesIsActive()) {
+			damage *= 8;
+		}
 	}
 
 	if (chrIsTargetInFov(chr, 20, reverse)
@@ -10152,7 +10161,9 @@ void chrTickDead(struct chrdata *chr)
 				}
 #endif
 
-				botSpawn(chr, true);
+				if (zombiesCanRespawn(chr)) {
+					botSpawn(chr, true);
+				}
 			} else {
 				chr->hidden |= CHRHFLAG_DELETING;
 			}

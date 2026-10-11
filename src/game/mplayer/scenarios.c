@@ -180,6 +180,7 @@ MenuItemHandlerResult menuhandlerMpSlowMotion(s32 operation, struct menuitem *it
 #include "scenarios/kingofthehill.inc"
 #include "scenarios/hackthatmac.inc"
 #include "scenarios/popacap.inc"
+#include "scenarios/zombies.inc"
 
 // Define the scenario callbacks
 struct mpscenario g_MpScenarios[] = {
@@ -256,6 +257,15 @@ struct mpscenario g_MpScenarios[] = {
 		ctcGetMaxTeams,
 		ctcIsRoomHighlighted,
 		ctcHighlightRoom,
+	}, {
+		&g_MpCombatOptionsMenuDialog,
+		NULL,
+		NULL,
+		NULL,
+		zombiesTick,
+		NULL,
+		zombiesRenderHud,
+		zombiesCalculatePlayerScore,
 	},
 };
 
@@ -267,6 +277,7 @@ struct mpscenariooverview g_MpScenarioOverviews[] = {
 	{ L_MPMENU_249, L_MPMENU_256, MPFEATURE_SCENARIO_PAC, false }, // "Pop a Cap", "Pop"
 	{ L_MPMENU_250, L_MPMENU_257, MPFEATURE_SCENARIO_KOH, true  }, // "King of the Hill", "Hill"
 	{ L_MPMENU_251, L_MPMENU_258, MPFEATURE_SCENARIO_CTC, true  }, // "Capture the Case", "Capture"
+	{ L_MPMENU_246, L_MPMENU_253, 0,                      false }, // Zombies (real name comes from scenarioGetName)
 };
 
 /**
@@ -296,6 +307,24 @@ MenuDialogHandlerResult mpOptionsMenuDialog(s32 operation, struct menudialogdef 
 	return 0;
 }
 
+char *scenarioGetName(s32 scenarionum)
+{
+	if (scenarionum == MPSCENARIO_ZOMBIES) {
+		return "Zombies";
+	}
+
+	return langGet(g_MpScenarioOverviews[scenarionum].name);
+}
+
+char *scenarioGetShortName(s32 scenarionum)
+{
+	if (scenarionum == MPSCENARIO_ZOMBIES) {
+		return "Zombies";
+	}
+
+	return langGet(g_MpScenarioOverviews[scenarionum].shortname);
+}
+
 char *mpMenuTextScenarioShortName(struct menuitem *item)
 {
 #ifndef PLATFORM_N64
@@ -305,7 +334,7 @@ char *mpMenuTextScenarioShortName(struct menuitem *item)
 	}
 #endif
 
-	sprintf(g_StringPointer, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].shortname));
+	sprintf(g_StringPointer, "%s\n", scenarioGetShortName(g_MpSetup.scenario));
 	return g_StringPointer;
 }
 
@@ -318,7 +347,7 @@ char *mpMenuTextScenarioName(struct menuitem *item)
 	}
 #endif
 
-	sprintf(g_StringPointer, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].name));
+	sprintf(g_StringPointer, "%s\n", scenarioGetName(g_MpSetup.scenario));
 	return g_StringPointer;
 }
 
@@ -388,7 +417,7 @@ MenuItemHandlerResult scenarioScenarioMenuHandler(s32 operation, struct menuitem
 			if (challengeIsFeatureUnlocked(g_MpScenarioOverviews[i].requirefeature)
 					&& (teamgame || g_MpScenarioOverviews[i].teamonly == false)) {
 				if (count == data->list.value) {
-					return (uintptr_t)langGet(g_MpScenarioOverviews[i].name);
+					return (uintptr_t)scenarioGetName(i);
 				}
 
 				count++;
@@ -549,7 +578,7 @@ void scenarioCreateMatchStartHudmsgs(void)
 #endif
 	}
 
-	sprintf(scenarioname, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].name));
+	sprintf(scenarioname, "%s\n", scenarioGetName(g_MpSetup.scenario));
 
 	for (i = 0; i < g_MpNumChrs; i++) {
 		if (g_MpAllChrPtrs[i]->aibot == NULL) {

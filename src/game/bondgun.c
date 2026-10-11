@@ -15834,6 +15834,55 @@ Gfx *bgunDrawHud(Gfx *gdl)
 #endif
 		ctrl->lastmag = ammoindex;
 	}
+	// Zombies: replace the gauge bars with a compact text readout
+	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		Gfx *zombiesDrawAmmo(Gfx *gdl, s32 clipl, s32 clipr, s32 reserve, s32 bottom, s32 scalex);
+		s32 zclipl = -1;
+		s32 zclipr = -1;
+		s32 zreserve = -1;
+
+		if (weapon->ammos[ammoindex] != NULL) {
+			if (lefthand->inuse
+					&& lefthand->gset.weaponnum != WEAPON_REMOTEMINE
+					&& lefthand->clipsizes[ammoindex] > 0
+					&& (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) == 0) {
+				zclipl = lefthand->loadedammo[ammoindex];
+			}
+
+			if (hand->inuse && ctrl->ammotypes[ammoindex] >= 0) {
+				s32 ztype = ctrl->ammotypes[ammoindex];
+
+				if (hand->clipsizes[ammoindex] > 0
+						&& (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) == 0) {
+					zclipr = hand->loadedammo[ammoindex];
+				}
+
+				if (g_AmmoTypes[ztype].capacity > 0
+						&& (weapon->ammos[ammoindex]->flags & AMMOFLAG_NORESERVE) == 0) {
+					zreserve = player->ammoheldarr[ztype];
+
+					if (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) {
+						if (hand->clipsizes[ammoindex] > 0) {
+							zreserve += hand->loadedammo[ammoindex];
+						}
+
+						if (lefthand->clipsizes[ammoindex] > 0) {
+							zreserve += lefthand->loadedammo[ammoindex];
+						}
+					}
+				}
+			}
+		}
+
+		gdl = zombiesDrawAmmo(gdl, zclipl, zclipr, zreserve, bottom, g_ScaleX);
+
+#ifndef PLATFORM_N64
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
+		gdl = text0f153780(gdl);
+		g_ScaleX = 1;
+		return gdl;
+	}
 
 #ifndef PLATFORM_N64
 	if (mixed) {
@@ -16038,6 +16087,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		}
 	} else
 #endif
+
 	// Left hand - mag
 	if (lefthand->inuse
 			&& weapon->ammos[ammoindex] != NULL

@@ -2762,7 +2762,7 @@ char *mpMenuTextMpconfigMarquee(struct menuitem *item)
 		}
 
 #if VERSION >= VERSION_NTSC_1_0
-		if (scenarionum <= 5 && arenanum != -1 && numsims >= 0 && filename[0] != '\0' && numsims <= MAX_BOTS) {
+		if (scenarionum <= MPSCENARIO_ZOMBIES && arenanum != -1 && numsims >= 0 && filename[0] != '\0' && numsims <= MAX_BOTS) {
 			// "%s:  Scenario: %s   Arena: %s    Simulants: %d"
 			sprintf(g_StringPointer, langGet(L_MPMENU_140),
 					filename,
@@ -2776,7 +2776,7 @@ char *mpMenuTextMpconfigMarquee(struct menuitem *item)
 		// "%s:  Scenario: %s   Arena: %s    Simulants: %d"
 		sprintf(g_StringPointer, langGet(L_MPMENU_140),
 				filename,
-				langGet(g_MpScenarioOverviews[scenarionum].name),
+				scenarioGetName(scenarionum),
 				mpGetArenaName(arenanum),
 				numsims);
 #endif

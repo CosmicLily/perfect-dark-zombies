@@ -14,7 +14,7 @@ struct mpscenariooverview {
 	u8 teamonly;
 };
 
-extern struct mpscenariooverview g_MpScenarioOverviews[6];
+extern struct mpscenariooverview g_MpScenarioOverviews[7];
 
 MenuItemHandlerResult menuhandlerMpOpenOptions(s32 operation, struct menuitem *item, union handlerdata *data);
 void scenarioReadSave(struct savebuffer *buffer, u8 version);
@@ -29,5 +29,7 @@ bool scenarioRadarChr(Gfx **gdl, struct prop *prop);
 f32 scenarioChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms, struct prop *prop);
 s32 scenarioGetMaxTeams(void);
 void scenarioHighlightRoom(RoomNum room, s32 *arg1, s32 *arg2, s32 *arg3);
+char *scenarioGetName(s32 scenarionum);
+char *scenarioGetShortName(s32 scenarionum);
 
 #endif

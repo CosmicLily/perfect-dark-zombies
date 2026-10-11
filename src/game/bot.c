@@ -42,6 +42,8 @@
 #include "net/net.h"
 #endif
 
+bool zombiesIsActive(void);
+
 #define PICKUPCRITERIA_DEFAULT  0
 #define PICKUPCRITERIA_CRITICAL 1
 #define PICKUPCRITERIA_ANY      2
@@ -738,10 +740,16 @@ bool botTestPropForPickup(struct prop *prop, struct chrdata *chr)
 
 	struct prop *chrprop;
 
-	f32 xdist;
+		f32 xdist;
 	f32 ydist;
 	f32 zdist;
 	f32 sqrange;
+
+	// Zombies fight with fists only, so they never pick anything up
+	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		return false;
+	}
+
 	bool sp3c;
 	u32 stack2;
 
@@ -2256,7 +2264,8 @@ s32 botFindTeammateToFollow(struct chrdata *chr, f32 range)
 {
 	s32 result = -1;
 
-	if ((g_MpSetup.options & MPOPTION_TEAMSENABLED)
+	if (!zombiesIsActive()
+			&& (g_MpSetup.options & MPOPTION_TEAMSENABLED)
 			&& chr->myaction != MA_AIBOTFOLLOW
 			&& (rngRandom() % 100) < chr->aibot->followchance) {
 		f32 closestdistance = 0;
@@ -2320,6 +2329,10 @@ void botScheduleReload(struct chrdata *chr, s32 handnum)
  */
 struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 {
+		if (zombiesIsActive()) {
+		return NULL;
+	}
+	
 	struct aibot *aibot = chr->aibot;
 	s32 weaponnums[NUM_MPWEAPONSLOTS];
 	s32 scores1[NUM_MPWEAPONSLOTS];
