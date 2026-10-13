@@ -1866,9 +1866,10 @@ struct zombiecornerpick {
 static const struct zombiecornerpick g_ZombieCornerPicks[] = {
 	{ 0x32, ZOMBIEPERK_STAMINUP,  { 2400, 160, 1000 },   { 2311, 109, 989 },     ZPICK_CORNER }, // Skedar
 	{ 0x32, ZOMBIEPERK_DOUBLETAP, { -2200, -255, 2200 }, { -1644, -255, 1656 },  ZPICK_WALL   }, // Skedar
-	// Skedar's Pack-a-Punch in the middle of the sand room under its ceiling
-	// column, facing the way in from the spawn pad at its east end
-	{ 0x32, ZOMBIE_PAP_ID,         { -3185, 102, -4395 }, { -4435, -300, -4395 }, ZPICK_FLOOR  },
+	// Skedar's Pack-a-Punch on the tiled platform at the sand room's back,
+	// facing out over the sand to the room's ceiling column (the spot stood on
+	// and read off with zombiesTickWhere())
+	{ 0x32, ZOMBIE_PAP_ID,         { -4435, -300, -4395 }, { -5114, 60, -5047 },   ZPICK_FLOOR  },
 };
 
 void bgFindRoomsByPos(struct coord *pos, RoomNum *inrooms, RoomNum *aboverooms, s32 max, RoomNum *bestroom);
