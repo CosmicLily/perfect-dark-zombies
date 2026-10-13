@@ -118,7 +118,7 @@ bool zombiesIsWatchedFirstPerson(s32 playernum);
 struct sndstate *g_CasingAudioHandles[2];
 s32 var8009d0d8;
 u32 fill2;
-struct sndstate *g_BgunAudioHandles[MAX_PLAYERS];
+struct sndstate *g_BgunAudioHandles[NUM_BGUN_HIT_SOUNDS];
 s32 var8009d0dc;
 u32 fill2_2;
 s32 var8009d0f0[3];
@@ -148,7 +148,7 @@ struct fireslot g_Fireslots[20];
 struct sndstate *g_CasingAudioHandles[2];
 s32 var8009d0d8;
 s32 var8009d0dc;
-struct sndstate *g_BgunAudioHandles[MAX_PLAYERS];
+struct sndstate *g_BgunAudioHandles[NUM_BGUN_HIT_SOUNDS];
 s32 var8009d0f0[3];
 u32 var8009d0fc;
 u32 var8009d100;
@@ -199,7 +199,7 @@ s32 var8009d148;
 u32 var8009d14c;
 struct sndstate *g_CasingAudioHandles[2];
 s32 var8009d0d8;
-struct sndstate *g_BgunAudioHandles[MAX_PLAYERS];
+struct sndstate *g_BgunAudioHandles[NUM_BGUN_HIT_SOUNDS];
 struct fireslot g_Fireslots[20];
 u32 fill2[1];
 #endif
@@ -685,19 +685,24 @@ void bgun0f098030(struct hand *hand, struct modeldef *modeldef)
 #define BGUN_OFF60() (g_Vars.lvupdate240 != g_Vars.lvupdate60 * 4)
 
 /**
- * The arm's dip on a switch or reload is set from the state's 60ths
- * (stateframes, count60), which above 60 FPS hold for three frames in four.
- * Off the 60 FPS path the dip reads them plus the time since that 60th
- * (lvupdate240rem, the 240ths carried past it), so it moves every frame.
- * At 60 FPS the remainder is 0 and the stock expression is used.
+ * The arm's dip on a switch or reload and the recoil's curve are set from
+ * the state's 60ths (stateframes, count60), which above 60 FPS hold for
+ * three frames in four. The dip reads them plus the time since that 60th:
+ * the 240ths carried past it (lvupdate240rem), which hold at 2 at 60 and
+ * 30 FPS (lvupdate60 rounds to the nearest 60th), so (rem - 2) / 4 leaves
+ * the stock value there and moves the arm every frame above 60.
+ * This used to add rem / 4 on a frame off the 60 FPS path only: at a rate
+ * that is not a multiple of 60 (73 FPS: steps of 3 and 4 240ths) a frame
+ * of 4 240ths took a whole 60th and dropped the remainder, so the arm
+ * moved 0.25 then 1.5 ticks in two frames and the shotgun's recoil and
+ * the sniper rifle's reload dip twitched (F3 20261011-201059, -201734).
  */
 static f32 bgunArmTicks(s32 ticks60)
 {
-	if (BGUN_OFF60()) {
-		return ticks60 + g_Vars.lvupdate240rem * 0.25f;
-	}
+	f32 ticks = ticks60 + (g_Vars.lvupdate240rem - 2) * 0.25f;
 
-	return ticks60;
+	// a state's first 60th held at 0, as at 60 FPS
+	return ticks < 0.0f && ticks60 >= 0 ? 0.0f : ticks;
 }
 #define BGUN_ARMTICKS(ticks60) bgunArmTicks(ticks60)
 
@@ -1620,7 +1625,10 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 					if (info->gunctrl->wantammo) {
 						func = weaponGetFunction(&hand->gset, 1 - hand->gset.weaponfunc);
 
-						if ((func->type & 0xff) != INVENTORYFUNCTYPE_MELEE) {
+						// A gun with one function (GoldenEye's) has no other
+						// to switch to: bgun0f0990b0() calls a NULL function
+						// usable, and this read it (crash 20261011-181759).
+						if (func == NULL || (func->type & 0xff) != INVENTORYFUNCTYPE_MELEE) {
 							sp30 = -1;
 						}
 					} else {
@@ -4990,7 +4998,7 @@ void bgunTickGunLoad(void)
 		for (i = player->gunctrl.nexttexturetoload; i < modeldef->numtexconfigs; i++) {
 			osSyncPrintf("BriGun:  at texture %d\n", i);
 
-			if (modeldef->texconfigs[i].texturenum < NUM_TEXTURES) {
+			if (modeldef->texconfigs[i].texturenum < g_NumListTextures) {
 				osSyncPrintf("BriGun:  Uncompress %d of %d\n", i, modeldef->numtexconfigs);
 #ifndef PLATFORM_N64
 				// the gun's texture ids are its file's, not the map's
@@ -5939,7 +5947,16 @@ static void bgunAimThrowAtCrosshair(s32 handnum, struct coord *spawnpos, struct 
 
 void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 {
-	if (NET_CLIENT) return; // netplay C11: the host makes projectiles
+	if (NET_CLIENT) {
+		// netplay C11: the host makes projectiles. A gun thrown to deploy
+		// (the Laptop Gun) leaves the hand here as on the host (below), not
+		// a round trip later when the host's inventory says it is gone
+		if (handnum >= HAND_RIGHT && handnum <= HAND_LEFT && weaponHasFlag3(gset->weaponnum, WEAPONFLAG3_DEPLOYS)) {
+			bgunFreeWeapon(handnum);
+		}
+
+		return;
+	}
 	struct coord velocity = {0, 0, 0};
 	Mtxf sp1f4;
 	struct coord gunpos;
@@ -13964,6 +13981,51 @@ struct sndstate **bgunAllocateAudioHandle(void)
 	return NULL;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Stop one of the shots' hit sounds (ricochets, a surface's own sound) for a
+ * gun's shot that the cap on sounds would refuse (psCreate()): one that has
+ * not started yet first, as it was never heard. Each is stopped once; false
+ * when none is left to stop. Offline and online alike: which sounds play
+ * changes nothing the game keeps (replaytest.sh).
+ */
+bool bgunStopOneHitSound(void)
+{
+	// what was stopped this frame: its stop reaches the sound player at the
+	// frame's end, and its handle is let go then
+	static struct sndstate *stopped[NUM_BGUN_HIT_SOUNDS];
+	static s32 stoppedframe = -1;
+	s32 pass;
+	s32 i;
+
+	if (stoppedframe != g_Vars.lvframenum) {
+		stoppedframe = g_Vars.lvframenum;
+
+		for (i = 0; i < ARRAYCOUNT(stopped); i++) {
+			stopped[i] = NULL;
+		}
+	}
+
+	for (pass = 0; pass < 2; pass++) {
+		for (i = 0; i < ARRAYCOUNT(g_BgunAudioHandles); i++) {
+			struct sndstate *state = g_BgunAudioHandles[i];
+
+			if (state == NULL || state == stopped[i] || sndGetState(state) == AL_STOPPED
+					|| (pass == 0 && sndGetState(state) == AL_PLAYING)) {
+				continue;
+			}
+
+			stopped[i] = state;
+			audioStop(state);
+
+			return true;
+		}
+	}
+
+	return false;
+}
+#endif
+
 /**
  * Is this a blow landing - a fist, or a pistol used as a club? The game asked
  * "unarmed, or the secondary function of one of five pistols", which is the
@@ -14510,7 +14572,7 @@ void bgunPlayBgHitSound(struct gset *gset, struct coord *hitpos, s32 texturenum,
 	// Play default surface hit sound
 	handle = bgunAllocateAudioHandle();
 
-	if (handle != NULL && texturenum >= 0 && texturenum < NUM_TEXTURES) {
+	if (handle != NULL && texturenum >= 0 && texturenum < g_NumListTextures) {
 		s16 soundnum;
 		struct surfacetype *type = g_SurfaceTypes[g_Textures[texturenum].soundsurfacetype];
 
@@ -15056,6 +15118,10 @@ void bgunTickGameplay(bool triggeron)
 
 			bgunGiveMaxAmmo(false);
 		} else if (cheatIsActive(CHEAT_UNLIMITEDAMMO)) {
+#ifndef PLATFORM_N64
+			// on a GoldenEye stage after the pickups instead (lvTick())
+			if (!modloaderStageIsRemake(g_Vars.stagenum))
+#endif
 			bgunGiveMaxAmmo(false);
 		}
 	}

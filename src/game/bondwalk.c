@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/bondmove.h"
+#include "game/coop.h"
 #include "game/bondwalk.h"
 #include "game/mplayer/mplayer.h"
 #include "game/cheats.h"
@@ -28,6 +29,7 @@
 #include "data.h"
 #include "types.h"
 #include "game/modoptions.h"
+#include "game/modrespawn.h"
 #include "game/modrun.h"
 #include "game/modrules.h"
 #include "game/bg.h"
@@ -989,8 +991,7 @@ bool bwalkCalculateNewPositionWithPush(struct coord *delta, f32 rotateamount, bo
 						canpush = true;
 					}
 				} else if (chr->chrflags & CHRCFLAG_PUSHABLE) {
-					if (g_Vars.antiplayernum < 0
-							|| g_Vars.currentplayer != g_Vars.anti
+					if (!coopIsAnti(g_Vars.currentplayer)
 							|| (chr->hidden & CHRHFLAG_ANTINONINTERACTABLE) == 0) {
 						canpush = true;
 					}
@@ -1398,8 +1399,7 @@ void bwalkUpdateVertical(void)
 #if VERSION >= VERSION_NTSC_1_0
 	// Maybe reset counter-op's radius - not sure why
 	// Maybe it gets set to 0 when they die?
-	if (g_Vars.antiplayernum >= 0
-			&& g_Vars.currentplayer == g_Vars.anti
+	if (coopIsAnti(g_Vars.currentplayer)
 			&& g_Vars.currentplayer->bond2.radius != 30
 			&& cdTestVolume(&g_Vars.currentplayer->prop->pos, 30, g_Vars.currentplayer->prop->rooms, CDTYPE_ALL, CHECKVERTICAL_YES, ymax - g_Vars.currentplayer->prop->pos.y, ymin - g_Vars.currentplayer->prop->pos.y)) {
 		g_Vars.currentplayer->prop->chr->radius = 30;
@@ -1937,6 +1937,14 @@ void bwalkUpdateVertical(void)
 
 		g_Vars.currentplayer->bdeltapos.y = 0;
 	}
+
+#ifndef PLATFORM_N64
+	// Mission Respawn's fallback spot for a death with no floor under it
+	if (!g_Vars.currentplayer->isfalling && !g_Vars.currentplayer->isdead
+			&& g_Vars.currentplayer->vv_ground > -29000.0f) {
+		modRespawnNoteGround();
+	}
+#endif
 
 	// Decrease crouchtime240 for this tick.
 	// If reached 0 and crouchfall is negative, start increasing

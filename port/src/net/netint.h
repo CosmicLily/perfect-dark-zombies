@@ -96,6 +96,8 @@ void netWriteSlotCfg(struct netbuf *b);
 s32 netSessionSendSlot(s32 slot, s32 channel, const void *data, s32 len, s32 flags);
 s32 netSessionSendServer(s32 channel, const void *data, s32 len, s32 flags);
 void netSessionClientCfgTick(void);  // client: SLOTCFG again when the settings change
+void netTestOwnOptions(void);        // --net-test-forward-pitch: put on this machine's own player
+void netTestOwnOptionsTick(void);    // ... and each seat's logged at tick 600
 
 // Views (protocol 9): the host sends snapshots and events to a remote
 // player's slot (its mpindex, 0..MAX_PLAYERS-1) or to a spectator's
@@ -130,6 +132,7 @@ s32 netSessionHostUserSpectating(const char *user); // 1 a spectator's connectio
 void netSessionSetSpectate(s32 on);                 // client: connect as a spectator
 s32 netSessionHostNumClients(void);
 const char *netSessionHostClientName(s32 index);
+s32 netSessionHostAccountsJson(char *out, s32 size);
 void netSessionHostDropUser(const char *user, const char *why);
 void netSessionLobbyStartMatch(void);
 const char *netSessionNoticeText(void);
@@ -230,6 +233,37 @@ void netEventsHostViewReset(s32 view); // a new client in the view: its EVENTS c
 void netEventsHostCatchUp(s32 view);   // its first EVENTS: the kill table (a SCORES event)
 void netEventsHostScores(void);        // the kill table to everyone (a seat's row cleared)
 
+struct defaultobj;
+struct doorobj;
+struct coord;
+// networld.c: the world's state outside the entity records (the test's wreck and census)
+void netWorldStageStart(void);   // after netEntsStageStart
+void netWorldMatchStopped(void);
+void netWorldTickBegin(void);
+void netWorldTickEnd(void);
+void netWorldNoteDeform(void);   // an objDeform made (host) or applied (client)
+void netWorldCensus(const char *why);
+void netWorldHostTickEnd(void);  // the world block for this tick's snapshots
+const u8 *netWorldHostBlock(void); // NULL outside a match
+s32 netWorldGlassCovered(struct defaultobj *obj); // the world block carries this glass (no GLASS event)
+void netWorldHostStorm(struct coord *pos);        // nbombCreateStorm on the host
+void netWorldHostGas(struct coord *pos);          // gasReleaseFromPos on the host
+void netWorldClientOnSnap(u32 hosttick, const u8 *world, const u16 *marks, s32 nmarks);
+void netWorldClientUpTo(f64 rt);  // every block the render clock has reached
+s32 netWorldObjDeformed(struct defaultobj *obj);  // drawn with objDeform's vertices
+s32 netWorldDoorGlassOut(struct doorobj *door);   // a windowed door's pane gone
+void netEntsHostNoteDeform(struct defaultobj *obj, s32 level); // netents.c: objDeform on the host
+u8 netWorldClientDeform(struct defaultobj *obj, u8 rec, u8 applied); // an OBJ/DOOR record's NETDEFORM_* byte
+void netWorldClientDoorGlass(struct doorobj *door, s32 fresh);       // a DOOR record's NETDOOR_GLASSGONE
+void netWorldLog(const char *why);
+s32 netWorldLensOut(struct defaultobj *obj);  // a camera's lens shot out (OBJ NETOBJ_LENSGONE)
+void netWorldClientLens(struct defaultobj *obj, s32 out, s32 fresh);
+s32 netWorldHostMarks(const u16 **ser, const u8 **rec); // (protocol 30) the host's marks by pool slot: the slot count
+void netWorldClientMarkRecs(const u16 *marks, s32 nslots, const u16 *slots, const u8 (*recs)[74], s32 n);
+s32 netEventsApplying(void);
+void netSessionHostPings(u8 *out);       // (protocol 30) the world block's 32 bytes of pings
+void netSessionClientPings(const u8 *in);      // netevents.c: an event being applied
+
 // netpuppets.c
 void netPuppetsStageStart(void);  // the client's match stage began (after netEntsStageStart)
 void netPuppetsStop(void);        // H12, or the tables went
@@ -250,8 +284,15 @@ struct netcooprules {
 	u8 cinema;        // protocol 27: GECINEMA_NET_* - the Cinema page's opening, ending or credits, 0 a mission
 	u8 cinemaloop;    // its Loop row (GECINEMA_LOOP_*), an opening's
 	u8 cinemaminutes; // and its Time row (Loop All's minutes a level)
+	u8 anti;          // protocol 32: a counter-op mission (Game "Counter-Op Mission")
+	u16 antimask;     // ... the counter-ops, a bit per player number
 };
 s32 netCoopHostMatch(void);                 // host: the match being started/run is a co-op mission
+s32 netCoopHostAnti(void);                  // host: ... and counter-op (protocol 32)
+u16 netCoopHostAntiMask(void);              // host: its counter-ops, a bit per player number
+void netCoopHostSides(u32 bits, u32 occupied); // H1: the seats in play (slots) and those a member holds: the sides
+void netCoopHostNextAnti(s32 anti);
+void netPupRebuildPlayerBody(s32 playernum); // netpuppets.c: a counter-op's new guard's body, built here         // the start under way is a counter-op mission (lobby room, migration)
 void netCoopHostCinema(u8 *kind, u8 *loop, u8 *minutes); // host: ... and the Cinema page's cinema it is (protocol 27)
 const char *netCoopHostGame(void);          // host: its mission's set tag ("" Perfect Dark's)
 s32 netCoopCampaignOpen(const char *game, s32 radar, s32 friendlyfire); // host: a campaign room's launch
@@ -261,7 +302,8 @@ void netCoopClientStage(void);              // H3's tail on a client
 s32 netRulesCoopOn(void);                   // client: the RULES received say a mission
 s32 netCoopTestStart(void);                 // --net-test-coop: 1 started
 void netCoopMatchStopped(void);             // H12
-void netCoopHostLateJoin(s32 playernum);    // host: a join in progress takes this player; its next spawn is beside a living one
+void netCoopHostLateJoin(s32 playernum);
+void netCoopHostLateSide(s32 playernum, const char *account); // counter-op: a join in progress plays its room team's side    // host: a join in progress takes this player; its next spawn is beside a living one
 void netCoopCapture(u8 *body);              // host: the mission block's body (netscen.c's OFF_BODY)
 s32 netCoopBlockOk(const u8 *body);
 void netCoopApply(const u8 *body);          // client, in tick order with the events
@@ -366,6 +408,7 @@ const char *netSessionHostTitle(void);      // whose match: the host's name ("" 
 void netHudArgs(void);                       // --net-test-chat and friends
 void netHudTick(void);                       // net.c netTickEnd: the harness's menu pages, in a tick
 void netHudFeed(s32 kind, s32 from, const char *name, const char *text); // a line for the feed (NETCHAT_*)
+void netHudServerNotice(const char *text); // netlobby.c: the lobby's notice, for the feed as the server's
 s32 netChatClean(char *text);                // printable ASCII only, trimmed; its length
 void netSessionLogTraffic(const char *why);
 void netSessionSampleLinks(void);
@@ -459,6 +502,7 @@ void netRulesWrite(struct netbuf *b, u32 matchid);
 u32 netRulesMatchId(void);
 s32 netRulesRead(struct netbuf *b); // a client keeps the blob until STAGE_LOAD
 void netRulesApply(void);           // a client: the stored blob over its own state
+struct mpplayerconfig *netRulesOwnPlayer(void); // a client under the host's rules: its own player 1's config as saved (else NULL)
 void netRulesSaveHost(void);        // the host: what it changes for remote slots
 void netRulesRestore(void);         // H12
 void netRulesSetLocked(s32 locked);

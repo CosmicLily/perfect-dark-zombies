@@ -21,6 +21,7 @@
 #include "mod.h"
 #include "modmode.h"
 #include "lib/main.h"
+#include "game/options.h"
 #include "game/lang.h"
 #include "game/menu.h"
 #include "game/title.h"
@@ -40,6 +41,7 @@
 #include "game/propobj.h"
 #include "game/setuputils.h"
 #include "game/player.h"
+#include "game/modspectate.h"
 #include "game/playermgr.h"
 #include "game/mpstats.h"
 
@@ -501,9 +503,11 @@ void netSessionInit(void)
 }
 
 /**
- * --net-sim DROP,DELAY[,JITTER[,KBPS]]: the transport's loss and latency
- * simulator on what this machine receives (tools/ci/netplayertest.sh), and a
- * bottleneck of KBPS kilobytes a second with a queue in front of it
+ * --net-sim DROP,DELAY[,JITTER[,KBPS[,EVERY,STALL]]]: the transport's loss and
+ * latency simulator on what this machine receives (tools/ci/netplayertest.sh),
+ * a bottleneck of KBPS kilobytes a second with a queue in front of it, and a
+ * STALL ms hiccup about every EVERY ms, everything in it let through at its end
+ * (a relay's: tools/ci/netpredicttest.sh's relay case)
  */
 static void netSessionApplySim(void)
 {
@@ -512,15 +516,18 @@ static void netSessionApplySim(void)
 	int delay = 0;
 	int jitter = 0;
 	int kbps = 0;
+	int spikeevery = 0;
+	int spikelen = 0;
 
-	if (!sim || !g_NetHostSocket || sscanf(sim, "%d,%d,%d,%d", &drop, &delay, &jitter, &kbps) < 1) {
+	if (!sim || !g_NetHostSocket || sscanf(sim, "%d,%d,%d,%d,%d,%d", &drop, &delay, &jitter, &kbps, &spikeevery, &spikelen) < 1) {
 		return;
 	}
 
 	netHostSetSim(g_NetHostSocket, drop, delay, jitter, 12345);
 	netHostSetSimRate(g_NetHostSocket, kbps > 0 ? (u32)kbps * 1024 : 0);
-	sysLogPrintf(LOG_NOTE, "net: --net-sim: %d%% of datagrams in dropped, the rest %d ms late (+0..%d), link %d KB/s (0 any)", drop, delay,
-			jitter, kbps);
+	netHostSetSimSpikes(g_NetHostSocket, spikeevery, spikelen);
+	sysLogPrintf(LOG_NOTE, "net: --net-sim: %d%% of datagrams in dropped, the rest %d ms late (+0..%d), link %d KB/s (0 any), a %d ms stall about every %d ms (0 none)",
+			drop, delay, jitter, kbps, spikelen, spikeevery);
 }
 
 static void netSessionOpenSocket(void)
@@ -704,13 +711,164 @@ void netReadSlotCfg(struct netbuf *b, struct netslotcfg *cfg)
 	netRulesReadPlayerKeys(b, &cfg->own);
 }
 
+/**
+ * --net-test-forward-pitch 0|1 (netpredicttest pitch): this machine's own
+ * Reverse Pitch (OPTION_FORWARDPITCH set is "not reversed") put on its first
+ * player once, before its first SLOTCFG or its first match as the host; and
+ * at tick 600 of a match the log says which value each seat plays by
+ */
+static s32 s_TestPitch = -2; // -2 not read yet, -1 none
+static u32 s_TestPitchLogged = 0; // the match it was logged in
+
+void netTestOwnOptions(void)
+{
+	if (s_TestPitch == -2) {
+		s_TestPitch = sysArgGetInt("--net-test-forward-pitch", -1);
+
+		if (s_TestPitch >= 0) {
+			optionsSetForwardPitch(0, s_TestPitch != 0);
+			sysLogPrintf(LOG_NOTE, "net: --net-test-forward-pitch: this machine's own player 1 forward pitch %d", s_TestPitch != 0);
+		}
+	}
+}
+
+/**
+ * Tests of the host's rules (netpredicttest skipdeath, views):
+ *   --net-test-kill SLOT,TICK   host: that seat's player dies at that tick
+ *   --net-test-deathlog         each death and respawn logged with its tick
+ *                               (the host: every seat; a client: its own)
+ *   --net-test-viewlog T1,T2..  at those ticks each seat's view: third person
+ *                               asked and given, the free camera (modspectate)
+ */
+static s32 s_TestKillSlot = -2; // -2 not read yet, -1 none
+static u32 s_TestKillTick = 0;
+static s32 s_TestDeathLog = 0;
+static u8 s_TestDead[MAX_PLAYERS];
+static u32 s_TestViewAt[8];
+static s32 s_TestViews = 0;
+
+static s32 netSeatPlayer(s32 slot);
+
+static void netTestRulesTick(void)
+{
+	s32 i;
+	s32 j;
+
+	if (s_TestKillSlot == -2) {
+		const char *kill = sysArgGetString("--net-test-kill");
+		const char *views = sysArgGetString("--net-test-viewlog");
+		unsigned int slot = 0;
+		unsigned int tick = 0;
+
+		s_TestKillSlot = kill && sscanf(kill, "%u,%u", &slot, &tick) == 2 ? (s32)slot : -1;
+		s_TestKillTick = tick;
+		s_TestDeathLog = sysArgCheck("--net-test-deathlog");
+
+		while (views && *views && s_TestViews < 8) {
+			s_TestViewAt[s_TestViews++] = (u32)strtoul(views, NULL, 0);
+			views = strchr(views, ',');
+			views = views ? views + 1 : NULL;
+		}
+	}
+
+	if (!s_MatchActive || g_NetTick == 0) {
+		memset(s_TestDead, 0, sizeof(s_TestDead));
+		return;
+	}
+
+	if (g_NetMode == NETMODE_SERVER && s_TestKillSlot >= 0 && g_NetTick == s_TestKillTick) {
+		const s32 pn = netSeatPlayer(s_TestKillSlot);
+
+		if (pn >= 0 && g_Vars.players[pn] && !g_Vars.players[pn]->isdead) {
+			const s32 prev = g_Vars.currentplayernum;
+
+			setCurrentPlayerNum(pn);
+			playerDieByShooter(pn, true);
+			setCurrentPlayerNum(prev);
+			sysLogPrintf(LOG_NOTE, "net: --net-test-kill: slot %d (player %d) killed at tick %u", s_TestKillSlot, pn, g_NetTick);
+		}
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const s32 pn = g_NetMode == NETMODE_CLIENT ? (i == s_ClientSlot ? g_NetLocalSlot : -1) : netSeatPlayer(i);
+		const struct player *p = pn >= 0 && pn < MAX_PLAYERS ? g_Vars.players[pn] : NULL;
+
+		if (!p || !mpIsHumanSlotOn(i)) {
+			continue;
+		}
+
+		if (s_TestDeathLog && (p->isdead != 0) != s_TestDead[i]) {
+			s_TestDead[i] = p->isdead != 0;
+			sysLogPrintf(LOG_NOTE, "net: --net-test-deathlog: slot %d %s at tick %u (Skip Death Screen in force %d)",
+					i, s_TestDead[i] ? "died" : "respawned", g_NetTick, g_ModOptions.skipdeathscreen);
+		}
+
+		for (j = 0; j < s_TestViews; j++) {
+			if (g_NetTick == s_TestViewAt[j]) {
+				sysLogPrintf(LOG_NOTE, "net: --net-test-viewlog: tick %u slot %d: third person asked %d given %d, free camera %d (room allows third person %d)",
+						g_NetTick, i, p->thirdperson, playerIsThirdPerson((struct player *)p), modSpectateIsOnForPlayer(pn),
+						g_ModNetThirdPerson);
+			}
+		}
+	}
+}
+
+void netTestOwnOptionsTick(void)
+{
+	s32 i;
+
+	netTestRulesTick();
+
+	if (s_TestPitch < 0 || g_NetTick != 600 || !s_MatchActive || s_TestPitchLogged == s_MatchIdCur) {
+		return;
+	}
+
+	s_TestPitchLogged = s_MatchIdCur;
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		if (mpIsHumanSlotOn(i)) {
+			sysLogPrintf(LOG_NOTE, "net: --net-test-forward-pitch: tick 600: slot %d (\"%.*s\")%s plays forward pitch %d",
+					i, netNameLen(g_PlayerConfigsArray[i].base.name), g_PlayerConfigsArray[i].base.name,
+					(g_NetMode == NETMODE_CLIENT ? i == s_ClientSlot : i == 0) ? ", this machine's" : "",
+					optionsGetForwardPitch(i) != 0);
+		}
+	}
+}
+
+/**
+ * This machine's own player for its SLOTCFG: its first player's config, but
+ * a client in a match has the host's slot 0 human there (netRulesPut): then
+ * its own seat (its options as RULES carried them back, Control Style as
+ * netPlayersClientMatchStart set it, and what its pause menu changes
+ * there), or watching, its own as saved. Sent from [0], a client's mid-match
+ * SLOTCFG (netSessionClientCfgTick) gave the host the host player's Reverse
+ * Pitch and aim options for this player's seat, while this machine
+ * predicted it by its own (F3 20261011-225920, 20261012-021339).
+ */
+static struct mpplayerconfig *netOwnPlayerConfig(void)
+{
+	struct mpplayerconfig *saved = netRulesOwnPlayer();
+
+	if (g_NetMode == NETMODE_CLIENT && saved) {
+		if (s_MatchActive && !s_Spectating && s_ClientSlot >= 0 && s_ClientSlot < MAX_PLAYERS) {
+			return &g_PlayerConfigsArray[s_ClientSlot];
+		}
+
+		return saved;
+	}
+
+	return &g_PlayerConfigsArray[0];
+}
+
 void netWriteSlotCfg(struct netbuf *b)
 {
 	struct extplayerconfig *ext = &g_PlayerExtCfg[0];
-	struct mpplayerconfig *p = &g_PlayerConfigsArray[0];
+	struct mpplayerconfig *p;
 	f32 sx = 0;
 	f32 sy = 0;
 
+	netTestOwnOptions();
+	p = netOwnPlayerConfig();
 	inputMouseGetSpeed(&sx, &sy);
 
 	netWriteMpChar(b, p->base.mpheadnum, p->base.mpbodynum);
@@ -1509,6 +1667,7 @@ s32 netHostMatchStarting(s32 stagenum, s32 numplayers)
 		}
 	}
 
+	netTestOwnOptions();
 	netPlayersHostMatchStart();
 
 	for (i = 0; i < NET_MAXPEERS; i++) {
@@ -1536,6 +1695,19 @@ s32 netHostMatchStarting(s32 stagenum, s32 numplayers)
 	}
 
 	mpSetHumanSlotMask(bits);
+
+	// online counter-op (protocol 32): the players' sides, before RULES go
+	{
+		u32 occupied = 0;
+
+		for (i = 0; i < MAX_PLAYERS; i++) {
+			if (s_Seats[i].state == NETSEAT_HOST || s_Seats[i].state == NETSEAT_TAKEN || s_Seats[i].state == NETSEAT_HELD) {
+				occupied |= 1u << i;
+			}
+		}
+
+		netCoopHostSides((u32)bits, occupied);
+	}
 
 	s_MatchId++;
 	s_MatchIdCur = s_MatchId;
@@ -1908,6 +2080,80 @@ static void netHostOnChat(s32 peer, struct netbuf *b)
 }
 
 // A seat's ping as the host has it: 0 its own, -1 none
+static u32 s_PlayersSig = 0;
+static u32 s_PlayersSigMatch = 0xffffffff;
+static s32 s_PlayersRepeat = 0;
+static u64 s_ClPingsAt = 0; // (protocol 30) when the world block last brought the pings
+
+static s32 netHostSeatPing(s32 seat);
+
+/**
+ * (protocol 30) The players list's pings, as the world block carries them:
+ * u16 ping[12], u8 nspecs, 2 x { u8 view, u16 ping }, u8 0
+ */
+void netSessionHostPings(u8 *out)
+{
+	struct netpeerstats st;
+	s32 n = 0;
+	s32 i;
+
+	memset(out, 0, 32);
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const s32 ping = netHostSeatPing(i);
+		const u16 v = ping < 0 ? NETPING_NONE : ping > 9999 ? 9999 : (u16)ping;
+
+		out[i * 2] = (u8)v;
+		out[i * 2 + 1] = (u8)(v >> 8);
+	}
+
+	for (i = 0; i < NET_MAXPEERS && n < NET_MAXSPECS; i++) {
+		const struct netclient *c = &s_Clients[i];
+		s32 ping = -1;
+		u16 v;
+
+		if (!c->spectator || c->state != NETCL_PLAYING) {
+			continue;
+		}
+
+		if (netHostPeerStats(g_NetHostSocket, i, &st) == 0 && st.connected) {
+			ping = (s32)st.rtt;
+		}
+
+		v = ping < 0 ? NETPING_NONE : ping > 9999 ? 9999 : (u16)ping;
+		out[25 + n * 3] = (u8)c->slot;
+		out[26 + n * 3] = (u8)v;
+		out[27 + n * 3] = (u8)(v >> 8);
+		n++;
+	}
+
+	out[24] = (u8)n;
+}
+
+void netSessionClientPings(const u8 *in)
+{
+	s32 i;
+	s32 k;
+
+	if (s_Role != NETROLE_CLIENT || !s_MatchActive || in[24] > NET_MAXSPECS) {
+		return;
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		s_ClPing[i] = (u16)(in[i * 2] | (in[i * 2 + 1] << 8));
+	}
+
+	for (k = 0; k < in[24]; k++) {
+		for (i = 0; i < s_ClNumSpecs; i++) {
+			if (s_ClSpecs[i].view == in[25 + k * 3]) {
+				s_ClSpecs[i].ping = (u16)(in[26 + k * 3] | (in[27 + k * 3] << 8));
+			}
+		}
+	}
+
+	s_ClPingsAt = netNowMs();
+}
+
 static s32 netHostSeatPing(s32 seat)
 {
 	s32 rtt;
@@ -2158,9 +2404,30 @@ static void netHostSeatsTick(void)
 		netHostLogSeats("after a hold ran out");
 	}
 
-	// protocol 18: the pings and spectators for every client's players list
+	// protocol 18: the pings and spectators for every client's players
+	// list. (protocol 30) The pings go in the world block, delta'd once a
+	// second; PLAYERS itself (the spectators' names) only when they change,
+	// once a second for five (unreliable), and the match's first
 	if (g_NetTick % 60 == 0) {
-		netHostSendPlayers(NETCL_PLAYING);
+		u32 sig = 0;
+		s32 i;
+
+		for (i = 0; i < NET_MAXPEERS; i++) {
+			if (s_Clients[i].spectator && s_Clients[i].state == NETCL_PLAYING) {
+				sig = sig * 31 + (u32)s_Clients[i].slot * 7 + (u32)strlen(s_Clients[i].name) + (u8)s_Clients[i].name[0];
+			}
+		}
+
+		if (sig != s_PlayersSig || s_PlayersSigMatch != s_MatchIdCur) {
+			s_PlayersSig = sig;
+			s_PlayersSigMatch = s_MatchIdCur;
+			s_PlayersRepeat = 5;
+		}
+
+		if (s_PlayersRepeat > 0) {
+			s_PlayersRepeat--;
+			netHostSendPlayers(NETCL_PLAYING);
+		}
 	}
 }
 
@@ -2289,7 +2556,9 @@ static void netHostLateGo(s32 peer)
 
 		if (pn >= 0 && g_Vars.players[pn]->isdead) {
 			// back into play at the next respawn point (a co-op mission's:
-			// beside a living player, netCoopJoinSpawn)
+			// beside a living player, netCoopJoinSpawn; a counter-op
+			// mission's on the joiner's side, netcoop.c)
+			netCoopHostLateSide(pn, c->name);
 			netCoopHostLateJoin(pn);
 			g_Vars.players[pn]->dostartnewlife = true;
 		}
@@ -2820,6 +3089,7 @@ static s32 netClientBeginStage(struct netbuf *b)
 	// protocol 18: this match's seats come in its own ROSTER and PLAYERS
 	s_ClSeatValid = 0;
 	s_ClPlayersAt = 0;
+	s_ClPingsAt = 0;
 	s_ClNumSpecs = 0;
 	numplayers = netBufReadU8(b);
 	yourplayer = netBufReadU8(b);
@@ -3806,8 +4076,11 @@ static void netClientEvent(const struct netevent *ev)
 			netEntsClientOnSnap(ev->data, ev->len);
 			break;
 		case NETMSG_EVENTS:
+		case NETMSG_EVFX:
+		case NETMSG_EVSHOT:
 			netEventsClientOnMsg(ev->data, ev->len);
 			break;
+
 		default:
 			break;
 		}
@@ -4397,6 +4670,7 @@ void netStageStopped(void)
 	netMigrateMatchStopped();
 	netRulesRestore();
 	netEventsMatchStopped();
+	netWorldMatchStopped();
 	netEntsMatchStopped();
 	netLagCompMatchStopped();
 	netPlayersMatchStopped();
@@ -5222,7 +5496,7 @@ s32 netSessionSeatInfo(s32 seat, struct netseatinfo *out)
 			return 0;
 		}
 
-		if (s_ClPlayersAt && netNowMs() - s_ClPlayersAt < 5000 && s_ClPing[seat] != NETPING_NONE) {
+		if ((s_ClPlayersAt || s_ClPingsAt) && netNowMs() - (s_ClPingsAt > s_ClPlayersAt ? s_ClPingsAt : s_ClPlayersAt) < 5000 && s_ClPing[seat] != NETPING_NONE) {
 			out->ping = s_ClPing[seat];
 		}
 
@@ -5271,7 +5545,7 @@ s32 netSessionSpecInfo(s32 k, char *name, s32 size, s32 *ping)
 		return 0;
 	}
 
-	if (s_Role == NETROLE_CLIENT && s_ClPlayersAt && netNowMs() - s_ClPlayersAt < 5000 && k >= 0 && k < s_ClNumSpecs) {
+	if (s_Role == NETROLE_CLIENT && (s_ClPlayersAt || s_ClPingsAt) && netNowMs() - (s_ClPingsAt > s_ClPlayersAt ? s_ClPingsAt : s_ClPlayersAt) < 5000 && k >= 0 && k < s_ClNumSpecs) {
 		snprintf(name, size, "%s", s_ClSpecs[k].name);
 		*ping = s_ClSpecs[k].ping == NETPING_NONE ? -1 : s_ClSpecs[k].ping;
 		return 1;
@@ -5535,6 +5809,69 @@ const char *netSessionHostClientName(s32 index)
 	return NULL;
 }
 
+/**
+ * A lobby room's host: the accounts its session has now, for the heartbeat
+ * (pdlobbyd api 6 "seated"): every client connected under a name, whatever
+ * its state (players, spectators, a joiner loading), and every seat held
+ * for a dropped player within its hold. The lobby frees the room seat of a
+ * member not on it whose game has stopped polling (crashed, gone), so a
+ * newcomer can take the seat in the match in progress. Writes a JSON array
+ * and returns its length, or -1 when this machine hosts no lobby room's
+ * session (the field is then left out and the lobby reaps nobody mid-match).
+ */
+s32 netSessionHostAccountsJson(char *out, s32 size)
+{
+	s32 len, i, j, n = 0;
+
+	if (!s_LobbyRoomOn || s_Role != NETROLE_HOST || size < 3) {
+		return -1;
+	}
+
+	len = snprintf(out, size, "[");
+
+	for (i = 0; i < NET_MAXPEERS + MAX_PLAYERS; i++) {
+		const char *name = NULL;
+		char clean[2 * NET_MAXNAME + 3];
+		s32 k = 0;
+
+		if (i < NET_MAXPEERS) {
+			if (s_Clients[i].state >= NETCL_CONNECTING && s_Clients[i].state != NETCL_REFUSED && s_Clients[i].name[0]) {
+				name = s_Clients[i].name;
+			}
+		} else if (s_Seats[i - NET_MAXPEERS].state == NETSEAT_HELD && s_Seats[i - NET_MAXPEERS].account[0]) {
+			name = s_Seats[i - NET_MAXPEERS].account;
+		}
+
+		if (!name) {
+			continue;
+		}
+
+		for (j = 0; name[j] && k < (s32)sizeof(clean) - 2; j++) {
+			if ((u8)name[j] < 0x20 || (u8)name[j] > 0x7e) {
+				continue;
+			}
+
+			if (name[j] == '"' || name[j] == '\\') {
+				clean[k++] = '\\';
+			}
+
+			clean[k++] = name[j];
+		}
+
+		clean[k] = '\0';
+
+		if (len + k + 4 >= size) {
+			break;
+		}
+
+		len += snprintf(out + len, size - len, "%s\"%s\"", n ? "," : "", clean);
+		n++;
+	}
+
+	len += snprintf(out + len, size - len, "]");
+	return len;
+}
+
 // The host: `user` has left the room's roster (left, kicked, timed out)
 void netSessionHostDropUser(const char *user, const char *why)
 {
@@ -5580,6 +5917,8 @@ void netSessionLobbyStartMatch(void)
 	if (g_NetCoopSetup.on) {
 		sysLogPrintf(LOG_NOTE, "net: lobby: starting the room's co-op mission %d of %s, %d clients", g_NetCoopSetup.stageindex,
 				netCoopGameName(g_NetCoopSetup.game), netSessionHostNumClients());
+		// (a counter-op room's: the members' room teams their sides, netcoop.c)
+		netCoopHostNextAnti(g_NetCoopSetup.anti && !g_NetCoopSetup.campaign);
 		netCoopHostStart(g_NetCoopSetup.game, g_NetCoopSetup.stageindex, g_NetCoopSetup.difficulty, g_NetCoopSetup.radar, g_NetCoopSetup.friendlyfire);
 		menuStop();
 		return;

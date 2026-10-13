@@ -1897,7 +1897,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 
 
 							if (pressed & BUTTON_THIRDPERSON) {
-								g_Vars.currentplayer->thirdperson = !g_Vars.currentplayer->thirdperson;
+								// (online: only where the room allows it)
+								g_Vars.currentplayer->thirdperson = !g_Vars.currentplayer->thirdperson && modIsThirdPersonAllowed();
 							}
 
 							if (pressed & BUTTON_ROLL) {
@@ -2717,6 +2718,8 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 	f32 zdiff;
 	f32 distance;
 
+	if (g_NetMode == NETMODE_SERVER && netPlayersHostWalk(allowc1x, allowc1y, allowc1buttons, ignorec2)) return; // netplay: a client's player walks by its commands alone (netplayers.c)
+	if (g_NetMode != NETMODE_NONE) geTankRideCarry(); // netplay: a player on a tank somebody drives goes with it (getank.c)
 	if (g_NetMode == NETMODE_CLIENT) netPredictMoveBegin(allowc1x, allowc1y, allowc1buttons, ignorec2); // netplay: the tick's movement, for a replay
 #ifndef PLATFORM_N64
 	// netplay: on an online co-op mission a player's own movement passes

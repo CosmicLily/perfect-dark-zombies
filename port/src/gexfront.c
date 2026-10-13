@@ -428,6 +428,7 @@ struct gefontchar {
 
 struct gefont {
 	u8 *data;
+	u32 datalen;
 	s32 kerning[13 * 13];
 	struct gefontchar chars[94];
 
@@ -558,6 +559,7 @@ static s32 frontLoadFont(struct gefont *font, const char *rel)
 	}
 
 	font->data = data;
+	font->datalen = len;
 
 	for (s32 i = 0; i < 13 * 13; i++) {
 		font->kerning[i] = (s32)be32(data + i * 4);
@@ -1326,12 +1328,30 @@ static void frontSaveBestTimes(void)
 	fsFileFree(f);
 }
 
+/**
+ * A font's glyphs are drawn straight out of its file's buffer, and the
+ * renderer keeps a texture by its address alone (not its size): a font freed
+ * with its glyphs still cached left them to whatever was loaded there next -
+ * another conversion's font at another offset drew a 'G' for a 'd' and a 'K'
+ * for a 'g' (F3 20261011-063840, Goldfinger 64's folder after GoldenEye's).
+ */
+static void frontFreeFont(struct gefont *font)
+{
+	if (font->data) {
+		videoFreeCachedTextures(font->data, font->data + font->datalen);
+	}
+
+	sysMemFree(font->data);
+	font->data = NULL;
+	font->datalen = 0;
+}
+
 static void frontUnload(void)
 {
 	frontUnloadModel();
 	frontFreeBriefing();
-	sysMemFree(g_Front.zurich.data);
-	sysMemFree(g_Front.gothic.data);
+	frontFreeFont(&g_Front.zurich);
+	frontFreeFont(&g_Front.gothic);
 	sysMemFree(g_Front.title);
 	sysMemFree(g_Front.options);
 	g_Front.options = NULL;
@@ -2096,14 +2116,11 @@ static void frontSelectRow(s32 row)
 		break;
 	case ROW_LEVEL:
 		frontBuildLevels();
-		g_Front.levelpage = 0;
 
-		// the page the chosen arena is on
-		for (s32 i = 0; i < g_Front.numlevels; i++) {
-			if (g_Front.levels[i] == g_MpSetup.stagenum) {
-				g_Front.levelpage = i / LEVELS_PER_PAGE;
-			}
-		}
+		// always the first page - Random and GoldenEye's own arenas - as the
+		// cartridge's one page is (F3 20261011-052353: it opened on the page
+		// of the arena chosen last, the missions' page)
+		g_Front.levelpage = 0;
 
 		g_Front.screen = SCREEN_LEVEL;
 		break;
@@ -4242,6 +4259,12 @@ s32 gexFrontNetMissionReport(void)
 
 	aborted = coopAnyAborted();
 	completed = !aborted && !coopAllDead() && objectiveIsAllComplete();
+
+	// online counter-op: a counter-op's mission is the agents' undone
+	// (their every death, or the objectives not met when it ended)
+	if (coopIsAnti(player)) {
+		completed = !aborted && !completed;
+	}
 
 	frontKeepReport(player, !completed && !aborted && player->isdead, aborted, completed, difficulty);
 	g_FrontReport.net = 1;

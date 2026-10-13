@@ -32,6 +32,7 @@
 #include "romdata.h"
 #include "game/pdmode.h"
 #include "game/objectives.h"
+#include "game/coop.h"
 #include "game/endscreen.h"
 #include "game/playermgr.h"
 #include "game/game_1531a0.h"
@@ -868,6 +869,14 @@ void mainEndStage(void)
 			const s32 cinema = g_NetMode != NETMODE_NONE && netCoopCinemaEnded();
 
 			for (i = 0; i < PLAYERCOUNT() && !cinema; i++) {
+				// netplay: a player with no menus of its own (a solo stage's
+				// MPINDEX_SOLO, past g_Menus[]) has no end screen to push: the
+				// push writes over whatever follows the array
+				if (g_NetMode != NETMODE_NONE && (u32)g_Vars.playerstats[i].mpindex >= ARRAYCOUNT(g_Menus)) {
+					sysLogPrintf(LOG_WARNING, "net: co-op: player %d has no menus (mpindex %d); no end screen", i, g_Vars.playerstats[i].mpindex);
+					continue;
+				}
+
 				// netplay: another machine's player has its end screen there
 				if (g_NetMode != NETMODE_NONE && !netIsLocalPad(g_Vars.playerstats[i].mpindex)) continue;
 				setCurrentPlayerNum(i);
@@ -879,7 +888,20 @@ void mainEndStage(void)
 					continue;
 				}
 
-				endscreenPushCoop();
+				// online counter-op: a counter-op's own end screen
+				// (the agents' outcome the other way round)
+				if (coopIsAnti(g_Vars.currentplayer)) {
+					if (g_NetMode != NETMODE_NONE) {
+						sysLogPrintf(LOG_NOTE, "net: counter-op: player %d's end screen: %s", i,
+								coopAntisAborted() ? "aborted"
+								: coopAgentsDead() || coopAgentsAborted() || !objectiveIsAllComplete() ? "completed (the agents failed)"
+								: "failed (the agents completed)");
+					}
+
+					endscreenPushAnti();
+				} else {
+					endscreenPushCoop();
+				}
 			}
 
 			setCurrentPlayerNum(prevplayernum);

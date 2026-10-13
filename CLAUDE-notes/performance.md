@@ -247,6 +247,33 @@ others are harmless too: `liftUpdateTiles()` (propobj.c:5464) takes
 `result` is 0 then, so the test is false either way. Filter with
 `grep "runtime error" | grep -v misaligned`.
 
+**randrun parting from itself was a stage-pool leftover (F3 pass 38,
+fix/f3-1012-randflake).** The stage pool (memp) is never cleared between
+stage loads, and neither ASan nor plain valgrind can see a read of the last
+load's data: it is "initialised". A chr made by `chrInit()` keeps every field
+nobody sets after it - the setup file's spawn sets yvisang and myspecial
+(`bodyAllocateChr()`), `chrSpawnAtCoord()` and `modAlarmSpawn()` do not, and
+the player's chr never gets flags2 (which the hash reads). The Randomizer run
+loads G5 twice (boot, then the landing at frame 60), the second time with
+g_ChrSlots 0x20b0 bytes off, so a slot nothing had used yet held first-load
+pointers at the new chr's fields. Walk-in guard 5039's yvisang was byte 4 of
+a memp address - 0 to 255 with ASLR - and `aiIfCheckFovWithTarget()` passes
+for `0 < yvisang < vertical angle to the target in 256ths of a turn`: 1-2 at
+f637 with the main build's data (about 1 run in 100), 1-15 at f630 in a PD-look
+install (about 1 in 17; its first DIFF was frame 631). With ASLR off the byte is 0xff and
+never passes. `chrmgrConfigure()` now zeroes the slots, which is what a first
+load reads. How it was found, for the next one: a debug hook after
+`mempResetPool(MEMPOOL_STAGE)` (pdmain.c) that memsets the free stage pool with
+a byte - 0x00 kept the usual hashes, 0xff and 0x55 changed them (from frame 10:
+a first load reads never-written pool memory as zero) - then valgrind with the
+pool marked undefined there (`VALGRIND_MAKE_MEM_UNDEFINED`), which names every
+read of it. With the fix, filling the second load's pool with 1, 2, 85, 170 or
+255 leaves all of randrun's hashes as they were. Valgrind names more stale
+reads that did not reach this run's hash (the portal camera cache, dlights'
+tables, `chrStartPatrol()`'s stock read of act_gopos.waydata.mode, which on
+64-bit lies past act_patrol); zeroing the whole used pool at the reset would
+cover those too.
+
 ## Run to a level frame, not for a wall-clock span
 
 `--exit-frame N` quits when `lvframenum` reaches N (lv.c), and `tools/perf/perfframes.sh` counts a
@@ -462,6 +489,28 @@ Island, 0.84 -> 0.54 s on Junkyard. What is left is the collision queries of
 the floor search (`cdCollectGeoForCylFromList`, 30%) and the links' tile
 walks (`stanWallFind`, 12%).
 
+## "Offline Combat Simulator stutters, online does not" (F3 pass 38, 2026-10-12)
+
+Three reports from one Windows tester (AMD iGPU, OpenGL, vsync, no frame limit,
+tick divisor 1; 20261012-103636, -103800, -105651) were all sent from the
+Institute 111 frames after a match: a trace's 600-frame ring then holds the
+match's end screen and the load, not play (`lvframenum` 111 and the switch
+list say so). What could be measured here, with their pd.ini sections laid
+over a fresh one (Skedar, 2-4 simulants, Perfect Dark's guns and the Goldfinger
+64 set they had on): pass 37 (fcd7ab8) and 3b069f9 frame alike - 16.67 ms,
+~9 ms of work, offscreen and in a vsynced window on the desktop - and the
+seeded game thread costs 2.0-2.1 M instructions a frame on both, 1.7 M on
+the 10-10 build before the high-framerate pass (ddc1a5f): a few hundred
+microseconds anywhere. The frame ring can be read from a running game
+without F3: `vidRingFrameMs/WorkMs/Ticks`, `vidRingPos`, `vidRingCount`
+(video.c). One difference between the two modes that a 60 Hz player can see
+was noted, not changed: offline, `frametimeCalculate()` steps the game in
+240ths of measured time, so a frame shown for one refresh that measured a
+couple of milliseconds long or short steps 3 or 5 instead of 4 (8% of such
+frames in a loaded desktop run here), while online every frame is whole
+60ths from the tick clock. Ask for F3 *during* the stutter: its "game step"
+line tells that jitter from long frames ("ran over" / "waited at the present").
+
 ## Above 60 FPS: the player's own view (2026-10-10, high-framerate pass, fix/highfps-player)
 
 Measure with `--fixed-fps 240` against `--fixed-step` and a gdb breakpoint that prints the state per frame
@@ -474,8 +523,12 @@ The shapes, by kind:
   by the quarter and the distance step `speed*dt + (speed - prevspeed)*(1 - dt)/2`, which makes four quarter
   steps cover one 60th step exactly under constant acceleration (crouch: bwalkApplyCrouchSpeed240()).
 - **Pose read off a state's 60ths** (stateframes, count60 in the gun's arm dip and recoil curve): add the time
-  since that 60th, `lvupdate240rem * 0.25f` (bgunArmTicks()) - the state still steps in 60ths, the pose moves
-  every frame and lands on the 60 FPS values on the 60ths.
+  since that 60th, `(lvupdate240rem - 2) * 0.25f` on **every** frame (bgunArmTicks(), hudmsgDrawTimer()) - the
+  remainder holds at 2 at 60 and 30 FPS, so that is the stock value there. Not "rem / 4 off the 60 path only":
+  at a rate that is not a multiple of 60 (73 FPS: steps of 3 and 4 240ths) a frame of 4 240ths is "on the
+  path" and dropped the remainder, so the arm moved 0.25 then 1.5 ticks in two frames - the shotgun's recoil
+  and the sniper rifle's reload dip twitched (F3 20261011-201059/-201734). Same trap for any `(lvupdate240 & 3)`
+  gate (the escalator also takes the continuous path when `lvupdate240rem != 2`).
 - **Model animation in 60ths** (the gun: modelTickAnim(animframeinc = lvupdate60)): tick lvupdate240 with
   modelTickAnimQuarterSpeed() and read the count as quarter frames in the keyframe tests.
 - **Counters bumped per frame or per input sample** (usedowntime, hand->count, the gun-load step, the

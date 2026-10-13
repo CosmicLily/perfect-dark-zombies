@@ -20,14 +20,20 @@
 #include "game/game_0b0fd0.h"
 #include "game/modoptions.h"
 #include "game/player.h"
+#include "game/bondmove.h"
 #include "game/playermgr.h"
 #include "game/mplayer/mplayer.h"
+#include "game/bot.h"
+#include "game/botcmd.h"
 #include "screenshot.h"
 #include "gewatch.h"
 #include "gexplus.h"
+#include "getank.h"
 #include "net/net.h"
 #include "net/nettransport.h"
 #include "net/netsnap.h"
+#include "net/netdelta.h"
+#include "net/netcmd.h"
 #include "netint.h"
 
 /**
@@ -64,26 +70,9 @@
 #define NET_DEPTH_TARGET   384  // 1.5 commands waiting, in 1/256ths
 #define NET_PPM_PER_DEPTH  130  // clock trim per 1/256th of a command off target
 #define NET_PPM_MAX        50000
+#define NET_CATCHUP_MAX    64   // folded commands walked before the tick's own; past these the fold is the walk's
 
-struct netcmd {
-	u32 buttons;
-	s8 sx;
-	s8 sy;
-	s8 rsx;
-	s8 rsy;
-	f32 mdx;
-	f32 mdy;
-	u8 flags;
-	u32 viewtick;            // the host tick the client's puppets were drawn at
-	u8 viewfrac;             // ... and the fraction past it, in 1/256ths (NETCMD_NOVIEW: none)
-	u8 viewdelay;            // how far its render clock sat behind the newest snapshot, 1/8 ticks
-	u8 equip[2];             // NETCMD_EQUIP: the guns a menu put in the hands, right and left (0 none)
-	u8 device[2];            // NETCMD_DEVICE: a device's weapon number, and on or off
-	u16 body[2];             // NETCMD_BODY: the tethered body's facing and travel, 65536ths of a turn
-	u8 bodyflags;            // ... NETBODY_TRAVEL
-};
 
-#define NETCMD_NOVIEW 0xffffffff
 
 // A remote pad on the host
 struct netpadq {
@@ -108,6 +97,18 @@ struct netpadq {
 	s32 lastplayed;          // the last tick played, -1 none
 	u32 depthsum;
 	u32 pressed;             // buttons this tick's command pressed, START too (netPlayersHostPressed)
+	// the walk by the commands alone (netPlayersHostWalk): a tick whose
+	// command has not come waits, and the commands folded into a tick walk
+	// first, oldest first, each as the client walked it
+	u8 nowalk;               // this tick's command has not come
+	s32 numheld;             // commands that never came, walked first by the last one's sticks
+	struct netcmd held;      // ... that command, no mouse
+	s32 numcatchup;          // the folded commands before the tick's own, to walk first
+	f32 catchupmdx;          // ... their mouse, summed (the fold's, should they not be walked)
+	f32 catchupmdy;
+	struct netcmd catchup[NET_CATCHUP_MAX];
+	u32 waited;              // counts: ticks the walk waited, commands walked folded
+	u32 caughtup;
 };
 
 struct extplayerconfig g_NetExtCfg[MAX_PLAYERS];
@@ -116,6 +117,7 @@ s32 g_NetRemotePass = 0;
 s32 g_NetPassPlayer = -1;
 
 static struct netpadq s_Pads[MAX_PLAYERS];
+static u32 s_CmdNoBase = 0; // (protocol 30) CMDs dropped: their base command was not here
 
 // a spectator's commands drive nothing: only their snapshot ack is taken,
 // and the newest tick kept for its CMDACK (the clock trim)
@@ -135,6 +137,9 @@ static u32 s_SentTick[NETCMD_RING];
 static s32 s_HaveNewest = 0;
 static u32 s_Newest = 0;
 static u32 s_AckNext = 0;        // the first tick the host does not have
+static u32 s_BaseTick = 0;       // (protocol 30) the newest command the host acked: CMD's base
+static s32 s_HaveBase = 0;
+static u32 s_BaseSince = 0;
 static s32 s_DepthAvg = NET_DEPTH_TARGET;
 static s32 s_Ppm = 0;
 static u32 s_HostTick = 0;
@@ -153,6 +158,20 @@ static s32 s_EquipPending = 0;    // a menu's pick for the next command (NETCMD_
 static u8 s_EquipHands[2];
 static s32 s_DevicePending = 0;   // ... and a device switched (NETCMD_DEVICE)
 static u8 s_Device[2];
+// (protocol 31) Team Control's orders waiting for a command each (NETCMD_ORDER)
+#define NET_ORDERQ 8
+static u8 s_Orders[NET_ORDERQ][3];
+static s32 s_OrderHead = 0;
+static s32 s_OrderCount = 0;
+// --net-test-order TICK:CMD[:SIM[:TARGET]][,...]: Team Control's orders as the
+// active menu gives them (SIM a bot config slot, else the first sim on the
+// player's team; -1 all of them; TARGET Attack's mpchr index), on either role;
+// --net-test-order-check TICK: every sim's order logged then, and every 150 ticks on
+#define NET_TESTORDERS 4
+static s32 s_TestOrders = 0;
+static u32 s_TestOrderTick[NET_TESTORDERS];
+static s32 s_TestOrder[NET_TESTORDERS][3];
+static u32 s_TestOrderCheck = 0;
 static u32 s_TestEquipTick = 0;   // --net-test-equip TICK,WEAPON: a menu's pick made at TICK
 static s32 s_TestEquipWeapon = 0;
 // --net-test-give TICK,RIGHT[,LEFT][/TICK,RIGHT[,LEFT]...]: the host hands
@@ -201,6 +220,17 @@ static f32 s_AimDy = 0;
 static f32 s_AimNear = 0;    // farther than this from the target: walk toward it instead of the script's moves (until within it once)
 
 extern s32 g_StageNum;
+
+// --net-test-hold-key NAME,FROM,TO: a keyboard key (W) held from tick FROM to
+// TO of each match through the real key path (input.c inputTestHoldKey):
+// typing left on turns it into a letter (F3 20261012-021339). The player's
+// place at both ends is logged.
+static s32 s_HoldVk = 0;          // 0 none, -1 its name not yet looked up (input.c names keys as it starts)
+static char s_HoldName[32];
+static u32 s_HoldFrom = 0;
+static u32 s_HoldTo = 0;
+static s32 s_HoldStage = 0; // 0 before FROM, 1 held, 2 logged at the end
+static f32 s_HoldPos[3];
 
 /*
  * Boot
@@ -266,7 +296,46 @@ void netPlayersArgs(void)
 		netPlayersLoadScript(script);
 	}
 
+	{
+		const char *hold = sysArgGetString("--net-test-hold-key");
+		char name[32];
+		unsigned int from = 0;
+		unsigned int to = 0;
+
+		if (hold && sscanf(hold, "%31[^,],%u,%u", name, &from, &to) == 3) {
+			snprintf(s_HoldName, sizeof(s_HoldName), "%s", name);
+			s_HoldVk = -1;
+			s_HoldFrom = from;
+			s_HoldTo = to;
+		}
+	}
+
 	s_TestTrace = sysArgGetInt("--net-test-trace", 0);
+
+	{
+		const char *order = sysArgGetString("--net-test-order");
+
+		s_TestOrderCheck = (u32)sysArgGetInt("--net-test-order-check", 0);
+
+		while (order && *order && s_TestOrders < NET_TESTORDERS) {
+			unsigned int tick = 0;
+			int cmd = 0;
+			int sim = -2;
+			int target = -1;
+
+			if (sscanf(order, "%u:%i:%i:%i", &tick, &cmd, &sim, &target) < 2) {
+				break;
+			}
+
+			s_TestOrderTick[s_TestOrders] = tick;
+			s_TestOrder[s_TestOrders][0] = cmd;
+			s_TestOrder[s_TestOrders][1] = sim;
+			s_TestOrder[s_TestOrders][2] = target;
+			s_TestOrders++;
+			order = strchr(order, ',');
+			order = order ? order + 1 : NULL;
+		}
+	}
 	s_MenuShot = sysArgCheck("--net-test-menu-shot");
 
 	{
@@ -454,6 +523,36 @@ static s32 netPlayersTestAimFar(void)
 	return 1;
 }
 
+static void netPlayersTestHoldKey(void)
+{
+	const struct player *me = g_NetLocalSlot >= 0 && g_NetLocalSlot < MAX_PLAYERS ? g_Vars.players[g_NetLocalSlot] : NULL;
+	const s32 on = g_NetTick >= s_HoldFrom && g_NetTick <= s_HoldTo;
+
+	inputTestHoldKey(on ? s_HoldVk : 0);
+
+	if (!me || !me->prop) {
+		return;
+	}
+
+	if (g_NetTick < s_HoldFrom) {
+		s_HoldStage = 0;
+	} else if (on && s_HoldStage == 0) {
+		s_HoldStage = 1;
+		s_HoldPos[0] = me->prop->pos.x;
+		s_HoldPos[1] = me->prop->pos.y;
+		s_HoldPos[2] = me->prop->pos.z;
+		sysLogPrintf(LOG_NOTE, "net: --net-test-hold-key: %s held from tick %u, typing %d, menu keyboard %d",
+				inputGetKeyName(s_HoldVk), g_NetTick, inputIsTextInputActive(), g_MenuKeyboardPlayer);
+	} else if (!on && s_HoldStage == 1) {
+		const f32 dx = me->prop->pos.x - s_HoldPos[0];
+		const f32 dz = me->prop->pos.z - s_HoldPos[2];
+
+		s_HoldStage = 2;
+		sysLogPrintf(LOG_NOTE, "net: --net-test-hold-key: let go at tick %u: walked %.0f units, typing %d",
+				g_NetTick, sqrtf(dx * dx + dz * dz), inputIsTextInputActive());
+	}
+}
+
 s32 netContGetReadData(void *pads)
 {
 	OSContPad *pad = pads;
@@ -464,6 +563,17 @@ s32 netContGetReadData(void *pads)
 
 	if (!netInMatch()) {
 		return 0;
+	}
+
+	if (s_HoldVk < 0) {
+		const s32 vk = inputGetKeyByName(s_HoldName);
+
+		sysLogPrintf(LOG_NOTE, "net: --net-test-hold-key: %s is key %d", s_HoldName, vk);
+		s_HoldVk = vk > 0 ? vk : 0;
+	}
+
+	if (s_HoldVk > 0) {
+		netPlayersTestHoldKey();
 	}
 
 	memset(&phys, 0, sizeof(phys));
@@ -812,6 +922,200 @@ static void netPlayersTestGive(s32 pad)
  * and the device it switched (protocol 15), played once each, and only
  * what the player holds here
  */
+/*
+ * Team Control online (protocol 31). In a team match the active menu's sim
+ * pages order the sims on the player's team (botcmdApply). A client's sims
+ * are puppets that never think, so its menu's order goes to the host in its
+ * next command (NETCMD_ORDER), and the host gives it in that player's pass
+ * as the player's own menu would there; the sim's behaviour then reaches
+ * every machine in the snapshots. The client keeps the order on its own copy
+ * of the sim too, which is what its menu shows as the sim's command.
+ */
+
+// A command's name for the log (the game's text ends in a newline)
+static const char *netOrderName(s32 command)
+{
+	static char names[2][32];
+	static s32 which = 0;
+	const char *text = botGetCommandName(command);
+	char *out = names[which ^= 1];
+	s32 i;
+
+	for (i = 0; text && text[i] && text[i] != '\n' && i < (s32)sizeof(names[0]) - 1; i++) {
+		out[i] = text[i];
+	}
+
+	out[i] = '\0';
+	return out;
+}
+
+// A mpchr index on the wire: a player's playernum, or NETORDER_SIM + a sim's
+// bot config slot (the key every machine shares); -1 none
+static s32 netOrderChrToWire(s32 mpchr)
+{
+	struct chrdata *chr;
+
+	if (mpchr < 0 || mpchr >= g_MpNumChrs) {
+		return -1;
+	}
+
+	if (mpchr < PLAYERCOUNT()) {
+		return mpchr < MAX_PLAYERS ? mpchr : -1;
+	}
+
+	chr = g_MpAllChrPtrs[mpchr];
+
+	if (!chr || !chr->aibot || !chr->aibot->config) {
+		return -1;
+	}
+
+	return NETORDER_SIM + (s32)(chr->aibot->config - g_BotConfigsArray);
+}
+
+// ... and back: the chr, NULL for none
+static struct chrdata *netOrderWireToChr(s32 v)
+{
+	s32 i;
+
+	if (v < NETORDER_SIM) {
+		return v < PLAYERCOUNT() ? g_MpAllChrPtrs[v] : NULL;
+	}
+
+	for (i = PLAYERCOUNT(); i < g_MpNumChrs; i++) {
+		struct chrdata *chr = g_MpAllChrPtrs[i];
+
+		if (chr && chr->aibot && chr->aibot->config && NETORDER_SIM + (chr->aibot->config - g_BotConfigsArray) == v) {
+			return chr;
+		}
+	}
+
+	return NULL;
+}
+
+/**
+ * A client: Team Control's order from this machine's menu (activemenu.c), for
+ * the host with the next command: the sim by its mpchr index (-1 every sim on
+ * the player's team), the AIBOTCMD_*, Attack's target by mpchr index (-1 none)
+ */
+void netPlayersClientOrder(s32 sim, s32 command, s32 target)
+{
+	s32 wsim = NETORDER_ALLSIMS;
+	s32 wtarget = NETORDER_NOTARGET;
+	u8 *o;
+
+	if (g_NetMode != NETMODE_CLIENT || command < 0 || command > 0xff) {
+		return;
+	}
+
+	if (sim >= 0) {
+		wsim = netOrderChrToWire(sim);
+
+		if (wsim < NETORDER_SIM) {
+			return;
+		}
+
+		wsim -= NETORDER_SIM;
+	}
+
+	if (target >= 0) {
+		wtarget = netOrderChrToWire(target);
+
+		if (wtarget < 0) {
+			return;
+		}
+	}
+
+	if (s_OrderCount >= NET_ORDERQ) {
+		// the oldest gives way: the menu's newest order is the player's
+		s_OrderHead = (s_OrderHead + 1) % NET_ORDERQ;
+		s_OrderCount--;
+	}
+
+	o = s_Orders[(s_OrderHead + s_OrderCount) % NET_ORDERQ];
+	o[0] = (u8)wsim;
+	o[1] = (u8)command;
+	o[2] = (u8)wtarget;
+	s_OrderCount++;
+	sysLogPrintf(LOG_NOTE, "net: this machine ordered sim %d (wire %d) to %s (command %d, target %d) at tick %u",
+			sim, wsim, netOrderName(command), command, target, g_NetTick);
+}
+
+/**
+ * The host, in a remote player's pass: give its order (NETCMD_ORDER) as its
+ * own menu would here, if teams are on, the scenario's menu has the command
+ * and the sim is on the player's team
+ */
+static void netPlayersHostOrder(s32 pad, s32 playernum, const u8 *o)
+{
+	struct player *p = g_Vars.players[playernum];
+	const s32 cmd = o[1];
+	struct chrdata *target = NULL;
+	const char *why = NULL;
+	s32 n = 0;
+	s32 i;
+
+	if (!g_Vars.normmplayerisrunning || !(g_MpSetup.options & MPOPTION_TEAMSENABLED)) {
+		why = "not a team match";
+	} else if (!p || !p->prop || p->isdead) {
+		why = "dead";
+	} else {
+		why = "not on the scenario's menu";
+
+		for (i = 0; i < ARRAYCOUNT(g_AmBotCommands); i++) {
+			if (g_AmBotCommands[i] == cmd) {
+				why = NULL;
+				break;
+			}
+		}
+	}
+
+	if (!why && cmd == AIBOTCMD_ATTACK) {
+		target = netOrderWireToChr(o[2]);
+
+		if (!target || !target->prop) {
+			why = "no such target";
+		}
+	}
+
+	if (!why) {
+		const s32 team = g_MpAllChrConfigPtrs[playernum]->team;
+
+		for (i = PLAYERCOUNT(); i < g_MpNumChrs; i++) {
+			struct chrdata *chr = g_MpAllChrPtrs[i];
+
+			if (!chr || !chr->aibot || !chr->aibot->config || !chr->prop || g_MpAllChrConfigPtrs[i]->team != team) {
+				continue;
+			}
+
+			if (o[0] != NETORDER_ALLSIMS && chr->aibot->config - g_BotConfigsArray != o[0]) {
+				continue;
+			}
+
+			if (target) {
+				// the menu's all-bots Attack leaves out the target itself
+				if (target != chr) {
+					botApplyAttack(chr, target->prop);
+					n++;
+				}
+			} else {
+				botcmdApply(chr, cmd);
+				n++;
+			}
+		}
+
+		if (n == 0) {
+			why = "no such sim on its team";
+		}
+	}
+
+	if (why) {
+		sysLogPrintf(LOG_NOTE, "net: slot %d's order to sim %d (command %d) not taken: %s (tick %u)", pad, o[0], cmd, why, g_NetTick);
+	} else {
+		sysLogPrintf(LOG_NOTE, "net: slot %d ordered %d sim%s (sim %d) to %s (command %d, target %d) (tick %u)",
+				pad, n, n == 1 ? "" : "s", o[0], netOrderName(cmd), cmd, o[2], g_NetTick);
+	}
+}
+
 static void netPlayersHostApplyChoices(s32 playernum)
 {
 	const s32 pad = netPadOfPlayer(playernum);
@@ -850,6 +1154,11 @@ static void netPlayersHostApplyChoices(s32 playernum)
 			sysLogPrintf(LOG_NOTE, "net: slot %d's pick of guns 0x%02x/0x%02x not taken: %s", pad, right, left,
 					p->isdead ? "dead" : "not held here");
 		}
+	}
+
+	if (q->cur.flags & NETCMD_ORDER) {
+		q->cur.flags &= ~NETCMD_ORDER;
+		netPlayersHostOrder(pad, playernum, q->cur.order);
 	}
 
 	if (q->cur.flags & NETCMD_DEVICE) {
@@ -906,6 +1215,164 @@ void netPlayersClientDevice(s32 weaponnum, s32 on)
 	s_Device[1] = on ? 1 : 0;
 	s_DevicePending = 1;
 	sysLogPrintf(LOG_NOTE, "net: this machine switched device 0x%02x %s at tick %u", weaponnum, on ? "on" : "off", g_NetTick);
+}
+
+/*
+ * The host's walk of a client's player (2026-10-12, F3 20261012-123035)
+ */
+
+// Whether the player's walk is one a command can be walked again by, as the
+// client's prediction replays one (netpredict.c's netPredictMoveBegin)
+static s32 netPlayersWalkSteady(const struct player *p)
+{
+	return g_Vars.tickmode == TICKMODE_NORMAL
+		&& p->bondmovemode == MOVEMODE_WALK
+		&& p->visionmode != VISIONMODE_SLAYERROCKET
+		&& p->eyespy == NULL
+		&& !p->walkinitmove
+		&& !p->isdead
+		&& geTankRidden(g_Vars.currentplayernum) == NULL;
+}
+
+/**
+ * bmoveTick, on the host, for a client's player in a tick pass: a client
+ * walks its player by its own commands, one a tick, and the host's walk of
+ * it has to be the same walk or every block disagrees with the prediction.
+ * It was not where the commands came late: a tick the queue ran dry walked
+ * on by the last command's sticks (an extra step the client never took),
+ * and the commands that then came together were folded into one tick (steps
+ * the client took that the host never did) - a stall on a long link (a
+ * relay's, ~220 ms) was a correction of a second's running and the fold's
+ * after it (F3 20261012-123035: 77 corrections, up to 305 units). Now a dry
+ * tick's walk waits for its command, and the commands folded into a tick
+ * are walked first, oldest first, each as the client walked it, before the
+ * tick's own: the host is a tick or more behind on that player for a moment
+ * and then where the client predicted it. Only for a steady walk (the
+ * prediction's replayable one) and a run of commands that presses and lets
+ * go of nothing: anything else holds and folds as before. 1: no walk now.
+ */
+static u8 *s_WalkJoySave = NULL;
+
+s32 netPlayersHostWalk(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ignorec2)
+{
+	const s32 pad = netPadOfPlayer(g_Vars.currentplayernum);
+	struct player *p = g_Vars.currentplayer;
+	struct netpadq *q;
+	struct netcmd own;
+	OSContPad pads[NET_NUM_PADS];
+	s32 i;
+
+	if (g_NetReplaying || g_NetPass < NETPASS_TICK || !netPadIsRemote(pad) || !p || !p->prop) {
+		return 0;
+	}
+
+	q = &s_Pads[pad];
+
+	if (!netPlayersWalkSteady(p)) {
+		// walked as one: the fold's whole turn
+		if (q->numcatchup > 0) {
+			q->cur.mdx += q->catchupmdx;
+			q->cur.mdy += q->catchupmdy;
+			q->numcatchup = 0;
+		}
+
+		q->numheld = 0;
+
+		return 0;
+	}
+
+	if (q->nowalk) {
+		// the walk waits: run as on a frame drawn between ticks, at a level
+		// clock of zero and put back after (netPredictWalkHold) - the input
+		// still read as the held command (the gun's trigger, no press), the
+		// player where it was
+		static s32 holding = 0;
+		const s32 lvupdate240 = g_Vars.lvupdate240;
+		const s32 lvupdate60 = g_Vars.lvupdate60;
+		const s32 lvupdate240rem = g_Vars.lvupdate240rem;
+		const f32 lvupdate60f = g_Vars.lvupdate60f;
+		const f32 lvupdate60freal = g_Vars.lvupdate60freal;
+
+		if (holding) {
+			return 0;
+		}
+
+		holding = 1;
+		g_Vars.lvupdate240 = 0;
+		g_Vars.lvupdate60 = 0;
+		g_Vars.lvupdate240rem = 0;
+		g_Vars.lvupdate60f = 0;
+		g_Vars.lvupdate60freal = 0;
+		netPredictWalkHold(1);
+		bmoveTick(allowc1x, allowc1y, allowc1buttons, ignorec2);
+		netPredictWalkHold(0);
+		g_Vars.lvupdate240 = lvupdate240;
+		g_Vars.lvupdate60 = lvupdate60;
+		g_Vars.lvupdate240rem = lvupdate240rem;
+		g_Vars.lvupdate60f = lvupdate60f;
+		g_Vars.lvupdate60freal = lvupdate60freal;
+		holding = 0;
+		q->waited++;
+		return 1;
+	}
+
+	if (q->numcatchup <= 0 && q->numheld <= 0) {
+		return 0;
+	}
+
+	if (!s_WalkJoySave) {
+		s_WalkJoySave = malloc(joyNetSaveSize());
+
+		if (!s_WalkJoySave) {
+			q->cur.mdx += q->catchupmdx;
+			q->cur.mdy += q->catchupmdy;
+			q->numcatchup = 0;
+			q->numheld = 0;
+			return 0;
+		}
+	}
+
+	// each folded command a sample of its own, the other pads as they are
+	joyNetSave(s_WalkJoySave);
+
+	for (i = 0; i < NET_NUM_PADS; i++) {
+		joyNetGetCurrentPad(i, &pads[i]);
+	}
+
+	own = q->cur;
+
+	// i -1: the first step's sample consumed and not walked, so its walk
+	// meets no press or release against the tick's own (none of the steps
+	// press or let go of anything: netPlayersHostPlay)
+	for (i = -1; i < q->numheld + q->numcatchup; i++) {
+		const s32 k = i < 0 ? 0 : i;
+		const struct netcmd *c = k < q->numheld ? &q->held : &q->catchup[k - q->numheld];
+
+		pads[pad].button = c->buttons & ~START_BUTTON;
+		pads[pad].stick_x = c->sx;
+		pads[pad].stick_y = c->sy;
+		pads[pad].rstick_x = c->rsx;
+		pads[pad].rstick_y = c->rsy;
+		joyNetInjectSample(pads);
+
+		if (i < 0) {
+			continue;
+		}
+
+		// its mouse (netMouseDelta reads the pad's command)
+		q->cur = *c;
+		g_NetReplaying = 1;
+		bmoveTick(allowc1x, allowc1y, allowc1buttons, ignorec2);
+		g_NetReplaying = 0;
+	}
+
+	q->cur = own;
+	joyNetRestore(s_WalkJoySave);
+	q->caughtup += q->numheld + q->numcatchup;
+	q->numheld = 0;
+	q->numcatchup = 0;
+
+	return 0;
 }
 
 /*
@@ -1109,42 +1576,93 @@ void netPlayersHostSpecGone(s32 view)
 }
 
 /**
- * One command off the wire, the choices a menu made with it (protocol 15)
+ * (protocol 30) A command on the wire: packed to NETCMD_PACKED bytes (every
+ * field, the optional ones 0 when their flag is clear; viewtick as the
+ * command's own tick less it, which holds still while the render clock
+ * keeps its delay), the first of a CMD XOR'd against zeros and each after it
+ * against the one before (netdelta.c's zero-run RLE), as Quake 3 deltas a
+ * packet's usercmds: a held stick or button, an unmoved mouse, the same view
+ * delay cost nothing. The packet stands alone (no baseline to have acked)
  */
-static void netCmdRead(struct netbuf *b, struct netcmd *c)
+#define NETACK_NONE ((s16)-32768)
+
+// (protocol 30) CMDACK's body: the match's low byte, the host tick, the ack
+// as a distance from it (a client runs 1-2 ticks ahead; one further off than
+// a s16 says none, and the client resends its window), the depth
+static void netCmdAckWrite(struct netbuf *b, u32 ack, s32 depth)
 {
-	c->buttons = netBufReadU32(b);
-	c->sx = netBufReadS8(b);
-	c->sy = netBufReadS8(b);
-	c->rsx = netBufReadS8(b);
-	c->rsy = netBufReadS8(b);
-	c->mdx = netBufReadF32(b);
-	c->mdy = netBufReadF32(b);
-	c->flags = netBufReadU8(b);
-	c->viewtick = netBufReadU32(b);
-	c->viewfrac = netBufReadU8(b);
-	c->viewdelay = netBufReadU8(b);
-	c->equip[0] = c->equip[1] = 0;
-	c->device[0] = c->device[1] = 0;
+	const s32 rel = ack == 0xffffffff ? NETACK_NONE : (s32)(ack - g_NetTick);
 
-	if (c->flags & NETCMD_EQUIP) {
-		c->equip[0] = netBufReadU8(b);
-		c->equip[1] = netBufReadU8(b);
+	netBufWriteU8(b, (u8)netSessionMatchId());
+	netBufWriteU32(b, g_NetTick);
+	netBufWriteS16(b, (s16)(rel <= -32768 || rel > 32767 ? NETACK_NONE : rel));
+	netBufWriteU8(b, (u8)(depth > 255 ? 255 : depth));
+}
+
+/**
+ * (protocol 30) The host keeps every command it took, packed, by tick, per
+ * view: the base a client's next CMD names for its first command (the newest
+ * the host acked), so even that one goes as a delta
+ */
+static u8 s_HostBase[NET_MAXVIEWS][NETCMD_RING][NETCMD_PACKED];
+static u32 s_HostBaseTick[NET_MAXVIEWS][NETCMD_RING]; // tick + 1, 0 none
+static u32 s_HostBaseMatch[NET_MAXVIEWS][NETCMD_RING]; // ... of this match
+
+static void netCmdBaseKeep(s32 view, u32 tick, const u8 *packed)
+{
+	if (view >= 0 && view < NET_MAXVIEWS) {
+		memcpy(s_HostBase[view][tick % NETCMD_RING], packed, NETCMD_PACKED);
+		s_HostBaseTick[view][tick % NETCMD_RING] = tick + 1;
+		s_HostBaseMatch[view][tick % NETCMD_RING] = netSessionMatchId();
+	}
+}
+
+static const u8 *netCmdBaseFind(s32 view, u32 tick)
+{
+	if (view < 0 || view >= NET_MAXVIEWS || s_HostBaseTick[view][tick % NETCMD_RING] != tick + 1
+			|| s_HostBaseMatch[view][tick % NETCMD_RING] != netSessionMatchId()) {
+		return NULL;
 	}
 
-	if (c->flags & NETCMD_DEVICE) {
-		c->device[0] = netBufReadU8(b);
-		c->device[1] = netBufReadU8(b);
+	return s_HostBase[view][tick % NETCMD_RING];
+}
+
+/**
+ * One command off the wire, after prev (the packet's command before it, or
+ * for its first, the base the CMD named, or zeros): prev holds its packed
+ * bytes and takes this one's
+ */
+static void netCmdRead(struct netbuf *b, struct netcmd *c, u32 tick, u8 *prev, const u8 *firstbase, s32 first, s32 view)
+{
+	u8 cur[NETCMD_PACKED];
+
+	netDeltaRead(b, first ? firstbase : prev, cur, NETCMD_PACKED);
+	memcpy(prev, cur, NETCMD_PACKED);
+	netCmdUnpack(cur, tick, c);
+
+	if (netBufOk(b)) {
+		netCmdBaseKeep(view, tick, cur);
+	}
+}
+
+// CMD's base tick: the command the first is delta'd against (0xffffffff none)
+static const u8 *netCmdReadBase(struct netbuf *b, s32 view)
+{
+	const u32 basetick = netBufReadU32(b);
+	const u8 *base;
+
+	if (basetick == 0xffffffff) {
+		return NULL;
 	}
 
-	c->body[0] = c->body[1] = 0;
-	c->bodyflags = 0;
+	base = netCmdBaseFind(view, basetick);
 
-	if (c->flags & NETCMD_BODY) {
-		c->body[0] = netBufReadU16(b);
-		c->body[1] = netBufReadU16(b);
-		c->bodyflags = netBufReadU8(b);
+	if (!base) {
+		s_CmdNoBase++;
+		b->error = 1; // dropped: the commands come again in the next CMD
 	}
+
+	return base;
 }
 
 /**
@@ -1174,10 +1692,15 @@ void netPlayersHostSpecCmd(s32 view, struct netbuf *b)
 		b->error = 1;
 	}
 
-	for (i = 0; i < count && netBufOk(b); i++) {
-		struct netcmd c;
+	{
+		u8 prev[NETCMD_PACKED];
+		const u8 *base = netCmdReadBase(b, view);
 
-		netCmdRead(b, &c);
+		for (i = 0; i < count && netBufOk(b); i++) {
+			struct netcmd c;
+
+			netCmdRead(b, &c, first + (u32)i, prev, base, i == 0, view);
+		}
 	}
 
 	if (!netBufOk(b) || netBufRemaining(b) != 0 || !sq->live || matchid != netSessionMatchId() || !netInMatch()) {
@@ -1207,9 +1730,10 @@ static void netPlayersLogSlot(s32 slot, const char *why)
 {
 	const struct netpadq *q = &s_Pads[slot];
 
-	sysLogPrintf(LOG_NOTE, "net: slot %d commands %s: played %u (ticks 0..%d in order, %u out of order), folded %u, dry %u, lost %u, fire presses %u, mean depth %.2f",
+	sysLogPrintf(LOG_NOTE, "net: slot %d commands %s: played %u (ticks 0..%d in order, %u out of order), folded %u, dry %u, lost %u, fire presses %u, mean depth %.2f; the walk waited %u ticks, walked %u folded commands first",
 			slot, why, q->played, q->lastplayed, q->outoforder, q->folded, q->dry, q->lost, q->presses,
-			q->played + q->dry ? (f32)q->depthsum / (f32)(q->played + q->dry - q->folded) : 0.f);
+			q->played + q->dry ? (f32)q->depthsum / (f32)(q->played + q->dry - q->folded) : 0.f, q->waited, q->caughtup);
+	sysLogPrintf(LOG_NOTE, "net: commands host %s: CMDs dropped for a base not here %u (all views)", why, s_CmdNoBase);
 }
 
 /**
@@ -1247,9 +1771,9 @@ void netPlayersTraceSlot(FILE *f, s32 playernum)
 	}
 
 	q = &s_Pads[pad];
-	fprintf(f, "    commands: next tick %u, played %u, folded %u, dry %u, lost %u, out of order %u, buttons now %04x, mean depth %.2f\n",
+	fprintf(f, "    commands: next tick %u, played %u, folded %u, dry %u, lost %u, out of order %u, buttons now %04x, mean depth %.2f; the walk waited %u ticks, walked %u folded first\n",
 			q->next, q->played, q->folded, q->dry, q->lost, q->outoforder, q->cur.buttons,
-			q->played + q->dry > q->folded ? (f32)q->depthsum / (f32)(q->played + q->dry - q->folded) : 0.f);
+			q->played + q->dry > q->folded ? (f32)q->depthsum / (f32)(q->played + q->dry - q->folded) : 0.f, q->waited, q->caughtup);
 
 	if (!q->hascfg) {
 		fprintf(f, "    settings: none received yet (the host's own are used)\n");
@@ -1298,8 +1822,11 @@ void netPlayersHostOnCmd(s32 slot, struct netbuf *b)
 		b->error = 1;
 	}
 
+	u8 prev[NETCMD_PACKED];
+	const u8 *base = netCmdReadBase(b, slot);
+
 	for (i = 0; i < count && netBufOk(b); i++) {
-		netCmdRead(b, &cmds[i]);
+		netCmdRead(b, &cmds[i], first + (u32)i, prev, base, i == 0, slot);
 
 		// nothing from the wire is trusted: a mouse that is not a number,
 		// or a turn of more than a whole screen in one tick, is none
@@ -1394,6 +1921,12 @@ static void netFold(struct netcmd *into, const struct netcmd *c)
 		into->device[1] = c->device[1];
 	}
 
+	if (c->flags & NETCMD_ORDER) {
+		into->order[0] = c->order[0];
+		into->order[1] = c->order[1];
+		into->order[2] = c->order[2];
+	}
+
 	// the body: the later one's, and none if the later one has none
 	into->flags = (into->flags & ~NETCMD_BODY) | (c->flags & NETCMD_BODY);
 	into->body[0] = c->body[0];
@@ -1421,6 +1954,11 @@ static void netPlayersHostPlay(void)
 		}
 
 		prevbuttons = q->cur.buttons;
+		q->nowalk = 0;
+		q->numheld = 0;
+		q->numcatchup = 0;
+		q->catchupmdx = 0;
+		q->catchupmdy = 0;
 
 		// what never came is lost: only the ring can hold one, so past a
 		// ring of empty ticks the rest are skipped at once
@@ -1437,6 +1975,16 @@ static void netPlayersHostPlay(void)
 		q->lost += lost;
 		q->next += lost;
 
+		// what never came walks as a dry tick once walked, by the last
+		// command's sticks and no mouse: its ticks waited for it
+		// (netPlayersHostWalk)
+		if (lost > 0) {
+			q->numheld = lost < NET_CATCHUP_MAX ? (s32)lost : NET_CATCHUP_MAX;
+			q->held = q->cur;
+			q->held.mdx = 0;
+			q->held.mdy = 0;
+		}
+
 		if (netQHas(q, q->next)) {
 			q->cur = q->ring[q->next % NETCMD_RING];
 			q->ringtick[q->next % NETCMD_RING] = 0;
@@ -1452,21 +2000,60 @@ static void netPlayersHostPlay(void)
 			// behind: fold the next ones in while that loses no edge
 			depth = netQDepth(q);
 
-			while (depth > NET_DEPTH_FOLD
-					&& (q->ring[q->next % NETCMD_RING].buttons == q->cur.buttons || depth > NET_DEPTH_FOLDANY)) {
-				netFold(&q->cur, &q->ring[q->next % NETCMD_RING]);
-				q->ringtick[q->next % NETCMD_RING] = 0;
-				q->lastplayed = q->next;
-				q->next++;
-				q->played++;
-				q->folded++;
-				depth--;
+			{
+				// a run that presses and lets go of nothing - since the
+				// command before it, too - walks each folded command first
+				// as the client walked it (netPlayersHostWalk), the tick's
+				// own last by its own sticks and mouse: no move of the
+				// client's is lost to the fold, nor guessed at, and its
+				// prediction agrees. Anything else folds as it always has:
+				// a walked step that met a release would spend it there (a
+				// use tap counted out, `usedowntime`, and never jumped -
+				// netpredicttest relay's jump at a stall's end)
+				struct netcmd own = q->cur;
+				s32 walkeach = q->cur.buttons == prevbuttons;
+
+				while (depth > NET_DEPTH_FOLD
+						&& (q->ring[q->next % NETCMD_RING].buttons == q->cur.buttons || depth > NET_DEPTH_FOLDANY)) {
+					const struct netcmd *c = &q->ring[q->next % NETCMD_RING];
+
+					if (walkeach && c->buttons == own.buttons && q->numcatchup < NET_CATCHUP_MAX) {
+						q->catchup[q->numcatchup++] = own;
+						q->catchupmdx += own.mdx;
+						q->catchupmdy += own.mdy;
+					} else {
+						walkeach = 0;
+					}
+
+					own = *c;
+					netFold(&q->cur, c);
+					q->ringtick[q->next % NETCMD_RING] = 0;
+					q->lastplayed = q->next;
+					q->next++;
+					q->played++;
+					q->folded++;
+					depth--;
+				}
+
+				if (walkeach && q->numcatchup > 0) {
+					q->cur.mdx = own.mdx;
+					q->cur.mdy = own.mdy;
+				} else {
+					q->numcatchup = 0;
+				}
+
+				if (q->numcatchup == 0) {
+					q->catchupmdx = 0;
+					q->catchupmdy = 0;
+				}
 			}
 		} else {
-			// dry: hold what was held, no mouse, nothing new pressed
+			// dry: hold what was held, no mouse, nothing new pressed; and
+			// the walk waits for the command (netPlayersHostWalk)
 			q->cur.mdx = 0;
 			q->cur.mdy = 0;
 			q->dry++;
+			q->nowalk = 1;
 		}
 
 		q->depthsum += netQDepth(q);
@@ -1510,10 +2097,7 @@ static void netPlayersHostSendAcks(void)
 
 		netBufInitWrite(&b, s_CmdBuf, sizeof(s_CmdBuf));
 		netBufWriteU8(&b, NETMSG_CMDACK);
-		netBufWriteU32(&b, netSessionMatchId());
-		netBufWriteU32(&b, g_NetTick);
-		netBufWriteU32(&b, q->haveack ? q->ack : 0xffffffff);
-		netBufWriteU8(&b, (u8)(depth > 255 ? 255 : depth));
+		netCmdAckWrite(&b, q->haveack ? q->ack : 0xffffffff, depth);
 		netSessionSendSlot(slot, NET_CHAN_UNRELIABLE, s_CmdBuf, netBufLen(&b), 0);
 	}
 
@@ -1531,10 +2115,7 @@ static void netPlayersHostSendAcks(void)
 
 		netBufInitWrite(&b, s_CmdBuf, sizeof(s_CmdBuf));
 		netBufWriteU8(&b, NETMSG_CMDACK);
-		netBufWriteU32(&b, netSessionMatchId());
-		netBufWriteU32(&b, g_NetTick);
-		netBufWriteU32(&b, sq->have ? sq->newest : 0xffffffff);
-		netBufWriteU8(&b, (u8)(ahead < 0 ? 0 : ahead > 255 ? 255 : ahead));
+		netCmdAckWrite(&b, sq->have ? sq->newest : 0xffffffff, ahead < 0 ? 0 : ahead);
 		netSessionSendSlot(MAX_PLAYERS + slot, NET_CHAN_UNRELIABLE, s_CmdBuf, netBufLen(&b), 0);
 	}
 }
@@ -1557,6 +2138,7 @@ void netPlayersClientMatchStart(s32 pad)
 	s_HaveNewest = 0;
 	s_Newest = 0;
 	s_AckNext = 0;
+	s_HaveBase = 0;
 	s_DepthAvg = NET_DEPTH_TARGET;
 	s_Ppm = 0;
 	s_PpmMin = 0;
@@ -1569,6 +2151,8 @@ void netPlayersClientMatchStart(s32 pad)
 	s_MenuUp = 0;
 	s_EquipPending = 0;
 	s_DevicePending = 0;
+	s_OrderHead = 0;
+	s_OrderCount = 0;
 	memset(s_SentTick, 0, sizeof(s_SentTick));
 	memset(s_Pads, 0, sizeof(s_Pads));
 
@@ -1785,6 +2369,16 @@ static void netPlayersClientCapture(void)
 		s_EquipPending = 0;
 	}
 
+	// Team Control's orders, one a command (protocol 31)
+	memset(c->order, 0, sizeof(c->order));
+
+	if (s_OrderCount > 0) {
+		c->flags |= NETCMD_ORDER;
+		memcpy(c->order, s_Orders[s_OrderHead], sizeof(c->order));
+		s_OrderHead = (s_OrderHead + 1) % NET_ORDERQ;
+		s_OrderCount--;
+	}
+
 	if (s_DevicePending) {
 		c->flags |= NETCMD_DEVICE;
 		c->device[0] = s_Device[0];
@@ -1844,6 +2438,33 @@ u32 netPlayersClientNewest(void)
 	return s_HaveNewest ? s_Newest : 0;
 }
 
+// the measure the codec was picked by: Quake 3's field masks (2 bytes, then
+// each field that differs whole) against the XOR-delta's bytes
+static u64 s_CmdBytesDelta = 0, s_CmdBytesMask = 0, s_CmdCount = 0, s_CmdPktBytes = 0;
+
+static s32 netCmdMaskSize(const u8 *base, const u8 *cur)
+{
+	static const u8 fsz[15] = { 4, 1, 1, 1, 1, 4, 4, 1, 4, 1, 1, 2, 2, 4, 1 };
+	static const u8 zero[NETCMD_PACKED];
+	s32 n = 2;
+	s32 off = 0;
+	s32 k;
+
+	if (!base) {
+		base = zero;
+	}
+
+	for (k = 0; k < 15; k++) {
+		if (memcmp(base + off, cur + off, fsz[k]) != 0) {
+			n += fsz[k];
+		}
+
+		off += fsz[k];
+	}
+
+	return n;
+}
+
 static void netPlayersClientSend(void)
 {
 	struct netbuf b;
@@ -1874,52 +2495,58 @@ static void netPlayersClientSend(void)
 	netBufWriteU32(&b, first);
 	netBufWriteU8(&b, (u8)count);
 
-	for (t = first; t <= s_Newest; t++) {
-		const struct netcmd *c = &s_Sent[t % NETCMD_RING];
+	{
+		u8 prev[NETCMD_PACKED];
+		u8 cur[NETCMD_PACKED];
+		// (protocol 30) the first against the newest command the host
+		// acked, which it keeps; none while there is none in reach
+		// (a base that has not moved for half a second may be one the host
+		// never had - a tick it gave up on as lost: a keyframe then)
+		const s32 hasbase = s_HaveBase && s_BaseTick < first && s_Newest - s_BaseTick < NETCMD_RING - NET_MAXCMDSEND
+			&& g_NetTick - s_BaseSince < 30;
 
-		netBufWriteU32(&b, c->buttons);
-		netBufWriteS8(&b, c->sx);
-		netBufWriteS8(&b, c->sy);
-		netBufWriteS8(&b, c->rsx);
-		netBufWriteS8(&b, c->rsy);
-		netBufWriteF32(&b, c->mdx);
-		netBufWriteF32(&b, c->mdy);
-		netBufWriteU8(&b, c->flags);
-		netBufWriteU32(&b, c->viewtick);
-		netBufWriteU8(&b, c->viewfrac);
-		netBufWriteU8(&b, c->viewdelay);
+		netBufWriteU32(&b, hasbase ? s_BaseTick : 0xffffffff);
 
-		if (c->flags & NETCMD_EQUIP) {
-			netBufWriteU8(&b, c->equip[0]);
-			netBufWriteU8(&b, c->equip[1]);
+		if (hasbase) {
+			netCmdPack(&s_Sent[s_BaseTick % NETCMD_RING], s_BaseTick, prev);
 		}
 
-		if (c->flags & NETCMD_DEVICE) {
-			netBufWriteU8(&b, c->device[0]);
-			netBufWriteU8(&b, c->device[1]);
-		}
+		for (t = first; t <= s_Newest; t++) {
+			const s32 at = netBufLen(&b);
 
-		if (c->flags & NETCMD_BODY) {
-			netBufWriteU16(&b, c->body[0]);
-			netBufWriteU16(&b, c->body[1]);
-			netBufWriteU8(&b, c->bodyflags);
+			netCmdPack(&s_Sent[t % NETCMD_RING], t, cur);
+			netDeltaWrite(&b, cur, t == first && !hasbase ? NULL : prev, NETCMD_PACKED);
+			s_CmdBytesDelta += netBufLen(&b) - at;
+			s_CmdBytesMask += netCmdMaskSize(t == first && !hasbase ? NULL : prev, cur);
+			s_CmdCount++;
+			memcpy(prev, cur, NETCMD_PACKED);
 		}
 	}
 
 	if (netSessionSendServer(NET_CHAN_UNRELIABLE, s_CmdBuf, netBufLen(&b), 0) == 0) {
 		s_CmdsSent++;
+		s_CmdPktBytes += netBufLen(&b);
+	}
+
+	if (g_NetTick % 1800 == 0 && s_CmdCount) {
+		sysLogPrintf(LOG_NOTE, "net: commands codec so far (tick %u): %llu commands in %u packets, %llu bytes of packets; commands %.1f bytes each as deltas (field masks would be %.1f, whole 25)",
+				g_NetTick, (unsigned long long)s_CmdCount, s_CmdsSent, (unsigned long long)s_CmdPktBytes,
+				(f64)s_CmdBytesDelta / s_CmdCount, (f64)s_CmdBytesMask / s_CmdCount);
 	}
 }
 
 void netPlayersClientOnAck(struct netbuf *b)
 {
-	u32 matchid = netBufReadU32(b);
-	u32 hosttick = netBufReadU32(b);
-	u32 ack = netBufReadU32(b);
+	// (protocol 30) u8 the match id's low byte, u32 hosttick, s16 ack less
+	// hosttick (NETACK_NONE none), u8 depth: 9 bytes for 14, every tick
+	const u8 matchtag = netBufReadU8(b);
+	const u32 hosttick = netBufReadU32(b);
+	const s16 ackrel = netBufReadS16(b);
+	u32 ack = ackrel == NETACK_NONE ? 0xffffffff : hosttick + (u32)(s32)ackrel;
 	s32 depth = netBufReadU8(b);
 	s32 err;
 
-	if (!netBufOk(b) || netBufRemaining(b) != 0 || matchid != netSessionMatchId() || !netInMatch()) {
+	if (!netBufOk(b) || netBufRemaining(b) != 0 || matchtag != (u8)netSessionMatchId() || !netInMatch()) {
 		return;
 	}
 
@@ -1928,6 +2555,13 @@ void netPlayersClientOnAck(struct netbuf *b)
 
 	if (ack != 0xffffffff && ack + 1 > s_AckNext && ack <= s_Newest) {
 		s_AckNext = ack + 1;
+	}
+
+	// (protocol 30) the newest acked command, the base of the next CMD
+	if (ack != 0xffffffff && ack <= s_Newest && (!s_HaveBase || ack > s_BaseTick)) {
+		s_BaseTick = ack;
+		s_BaseSince = g_NetTick;
+		s_HaveBase = 1;
 	}
 
 	// time dilation: run fast while the host's queue is short, slow while
@@ -2084,12 +2718,13 @@ static void netPlayersTrace(void)
 
 		// (busy: the commands played for that pad so far that held any
 		// input; speed: the walk's forwards and sideways, the shot push)
-		sysLogPrintf(LOG_NOTE, "net: trace tick %u player %d pad %d%s pos %.1f %.1f %.1f theta %.2f verta %.2f weapon %d ammo %d dead %d busy %u speed %.2f %.2f push %.1f %.1f",
+		sysLogPrintf(LOG_NOTE, "net: trace tick %u player %d pad %d%s pos %.1f %.1f %.1f theta %.2f verta %.2f weapon %d ammo %d dead %d busy %u speed %.2f %.2f push %.1f %.1f devices %#x cloaked %d",
 				g_NetTick, i, pad, netPadIsRemote(pad) ? " (remote)" : netIsLocalSlot(i) ? " (local)" : "",
 				p->prop->pos.x, p->prop->pos.y, p->prop->pos.z, p->vv_theta, p->vv_verta,
 				p->gunctrl.weaponnum, p->hands[HAND_RIGHT].loadedammo[0], p->isdead,
 				pad >= 0 && pad < MAX_PLAYERS ? s_Pads[pad].busy : 0, p->speedforwards, p->speedsideways,
-				p->bondshotspeed.x, p->bondshotspeed.z);
+				p->bondshotspeed.x, p->bondshotspeed.z, p->devicesactive,
+				p->prop->chr ? (p->prop->chr->hidden & CHRHFLAG_CLOAKED) != 0 : -1);
 	}
 
 	if (g_NetMode == NETMODE_CLIENT) {
@@ -2104,16 +2739,119 @@ static void netPlayersTrace(void)
 	}
 }
 
+/**
+ * --net-test-order: Team Control's orders given at their ticks as the active
+ * menu gives them (amApply, amPickTargetMenuList): on this machine's own copy
+ * of the sim, and from a client to the host. --net-test-order-check: every
+ * sim's order in the log at that tick
+ */
+static void netPlayersTestOrders(void)
+{
+	s32 g;
+	s32 i;
+
+	if (g_NetDedicated || g_NetLocalSlot < 0 || g_NetLocalSlot >= PLAYERCOUNT() || !g_Vars.normmplayerisrunning) {
+		return;
+	}
+
+	for (g = 0; g < s_TestOrders; g++) {
+		const s32 prev = g_Vars.currentplayernum;
+		const s32 cmd = s_TestOrder[g][0];
+		const s32 target = s_TestOrder[g][2];
+		struct player *me;
+		s32 sim = -1;
+
+		if (g_NetTick != s_TestOrderTick[g]) {
+			continue;
+		}
+
+		setCurrentPlayerNum(g_NetLocalSlot);
+		me = g_Vars.currentplayer;
+
+		if (s_TestOrder[g][1] >= 0) {
+			struct chrdata *chr = netOrderWireToChr(NETORDER_SIM + s_TestOrder[g][1]);
+			sim = chr ? mpPlayerGetIndex(chr) : -1;
+		} else if (s_TestOrder[g][1] == -2 && me->numaibuddies > 0) {
+			sim = me->aibuddynums[0];
+		}
+
+		sysLogPrintf(LOG_NOTE, "net: --net-test-order: tick %u, player %d (%d sims on its team) orders %s %d to %s",
+				g_NetTick, g_NetLocalSlot, me->numaibuddies, sim >= 0 ? "sim" : "all sims", sim, netOrderName(cmd));
+
+		for (i = 0; i < me->numaibuddies; i++) {
+			struct chrdata *chr = g_MpAllChrPtrs[me->aibuddynums[i]];
+
+			if (sim >= 0 && me->aibuddynums[i] != sim) {
+				continue;
+			}
+
+			if (cmd == AIBOTCMD_ATTACK) {
+				if (target >= 0 && target < g_MpNumChrs && g_MpAllChrPtrs[target] && g_MpAllChrPtrs[target] != chr) {
+					botApplyAttack(chr, g_MpAllChrPtrs[target]->prop);
+				}
+			} else {
+				botcmdApply(chr, cmd);
+			}
+		}
+
+		// a sim off this player's team still goes, for the host to refuse
+		netPlayersClientOrder(sim >= 0 || s_TestOrder[g][1] == -2 ? sim : -1, cmd, cmd == AIBOTCMD_ATTACK ? target : -1);
+		setCurrentPlayerNum(prev);
+	}
+
+	if (s_TestOrderCheck && g_NetTick >= s_TestOrderCheck && (g_NetTick - s_TestOrderCheck) % 150 == 0) {
+		for (i = PLAYERCOUNT(); i < g_MpNumChrs; i++) {
+			struct chrdata *chr = g_MpAllChrPtrs[i];
+			s32 follow = -1;
+			s32 attack = -1;
+			f32 dist = -1;
+
+			if (!chr || !chr->aibot || !chr->aibot->config || !chr->prop) {
+				continue;
+			}
+
+			if (chr->aibot->command == AIBOTCMD_FOLLOW || chr->aibot->command == AIBOTCMD_PROTECT) {
+				struct prop *fp = g_Vars.props + chr->aibot->followprotectpropnum;
+
+				follow = fp->chr ? mpPlayerGetIndex(fp->chr) : -1;
+				dist = sqrtf((fp->pos.x - chr->prop->pos.x) * (fp->pos.x - chr->prop->pos.x)
+						+ (fp->pos.z - chr->prop->pos.z) * (fp->pos.z - chr->prop->pos.z));
+			} else if (chr->aibot->command == AIBOTCMD_ATTACK) {
+				struct prop *ap = g_Vars.props + chr->aibot->attackpropnum;
+
+				attack = ap->chr ? mpPlayerGetIndex(ap->chr) : -1;
+			}
+
+			sysLogPrintf(LOG_NOTE, "net: order check tick %u sim %d slot %d team %d command %d (%s) follows %d attacks %d dist %.0f myaction %d (following %d) action %d target %d",
+					g_NetTick, i, (s32)(chr->aibot->config - g_BotConfigsArray), g_MpAllChrConfigPtrs[i]->team,
+					chr->aibot->command, netOrderName(chr->aibot->command), follow, attack, dist,
+					chr->myaction, chr->aibot->followingplayernum, chr->actiontype, chr->target);
+		}
+	}
+}
+
 // After joyDebugJoy, at the head of the tick
 void netPlayersTickBegin(void)
 {
 	netPlayersRefreshLocalCfg();
+
+	if ((s_TestOrders || s_TestOrderCheck) && netPlaying()) {
+		netPlayersTestOrders();
+	}
+
+	// --net-test-aimat on a host: its own player turns to the target too
+	// (netlagcomptest's blastlocal, the host firing as the reference)
+	if (g_NetMode == NETMODE_SERVER && !g_NetDedicated && netPlaying() && s_AimAt >= 0 && s_ScriptLen) {
+		netPlayersTestAim();
+	}
 
 	if (g_NetMode == NETMODE_CLIENT && netPlaying()) {
 		netPlayersClientCapture();
 		netPlayersClientSend();
 		netSessionClientCfgTick();
 	}
+
+	netTestOwnOptionsTick();
 }
 
 // After the tick's lvRender, before g_NetTick moves on

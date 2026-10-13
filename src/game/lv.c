@@ -21,6 +21,7 @@
 #include "game/bondgun.h"
 #include "game/bondhead.h"
 #include "game/bondmove.h"
+#include "game/coop.h"
 #include "game/bondview.h"
 #include "game/bondwalk.h"
 #include "game/camdraw.h"
@@ -143,6 +144,7 @@
 #include "game/camera.h"
 #include "gbiex.h"
 #include "hdpreload.h"
+#include "killfeed.h"
 #endif
 
 extern s32 g_ExitFrame;
@@ -351,6 +353,9 @@ void lvReset(s32 stagenum)
 	g_Vars.totalkills = 0;
 	g_Vars.antiheadnum = -1;
 	g_Vars.antibodynum = -1;
+#ifndef PLATFORM_N64
+	coopAntiResetBodies();
+#endif
 	g_Vars.dontplaynrg = false;
 	g_Vars.in_cutscene = false;
 	g_Vars.autocutplaying = false;
@@ -419,8 +424,9 @@ void lvReset(s32 stagenum)
 #ifndef PLATFORM_N64
 		// a mission of Perfect Dark's starts its music from its intro's list
 		// (aiPlayDefaultTracks); GoldenEye starts a level's as the level
-		// starts, and its missions' lists have no such command
-		if (g_Vars.normmplayerisrunning || geMusicIsStage(stagenum)) {
+		// starts, and its missions' lists have no such command; nor has an
+		// arena a Randomizer run lands on (modRunStageStartsMusic())
+		if (g_Vars.normmplayerisrunning || geMusicIsStage(stagenum) || modRunStageStartsMusic(stagenum)) {
 #else
 		if (g_Vars.normmplayerisrunning) {
 #endif
@@ -1670,6 +1676,19 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				propsTestForPickup();
+#ifndef PLATFORM_N64
+				// GoldenEye's infinite ammo tops the ammunition up as its frame
+				// is drawn (lvRender()'s set_max_ammo_for_cur_player()), after
+				// the pickups: a reload's draw on the ammunition lets a crate or
+				// gun of that ammunition be picked up in that frame, which
+				// Perfect Dark's top-up in the gun's tick never left (F3
+				// 20261011-061056, Egyptian's golden bullets)
+				if (cheatIsActive(CHEAT_UNLIMITEDAMMO) && !cheatIsActive(CHEAT_UNLIMITEDAMMONORELOADS)
+						&& modloaderStageIsRemake(g_Vars.stagenum)
+						&& g_Vars.tickmode == TICKMODE_NORMAL && g_Vars.lvupdate240 > 0) {
+					bgunGiveMaxAmmo(false);
+				}
+#endif
 				NET_REMOTE_PASS_END();
 
 				gdl = bgRender(gdl);
@@ -2029,6 +2048,11 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				gdl = skyRenderOverexposure(gdl);
+#ifndef PLATFORM_N64
+				if (g_Vars.normmplayerisrunning) {
+					gdl = killfeedRender(gdl); // "Killer [Weapon] Victim" at the top right
+				}
+#endif
 				gdl = amRender(gdl);
 				mtx00016748(1);
 

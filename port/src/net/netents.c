@@ -101,6 +101,9 @@ static s32 s_LpHavePrev[NET_MAXVIEWS];
 static f32 *s_TelePrev = NULL;                // [maxids * 3]: a chr's position at its last capture
 static u8 *s_TeleCount = NULL;                  // [maxids]
 static u16 *s_TeleGen = NULL;                 // [maxids]
+static u8 *s_Deform = NULL;                   // [maxids] (protocol 29) host: NETDEFORM_* of the prop's object
+static u16 *s_DeformGen = NULL;               // [maxids] ... for this generation of the prop
+static u8 *s_DeformDestroyed = NULL;          // [maxids] ... and it was destroyed since (its regeneration makes it whole)
 static u32 s_OfferedSum[NET_MAXVIEWS];
 static u8 s_Pkt[NET_MAXUNRELIABLE];
 
@@ -114,6 +117,7 @@ static u32 s_NacksSent = 0;
 static u32 s_PresentUnmapped = 0; // in the newest snapshot: present, not mapped or unresolved
 static u32 s_NoneNacked = 0;      // present with no mapping and no descriptor: asked
 static u32 s_KeptOverGap = 0;     // mappings kept for ids back after a gap
+static u32 s_AutogunFiring = 0; // (protocol 31) autogun records captured firing (netpuppettest's laptop case)
 static u32 s_Misfits = 0;         // descriptors naming a local prop of the wrong kind
 static u32 s_DelistedNow = 0;     // host: setup objects out of the world at the last capture
 static u16 s_LastMapSeq = 0;
@@ -155,6 +159,9 @@ struct netlplocalsig {
 static struct netlplocalsig s_LpLocalSig;
 static s32 s_LpHaveSig = 0;
 static u32 s_LpAmmoSets = 0;
+static u32 s_LpDevLast = 0;     // (protocol 31) this machine's cloaks on, as the last block left them
+static u32 s_LpDevSwitched = 0; // ... the tick one was switched here since (the host's word waits for its command)
+static u32 s_LpDevSets = 0;     // ... the host's put over this machine's
 static u32 s_LpTicks = 0;      // ticks this machine's player was in the match
 static u32 s_LpGeGunTicks = 0; // ... with a GoldenEye gun in its hand
 // You Only Live Twice (GoldenEye's scenario): twice dead is out for good,
@@ -439,6 +446,9 @@ static void netEntsFreeAll(void)
 	free(s_TelePrev);
 	free(s_TeleCount);
 	free(s_TeleGen);
+	free(s_Deform);
+	free(s_DeformGen);
+	free(s_DeformDestroyed);
 	free(s_Desc);
 	free(s_DescValid);
 	s_Desc = NULL;
@@ -452,6 +462,9 @@ static void netEntsFreeAll(void)
 	s_TelePrev = NULL;
 	s_TeleCount = NULL;
 	s_TeleGen = NULL;
+	s_Deform = NULL;
+	s_DeformGen = NULL;
+	s_DeformDestroyed = NULL;
 	s_NumCmds = 0;
 	s_MaxIds = 0;
 }
@@ -531,8 +544,12 @@ void netEntsStageStart(void)
 	s_TelePrev = calloc(s_MaxIds * 3, sizeof(f32));
 	s_TeleCount = calloc(s_MaxIds, 1);
 	s_TeleGen = calloc(s_MaxIds, sizeof(u16));
+	s_Deform = calloc(s_MaxIds, 1);
+	s_DeformGen = calloc(s_MaxIds, sizeof(u16));
+	s_DeformDestroyed = calloc(s_MaxIds, 1);
 
-	if (!s_SetupCmdOfProp || !s_SetupGenOfProp || !s_Cap || !s_Ents || !s_TelePrev || !s_TeleCount || !s_TeleGen) {
+	if (!s_SetupCmdOfProp || !s_SetupGenOfProp || !s_Cap || !s_Ents || !s_TelePrev || !s_TeleCount || !s_TeleGen
+			|| !s_Deform || !s_DeformGen || !s_DeformDestroyed) {
 		sysLogPrintf(LOG_ERROR, "net: out of memory for the entity table");
 		netEntsFreeAll();
 		return;
@@ -569,6 +586,7 @@ void netEntsStageStart(void)
 	s_LpStableSince = 0;
 	s_LpHardAbs = s_LpDeaths = s_LpRespawnsDone = 0;
 	s_LpInvChanges = s_LpAmmoSets = s_LpEquips = 0;
+	s_LpDevLast = s_LpDevSwitched = s_LpDevSets = 0;
 	s_LpTicks = s_LpGeGunTicks = 0;
 	s_YoltOutTicks = s_YoltOutAlive = s_YoltLocalOut = 0;
 	memset(s_YoltOutSince, 0, sizeof(s_YoltOutSince));
@@ -739,6 +757,54 @@ static void netCaptureRot(f32 rot[3][3], f32 *q)
 	netQuatFromMatrix(m, q);
 }
 
+/**
+ * (protocol 29) Host: objDeform made on an object (E5's hook): counted on its
+ * prop, so its record carries the crumpling as state - a joiner and a
+ * client that comes into its scope later see it crumpled as well
+ */
+void netEntsHostNoteDeform(struct defaultobj *obj, s32 level)
+{
+	const s32 idx = obj && obj->prop ? netPropIndex(obj->prop) : -1;
+	u8 b;
+
+	if (g_NetMode != NETMODE_SERVER || !s_Deform || idx < 0 || idx >= s_MaxIds) {
+		return;
+	}
+
+	b = s_DeformGen[idx] == netPropGen(idx) ? s_Deform[idx] : 0;
+	level = level < 1 ? 1 : level > 15 ? 15 : level;
+	b = (u8)((NETDEFORM_COUNT(b) < 15 ? NETDEFORM_COUNT(b) + 1 : 15) | (level << 4));
+	s_Deform[idx] = b;
+	s_DeformGen[idx] = netPropGen(idx);
+	s_DeformDestroyed[idx] = (obj->hidden2 & OBJH2FLAG_DESTROYED) != 0;
+}
+
+// The crumpling the record carries: none once the object is whole again (a
+// match's destroyed prop regenerated: OBJH2FLAG_DESTROYED cleared, its own
+// vertices back). Not read from the vertices themselves: the vertex store
+// takes a crumpled copy back when it fills (vtxstoreAllocate's levels),
+// on each machine at its own time, and a count that fell and rose again
+// with it crumpled the client's copy over and over
+static u8 netCaptureDeform(struct prop *prop, struct defaultobj *obj)
+{
+	const s32 idx = netPropIndex(prop);
+
+	if (!s_Deform || idx < 0 || idx >= s_MaxIds || s_DeformGen[idx] != netPropGen(idx) || !s_Deform[idx]) {
+		return 0;
+	}
+
+	if (s_DeformDestroyed[idx] && (obj->hidden2 & OBJH2FLAG_DESTROYED) == 0) {
+		s_Deform[idx] = 0;
+		return 0;
+	}
+
+	if (obj->hidden2 & OBJH2FLAG_DESTROYED) {
+		s_DeformDestroyed[idx] = 1;
+	}
+
+	return s_Deform[idx];
+}
+
 static void netCaptureObj(struct netcap *c, struct prop *prop)
 {
 	struct defaultobj *obj = prop->obj;
@@ -756,6 +822,13 @@ static void netCaptureObj(struct netcap *c, struct prop *prop)
 		st->doormode = door->mode;
 		st->laserfade = door->laserfade;
 		st->flags = (prop->flags & PROPFLAG_ENABLED) ? 1 : 0;
+
+		// (protocol 29) a windowed door's pane shot out (doorDestroyGlass)
+		if (netWorldDoorGlassOut(door)) {
+			st->flags |= NETDOOR_GLASSGONE;
+		}
+
+		st->deform = netCaptureDeform(prop, obj);
 	} else if (c->desc.rec == NETREC_LIFT) {
 		struct liftobj *lift = (struct liftobj *)obj;
 
@@ -771,11 +844,31 @@ static void netCaptureObj(struct netcap *c, struct prop *prop)
 		if (obj->hidden & OBJHFLAG_PROJECTILE) flags |= NETOBJ_PROJECTILE;
 		if (obj->hidden & OBJHFLAG_EMBEDDED) flags |= NETOBJ_EMBEDDED;
 		if (obj->type == OBJTYPE_TANK && (obj->hidden & OBJHFLAG_MOUNTED)) flags |= NETOBJ_MOUNTED;
+		if (netWorldLensOut(obj)) flags |= NETOBJ_LENSGONE; // (protocol 29)
 
 		st->flags = flags;
 		netCaptureRot(obj->realrot, st->quat);
 		st->damage = obj->damage;
+		st->deform = netCaptureDeform(prop, obj);
 		st->extra[0] = netWeaponOf(prop) == 0xff ? 0 : netWeaponOf(prop);
+
+		// (protocol 31) an autogun (a thrown Laptop Gun's sentry, a
+		// mission's turret): its aim and whether it fires, which a client
+		// draws (autogunTickNetClient); the turn in 256ths of a turn, the
+		// elevation in half degrees
+		if (obj->type == OBJTYPE_AUTOGUN) {
+			const struct autogunobj *autogun = (const struct autogunobj *)obj;
+			f32 yaw = autogun->yrot;
+			s32 pitch = (s32)roundf(autogun->xrot * 360.f * 2.f / (f32)M_BADTAU);
+
+			while (yaw < 0) yaw += (f32)M_BADTAU;
+			while (yaw >= (f32)M_BADTAU) yaw -= (f32)M_BADTAU;
+
+			st->extra[0] = autogun->firing && (obj->flags & OBJFLAG_DEACTIVATED) == 0 ? NETAUTOGUN_FIRING : 0;
+			s_AutogunFiring += st->extra[0] != 0;
+			st->extra[1] = (u8)((s32)roundf(yaw * 256.f / (f32)M_BADTAU) & 0xff);
+			st->extra[2] = (u8)(s8)(pitch < -127 ? -127 : pitch > 127 ? 127 : pitch);
+		}
 
 		// (protocol 23) GoldenEye's tank: the turret against the hull in
 		// 256ths of a turn, the barrel's elevation in quarter degrees
@@ -1065,6 +1158,11 @@ static void netLpCapture(s32 slot, s32 pn, u8 *out)
 		s.blurdrug = (u16)(blur < 0 ? 0 : blur > 0xffff ? 0xffff : blur);
 	}
 
+	// (protocol 31) the cloaks: the RC-P120's is switched by the hand and
+	// switched off by the host alone when its magazine runs dry
+	s.devices = ((p->devicesactive & DEVICE_CLOAKRCP120) ? NETLPDEV_CLOAKRCP120 : 0)
+		| ((p->devicesactive & DEVICE_CLOAKDEVICE) ? NETLPDEV_CLOAKDEVICE : 0);
+
 	netPredictCaptureMove(p, &s.mv);
 	netPredictCaptureTank(pn, &s.tank);
 
@@ -1131,6 +1229,11 @@ static void netHostSendSnap(s32 slot)
 	struct netsnaphdr hdr;
 	const s32 pn = netPlayerOfSlot(slot);
 	struct prop *self = pn >= 0 ? g_Vars.players[pn]->prop : NULL;
+	// the client's own CamSpy is its own machine's (it flies it there as it
+	// flies here); the host's copy sent back came as a second body, a ghost
+	// a few ticks behind that its own bumped into and drifted off the
+	// host's path by (F3 20261012-022730)
+	struct prop *selfeyespy = pn >= 0 && g_Vars.players[pn]->eyespy ? g_Vars.players[pn]->eyespy->prop : NULL;
 	u32 *seen = pn >= 0 && pn < MAX_PLAYERS ? s_Seen[pn] : NULL;
 	u8 lp[NETLP_SIZE];
 	s32 n = 0;
@@ -1149,7 +1252,7 @@ static void netHostSendSnap(s32 slot)
 		s32 recent;
 		s32 near;
 
-		if (!c->valid || (self && &g_Vars.props[i] == self)) {
+		if (!c->valid || (self && &g_Vars.props[i] == self) || (selfeyespy && &g_Vars.props[i] == selfeyespy)) {
 			continue;
 		}
 
@@ -1204,7 +1307,14 @@ static void netHostSendSnap(s32 slot)
 		netLpCapture(slot, pn, lp);
 	}
 
-	len = netSnapHostBuild(h, &hdr, s_Ents, n, pn >= 0 && g_Vars.players[pn]->prop ? lp : NULL, netScenHostBlock(), netEventsHostSeq(slot), s_Pkt, sizeof(s_Pkt));
+	{
+		const u16 *markser = NULL;
+		const u8 *markrec = NULL;
+		const s32 nmarkslots = netWorldHostMarks(&markser, &markrec);
+
+		len = netSnapHostBuild(h, &hdr, s_Ents, n, pn >= 0 && g_Vars.players[pn]->prop ? lp : NULL, netScenHostBlock(), netEventsHostSeq(slot), netWorldHostBlock(),
+			markser, markrec, nmarkslots, s_Pkt, sizeof(s_Pkt));
+	}
 
 	if (len <= 0) {
 		return;
@@ -1224,10 +1334,10 @@ static void netHostLogSlot(s32 slot, const char *why)
 		return;
 	}
 
-	sysLogPrintf(LOG_NOTE, "net: snap slot %d %s (tick %u): %u sent, bytes mean %u min %u max %u, keyframes %u, entity keyframes %u, records %u, descriptors %u, deferred %u, excluded %u, acks %u, nacks %u, resets %u, rate %d Hz (%u changes), entities offered mean %u, first at tick %u, last left out at tick %u, deferred behind a newer one sent %u, setup objects out of the world %u",
+	sysLogPrintf(LOG_NOTE, "net: snap slot %d %s (tick %u): %u sent, bytes mean %u min %u max %u, keyframes %u, entity keyframes %u, records %u, descriptors %u, deferred %u, excluded %u, acks %u, nacks %u, resets %u, rate %d Hz (%u changes), entities offered mean %u, first at tick %u, last left out at tick %u, deferred behind a newer one sent %u, setup objects out of the world %u, autogun records firing %u",
 			slot, why, g_NetTick, h->sent, h->sent ? h->bytes / h->sent : 0, h->sent ? h->bytesmin : 0, h->bytesmax,
 			h->keyframes, h->entkeys, h->records, h->descs, h->deferred, h->excluded, h->acks, h->nacks, h->resets,
-			60 / (h->rate ? h->rate : 2), h->ratechanges, h->sent ? s_OfferedSum[slot] / h->sent : 0, h->firsttick, h->lastexcl, h->behind, s_DelistedNow);
+			60 / (h->rate ? h->rate : 2), h->ratechanges, h->sent ? s_OfferedSum[slot] / h->sent : 0, h->firsttick, h->lastexcl, h->behind, s_DelistedNow, s_AutogunFiring);
 }
 
 /**
@@ -1905,6 +2015,31 @@ void netEntsClientApplyLocal(void)
 	// Effect decides whether it is drawn
 	p->prop->chr->blurdrugamount = lp->blurdrug;
 
+	// (protocol 31) the cloaks on: the host's, once it has played the
+	// command that last switched one here (this machine's own switch shows
+	// at once; a block from before it would switch it back for a round
+	// trip). The host switches the RC-P120's off by itself when its
+	// magazine runs dry, and that was never heard of here: the client went
+	// on believing it on, and its next press turned it on at the host
+	// while switching it off here (the owner: "the rcp120 cloak is
+	// desynced for clients but not host")
+	{
+		const u32 mask = DEVICE_CLOAKRCP120 | DEVICE_CLOAKDEVICE;
+		const u32 host = ((lp->devices & NETLPDEV_CLOAKRCP120) ? DEVICE_CLOAKRCP120 : 0)
+			| ((lp->devices & NETLPDEV_CLOAKDEVICE) ? DEVICE_CLOAKDEVICE : 0);
+
+		if ((p->devicesactive & mask) != s_LpDevLast) {
+			s_LpDevSwitched = g_NetTick ? g_NetTick : 1;
+		}
+
+		if (!p->isdead && (u32)s_LpCmd >= s_LpDevSwitched && (p->devicesactive & mask) != host) {
+			p->devicesactive = (p->devicesactive & ~mask) | host;
+			s_LpDevSets++;
+		}
+
+		s_LpDevLast = p->devicesactive & mask;
+	}
+
 	// movement: the host's state after the command it played, squared with
 	// this machine's own run of the commands since (a respawn or teleport
 	// taken whatever this machine had)
@@ -2100,8 +2235,8 @@ static void netClientLog(const char *why)
 			why, g_NetTick, c->received, c->decoded, c->old, c->otherMatch, c->nobase, c->malformed, c->keyframes, c->entkeys,
 			c->received ? c->bytes / c->received : 0, s_Mapped, s_Unresolved, s_PresentUnmapped, s_StaleSeen, s_NacksSent, s_NoneNacked, s_KeptOverGap, s_Misfits, c->resyncs,
 			s_RespawnsSeen, s_TeleportsSeen, s_HostileFed, s_HostileRejected, s_HostileAccepted, s_HostileDropped);
-	sysLogPrintf(LOG_NOTE, "net: local block %s (tick %u): respawns or teleports taken %u; deaths %u, respawns %u, inventory changes %u, ammo sets %u, equips %u, revives %u, bad floats %u",
-			why, g_NetTick, s_LpHardAbs, s_LpDeaths, s_LpRespawnsDone, s_LpInvChanges, s_LpAmmoSets, s_LpEquips, s_LpRevives, s_LpBadFloats);
+	sysLogPrintf(LOG_NOTE, "net: local block %s (tick %u): respawns or teleports taken %u; deaths %u, respawns %u, inventory changes %u, ammo sets %u, equips %u, revives %u, bad floats %u, cloaks set %u",
+			why, g_NetTick, s_LpHardAbs, s_LpDeaths, s_LpRespawnsDone, s_LpInvChanges, s_LpAmmoSets, s_LpEquips, s_LpRevives, s_LpBadFloats, s_LpDevSets);
 	netPuppetsLog(why);
 	netSessionContentLog(why, s_LpTicks, s_LpGeGunTicks);
 
@@ -2194,6 +2329,14 @@ void netEntsClientOnSnap(const u8 *data, s32 len)
 
 		if (info && info->hasscen) {
 			netScenClientOnSnap(hdr.hosttick, info->scen, info->evseq);
+		}
+
+		if (info && info->hasmarks) {
+			netWorldClientMarkRecs(info->marks, info->nmarkslots, info->markslot, info->markrec, info->nmarkrecs);
+		}
+
+		if (info && info->hasworld) {
+			netWorldClientOnSnap(hdr.hosttick, info->world, info->hasmarks ? info->marks : NULL, info->nmarkslots);
 		}
 	}
 

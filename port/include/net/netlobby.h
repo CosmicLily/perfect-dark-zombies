@@ -23,7 +23,7 @@
 
 #define NETLOBBY_MAXROOMS    48
 #define NETLOBBY_MAXMEMBERS  16
-#define NETLOBBY_MAXCHAT     6
+#define NETLOBBY_MAXCHAT     24 // the Game Lobby's chat window holds this many (pdlobbyd keeps 50)
 #define NETLOBBY_MAXRULES    12
 #define NETLOBBY_MAXUSER     15
 #define NETLOBBY_MAXROOMNAME 32
@@ -80,6 +80,7 @@ struct netlobbymember {
 struct netlobbychat {
 	char user[NETLOBBY_MAXUSER + 1];
 	char text[NETLOBBY_MAXCHATTEXT + 1];
+	s32 system;        // the lobby's own line (pdlobbyd's notice, "Server"), not a player's
 };
 
 struct netlobbyrule {
@@ -133,6 +134,8 @@ s32 netLobbySignedIn(void);
 s32 netLobbyBusy(void);              // a sign-in, list, create or join in flight
 const char *netLobbyMessage(void);   // what the last of those said ("" if nothing)
 void netLobbyClearMessage(void);
+void netLobbySetMessage(const char *text);
+s32 netLobbySidesOk(void);           // a counter-op room: somebody on each side (team 0 agents, 1 counter-ops)
 
 void netLobbyRefresh(void);
 s32 netLobbyRoomMaxHumans(void); // the hosted room's size (0: none)
@@ -148,16 +151,26 @@ s32 netLobbyInRoom(void);
 const struct netlobbyroom *netLobbyGetRoom(void);
 s32 netLobbyIsHost(void);
 s32 netLobbyMyReady(void);
+s32 netLobbyMemberTeam(const char *user); // a member's team by account, -1 none or watching
 s32 netLobbyMyTeam(void);            // 0, 1, or -1 a spectator
 void netLobbySetReady(s32 ready);
 void netLobbyCycleTeam(void);        // team 1 -> team 2 -> spectator -> team 1
+void netLobbySetSpectator(s32 on);   // a room without teams: watch (a member only) or play
 void netLobbySetHostTeam(s32 team); // host: its own team (0-7) from the room's Teams page; sent once in the room
 s32 netLobbyHandicapOf(const char *user);           // the room's Handicaps page, by account: 0-255, 0x80 stock
 void netLobbyHandicapSet(const char *user, s32 handicap);
 void netLobbyHandicapsReset(void);
 u32 netLobbyHandicapsHash(void);
 void netLobbyChat(const char *text);
+
+// The main menu's chat (pdlobbyd API 4), on the Briefing Room: the page says
+// it is up every frame; lines oldest first
+void netLobbyMainChatWant(void);
+s32 netLobbyMainChatAvailable(void); // 1 yes, -1 the lobby has none, 0 not heard yet
+s32 netLobbyMainChatLines(struct netlobbychat *out, s32 max);
+void netLobbyMainChatSay(const char *text);
 void netLobbySendSettings(void);     // host: the Combat Simulator setup again
+void netLobbyPreviewRoom(struct netlobbyroom *out); // the room this machine's setup makes now (Create Room's preview)
 void netLobbyKick(const char *user);
 void netLobbyLaunch(s32 force);
 void netLobbyCancelLaunch(void);
@@ -171,9 +184,32 @@ void netLobbyRoomRulesCancel(void); // Create Room closed with no room: this mac
 s32 netLobbyLaunchState(void);       // 0 open, 1 counting down, 2 launched/connecting, 3 in the match, 4 the host went: a new one taking the match over
 s32 netLobbyLaunchEnded(void);       // a member: its session for this launch ended for good (refused, left)
 const char *netLobbyLaunchEndedText(void); // why
+s32 netLobbyCanRejoin(void);        // a member that left the running match (End Game): it may go back in
+void netLobbyRejoin(void);          // ... and does: the launch is connected to again (join in progress)
 s32 netLobbyCampaignState(void);     // a launched campaign room: 1 its host, 2 a member in with the host, 3 connecting; else 0
 s32 netLobbyJoinedWait(void);        // a launched room's member in with the host, no match here: 1 its match was over (in for the next), 2 waiting for it to start; else 0
 s32 netLobbyCountdownMs(void);       // the launch countdown left, -1 if none
+
+// Players online (pdlobbyd API 7, GET /players): who is signed in to the
+// lobby now and where, for the Briefing Room's Players Online page. The page
+// says it is up every frame; the lobby is asked at once and every 5 s while
+// it is
+#define NETLOBBY_MAXPLAYERS  100
+#define NETLOBBY_WHERE_MENU  0 // in no room: the Briefing Room
+#define NETLOBBY_WHERE_ROOM  1 // in a room's Game Lobby
+#define NETLOBBY_WHERE_MATCH 2 // in a launched room: its match
+
+struct netlobbyplayer {
+	char user[NETLOBBY_MAXUSER + 1];
+	char room[NETLOBBY_MAXROOMNAME + 1]; // the room's name ("" in none)
+	s32 where;                           // NETLOBBY_WHERE_*
+	s32 host;
+	s32 spectator;
+};
+
+void netLobbyPlayersWant(void);
+s32 netLobbyPlayersState(void); // 1 a list came, -1 the lobby has none (before API 7), 0 not heard yet
+s32 netLobbyPlayersGet(struct netlobbyplayer *out, s32 max, s32 *total, char *err, s32 errsize); // the last list, by name: how many; *total the lobby's count; err why the last ask failed ("" it did not)
 
 // The session's side (netsession.c): the room's roster for ticket check 5
 s32 netLobbyRosterHas(const char *user); // a non-host member, case-insensitive
@@ -184,5 +220,25 @@ void netLobbyHostLost(void);
 // Back from a match that came from a room (menutick.c, mainmenu.c)
 void netLobbyMenuAfterMatch(void);
 void netLobbyMenuFrame(void); // netlobbymenu.c: the Game Lobby back over Online Game after a match
+
+// The Game Lobby's windows (netlobbymenu.c), asked by menu.c of every dialog:
+// its buttons are a dialog held to the right of a widescreen display, the
+// room, its mods and its chat windows drawn around them
+struct menudialog;
+struct menudialogdef;
+s32 netLobbyMenuDialogAlign(struct menudialogdef *def);       // 0 the menu's centre, else the G_ASPECT_*_EXT side it is held to
+s32 netLobbyMenuDialogAlignOffset(struct menudialogdef *def); // how far right of its x that puts it, in menu units
+void netLobbyMenuPlaceDialog(struct menudialog *dialog);      // its dst rectangle, after dialogCalculatePosition's
+void *netLobbyMenuRenderPanels(void *gdl, struct menudialog *dialog); // after the dialog: the windows around it
+const char *netLobbyMenuStatusText(void); // its status line (the chat window's foot; netcooptest.sh reads it)
+s32 netLobbyMenuGetTextScale(void);       // the windows' text size, percent of the fonts' own (Net.LobbyTextScale)
+struct menuitem;
+s32 netLobbyMenuItemPct(struct menudialog *dialog, struct menuitem *item); // a dialog item's size, percent (menu.c); 100 for any other dialog
+void netLobbyMenuSetTextScale(s32 pct);
+// The Briefing Room's and the Game Lobby's chat scrolls (menu.c): with the
+// right stick, which then moves no cursor on that page, and with the wheel
+// over the chat (x, y the pointer as menu.c has it for the dialog; 1 taken)
+s32 netLobbyMenuChatScrolls(struct menudialogdef *def);
+s32 netLobbyMenuChatWheel(struct menudialog *dialog, s32 x, s32 y, s32 scroll);
 
 #endif

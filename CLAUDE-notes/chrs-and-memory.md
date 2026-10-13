@@ -350,13 +350,40 @@ The sliders (`BOTSTAT_*`, `mpbotconfig.stats[]`, tenths either side of stock so
 a zeroed config is stock; Edit Simulant > Stats...) are read through
 `botGetStatScale()`: speed in `botCalculateMaxSpeed()`, accuracy and reaction in
 `bot0f192a74()` and `botGetShootDelay()`, damage and toughness in `chrDamage()`'s
-normal-multiplayer branch. A DarkSim's aim error is already zero, so its
-accuracy slider only matters below 100%. At 500% speed a simulant covers 150
+normal-multiplayer branch. A DarkSim's aim error, settle time and shoot delay
+are all zero (PerfectSim's mostly), and a zero divided by the scale stays zero,
+so below 100% those two sliders did nothing for them (F3 20261010-232205):
+`botStatWorse()` grows a value under HardSim's from HardSim's instead,
+`value + hard * (1 / scale - 1)` - 50% of a DarkSim is HardSim's aim, 10% nine
+times its error and delay. Measured over a seeded 4-DarkSim match (two at 10%
+accuracy and reaction, 14400 frames): the pair's kills 8 before, 1 after. At 500% speed a simulant covers 150
 units a frame in a straight line and spends most of its time against walls -
 measured 2.6x the distance of a stock one, not 5x. They save in setup file
 version 3 (save-format.md). The probes were gdb scripts over the seeded perf
 match: `g_MpAllChrPtrs[i]` is **not** bot slot `i - 1` (the order is shuffled),
 go through `aibot->config - g_BotConfigsArray`.
+
+## Eighty simulants: the tallies hold, the team limit ended the match (F3 pass 38, 2026-10-12)
+
+A tester saw kills "given to the wrong players" in 80-simulant matches
+(20261012-105651). The bookkeeping is sound: `killcounts[]` is indexed by mpchr
+index (players 0-11, simulants 12-91, `func0f18d074()`/`MPCHR()`), every array
+on the path is `MAX_MPCHRS`, and a seeded 80-simulant Skedar match checked at
+its end against every death the game recorded (`--killfeed-log`: attacker and
+victim per death) matched for all 81 chrs - kills, deaths and each per-victim
+cell, 125 kills. What was wrong was the end: with teams off, Perfect Dark still
+checks every team number's summed score against the team limit (stock
+`mpApplyLimits()`/`lvTick()` do, teams or not), and once the eight team numbers
+are used every further simulant gets team 7 (`mpFindUnusedTeamNum()`; the `--mpsims` boot path leaves
+everyone on team 0). The default limit of 20 ended the match after 24 seconds
+with nobody past 2 kills. `mpApplyLimits()` now sets no team limit in a
+free-for-all with more than the cartridge's eight simulants, as GoldenEye mode
+already did (ge-bean.md); up to eight it is the cartridge's rule. The probe
+(gdb on the running game): `func0f18d074(i)` and `g_MpAllChrConfigPtrs[i]->
+killcounts[]` per player number `i`, then the `killfeed:` lines (flushed with
+`fflush(0)`) tallied the same way. An online room of more than four humans
+all on team 0 has the same sum (netplay.md's gates already set
+`--net-test-teamscorelimit 400` for it); that one is not changed.
 
 ## A head past the Combat Simulator's list: Perfect Heads the port never has (2026-09-22)
 

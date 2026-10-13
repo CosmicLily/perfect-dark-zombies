@@ -98,6 +98,9 @@ struct netpup {
 	u32 listtick;        // (protocol 24) the host tick of the record that last decided in or out of the world
 	u16 listgen;         // ... its generation
 	u8 listout;          // ... and what it said
+	u8 deform;           // (protocol 29) the record's NETDEFORM_* byte as applied here
+	u16 deformgen;       // ... for this host generation
+	u32 deformtick;      // ... from a record of this host tick
 };
 
 static struct netpup *s_Pup = NULL;
@@ -149,6 +152,8 @@ static u32 s_HeldFails = 0;  // held guns that could not be made (no model)
 static u32 s_BodyLoads = 0;  // corpses whose body and head no chr here wore (not made)
 static u32 s_BodyBuilt = 0;  // a mission's runtime chrs no chr here wore, built from the tables
 static u32 s_AlarmBuilt = 0; // a match's Guards Alerted! guards, their heads out of modalarm.c's table
+static u32 s_Laptops = 0;      // (protocol 31) thrown Laptop Guns made from the host's autogun descriptors
+static u32 s_AutogunShots = 0; // ... and autoguns' shots drawn here (flashes, sound, tracers)
 static u32 s_GeGunsMade = 0; // GoldenEye guns made from descriptors (dropped, thrown, a pickup)
 static u32 s_GoldenGuns = 0; // ... of them the Golden Gun (its scenario's one gun)
 static u32 s_GoldenHands = 0;  // the Golden Gun put in a puppet's hand
@@ -158,6 +163,15 @@ static u32 s_Deaths = 0;
 static u32 s_FirstRecords = 0;
 static u32 s_BadAnims = 0;
 static u32 s_Resyncs = 0;
+
+// (protocol 31) the tank this machine's player drives, as the host had it at
+// the render clock (its record, which its pose does not take: geTankTick puts
+// it under the driver here): a rider puppet is put on the tank as it is here
+// (geTankRideMapPuppet)
+static struct prop *s_DrivenTankProp = NULL;
+static f32 s_DrivenTankPose[4];
+static u32 s_DrivenTankSerial = 0;
+static u32 s_RidersMapped = 0;
 static f32 s_DelayLast = 0;
 
 static u32 s_TraceEvery = 0; // --net-puppet-trace N: every N ticks, each puppet's pose
@@ -274,6 +288,8 @@ void netPuppetsStageStart(void)
 	s_Poses = s_Interp = s_Extrap = s_Held = s_Behind = 0;
 	s_CreateFail = s_Freed = s_Stolen = s_NoDesc = s_HeldSwaps = s_HeldDrops = s_Snaps = 0;
 	s_DoorMoves = s_DoorSounds = s_DoorFalls = s_Regens = s_Unpaused = s_LetGo = s_TakenOut = s_PutBack = s_Trails = s_Deaths = s_FirstRecords = s_BadAnims = s_Resyncs = 0;
+	s_DrivenTankProp = NULL;
+	s_RidersMapped = 0;
 	s_PlayerDeaths = 0;
 	s_LiftMoves = s_HatsWorn = s_GeGunsHeld = s_BodyLoads = s_BodyBuilt = s_AlarmBuilt = s_GeGunsMade = s_GoldenGuns = s_HeldFails = 0;
 	s_GoldenHands = s_GoldenHolders = 0;
@@ -789,6 +805,26 @@ static void netPupChr(struct netpup *u, struct prop *prop, s32 kind, const struc
 		return;
 	}
 
+	// a player riding on the tank this machine's player drives: on the tank
+	// as it is here, not as the host had it a moment ago (getank.c)
+	if (isplayer && s_DrivenTankProp && s_Serial - s_DrivenTankSerial <= 1
+			&& geTankDriverOf(s_DrivenTankProp) >= 0 && netIsLocalSlot(geTankDriverOf(s_DrivenTankProp))) {
+		static struct netentstate onhull;
+
+		onhull = *s;
+
+		if (geTankRideMapPuppet(s_DrivenTankProp, s_DrivenTankPose, onhull.pos)) {
+			f32 yaw = onhull.yaw + (((struct tankobj *)s_DrivenTankProp->obj)->hullyaw - s_DrivenTankPose[3]);
+
+			while (yaw >= (f32)M_BADTAU) yaw -= (f32)M_BADTAU;
+			while (yaw < 0) yaw += (f32)M_BADTAU;
+
+			onhull.yaw = yaw;
+			s = &onhull;
+			s_RidersMapped++;
+		}
+	}
+
 	// an anim this build has not got is no anim: the last good one stands
 	if (s->animnum < 0 || s->animnum >= g_NumAnimations
 			|| ((s->animflags & NETANIM_HAS2) && (s->animnum2 <= 0 || s->animnum2 >= g_NumAnimations))) {
@@ -887,6 +923,26 @@ static void netPupChr(struct netpup *u, struct prop *prop, s32 kind, const struc
 	chr->ground = s->pos[1] + s->groundy;
 	chr->manground = chr->ground;
 	chr->sumground = chr->manground * (PAL ? 8.417509f : 9.999998f);
+
+	// another machine's player is never ticked here, so nothing moved its
+	// collision cylinder (playerUpdatePerimInfo) from where its last own
+	// tick left it: the co-op spawn spot every player starts stacked on. A
+	// guest launching its CamSpy from beside it was refused ("Not enough
+	// room to launch", F3 20261012-022730). The cylinder follows the pose,
+	// its height kept.
+	if (isplayer) {
+		const s32 pn = playermgrGetPlayerNumByProp(prop);
+
+		if (pn >= 0 && pn < PLAYERCOUNT() && pn != g_NetLocalSlot && g_Vars.players[pn]) {
+			struct player *player = g_Vars.players[pn];
+			const f32 height = player->periminfo.ymax - player->periminfo.ymin;
+
+			player->periminfo.x = prop->pos.x;
+			player->periminfo.z = prop->pos.z;
+			player->periminfo.ymin = chr->manground;
+			player->periminfo.ymax = chr->manground + (height > 0 ? height : 80);
+		}
+	}
 
 	// the anim (the frames load at the matrix build; speed at most 0.5 so a
 	// build with several players keeps the frac, and only its sign is read)
@@ -1083,6 +1139,13 @@ static s32 netRotSameOnWire(f32 m[3][3], const f32 *q)
 	return fabsf(dot) > 0.999999f;
 }
 
+// The record's place is this prop's own as the wire carries it (each
+// coordinate in eighths of a unit)
+static s32 netPupSamePlace(const struct prop *prop, const struct netentstate *s)
+{
+	return netPosWire(prop->pos.x) == s->pos[0] && netPosWire(prop->pos.y) == s->pos[1] && netPosWire(prop->pos.z) == s->pos[2];
+}
+
 static void netPupSeedRooms(struct prop *prop, s32 room)
 {
 	if (room > 0 && room < g_Vars.roomcount) {
@@ -1218,6 +1281,11 @@ static void netPupObj(struct netpup *u, struct prop *prop, const struct netentst
 		obj->damage = s->damage;
 	}
 
+	// (protocol 29) a camera's lens shot out on the host
+	if (obj->type == OBJTYPE_CCTV) {
+		netWorldClientLens(obj, (s->flags & NETOBJ_LENSGONE) != 0, u->havestate);
+	}
+
 	// GoldenEye's tank (protocol 23): one this machine's player drives is
 	// its own walk's, put under him every tick (geTankTick) and squared with
 	// the host's through the local-player block; posed from the record it
@@ -1229,6 +1297,18 @@ static void netPupObj(struct netpup *u, struct prop *prop, const struct netentst
 		struct tankobj *tank = (struct tankobj *)obj;
 
 		if (driver >= 0 && netIsLocalSlot(driver)) {
+			f32 m[3][3];
+			f32 yaw;
+
+			netQuatToRot(s->quat, 1.f, m);
+			yaw = atan2f(m[2][0], m[2][2]);
+			s_DrivenTankProp = prop;
+			s_DrivenTankPose[0] = s->pos[0];
+			s_DrivenTankPose[1] = s->pos[1];
+			s_DrivenTankPose[2] = s->pos[2];
+			s_DrivenTankPose[3] = yaw < 0 ? yaw + (f32)M_BADTAU : yaw;
+			s_DrivenTankSerial = s_Serial;
+
 			u->lastpos[0] = s->pos[0];
 			u->lastpos[1] = s->pos[1];
 			u->lastpos[2] = s->pos[2];
@@ -1253,9 +1333,29 @@ static void netPupObj(struct netpup *u, struct prop *prop, const struct netentst
 		}
 	}
 
+	// (protocol 31) an autogun - a thrown Laptop Gun's sentry, a mission's
+	// turret - aims and fires as the host's: the turn in 256ths, the
+	// elevation in half degrees, the firing bit (autogunTickNetClient)
+	if (obj->type == OBJTYPE_AUTOGUN) {
+		struct autogunobj *autogun = (struct autogunobj *)obj;
+
+		autogun->yrot = s->extra[1] * (f32)M_BADTAU / 256.f;
+		autogun->xrot = (s8)s->extra[2] * (f32)M_BADTAU / (360.f * 2.f);
+		autogun->firing = (s->extra[0] & NETAUTOGUN_FIRING) != 0;
+	}
+
 	if (moved || isdyn) {
 		if (isdyn) {
 			netPupPlaceObj(obj, s, obj->model->scale);
+		} else if (!letgo && netPupSamePlace(prop, s) && netRotSameOnWire(obj->realrot, s->quat)) {
+			// a setup object the host has neither moved nor turned keeps
+			// this machine's own place, from the same setup: the record's
+			// is that place to the wire's eighth of a unit, and put there
+			// the object's collision moved by up to a sixteenth - enough
+			// that a client's walk sliding along a table's edge (Bunker 1's
+			// armour table, F3 20261012-123411) stopped at its corner where
+			// the host's slid on, a correction every few ticks for as long
+			// as the player pushed along it
 		} else if (!letgo && netRotSameOnWire(obj->realrot, s->quat)) {
 			// a setup object the host has not turned: its own matrix,
 			// from the same setup, which a rotation cannot always carry
@@ -1353,6 +1453,12 @@ static void netPupDoor(struct netpup *u, struct prop *prop, const struct netents
 
 	door->mode = s->doormode;
 	door->laserfade = s->laserfade;
+
+	// (protocol 29) a windowed door's pane shot out on the host: as it
+	// broke when this machine had the door whole before, else as it stands
+	if (s->flags & NETDOOR_GLASSGONE) {
+		netWorldClientDoorGlass(door, u->havestate);
+	}
 
 	if (!u->havestate || frac != door->frac) {
 		door->frac = frac;
@@ -2022,8 +2128,23 @@ static struct prop *netPupDyn(struct netpup *u, u16 id, u16 gen, s32 kind, s32 r
 	case NETDESC_BODY:
 		prop = netPupMakeBody(d, s);
 		break;
+	case NETDESC_DYNOBJ:
+		// a thrown Laptop Gun (laptopDeploy on the host): an autogun from
+		// the moment it leaves the hand, flying and then standing as a
+		// sentry. Debris and the like are not made
+		if (d->objtype == OBJTYPE_AUTOGUN) {
+			struct autogunobj *laptop = laptopMakeNetClient(d->modelnum);
+
+			if (laptop && laptop->base.prop) {
+				prop = laptop->base.prop;
+				propActivate(prop);
+				propEnable(prop);
+				netPupPlaceObj(&laptop->base, s, laptop->base.model->scale);
+				s_Laptops++;
+			}
+		}
+		break;
 	default:
-		// DYNOBJ (debris and the like) is not made
 		break;
 	}
 
@@ -2141,6 +2262,11 @@ void netClientPosePuppets(void)
 
 	if (g_NetClientWorld && g_NetPass != NETPASS_PRESENT_ONLY) {
 		netEventsClientDrain(s_PoseRtValid, s_PoseRt);
+
+		// (protocol 29) the world block the render clock has reached
+		if (s_PoseRtValid) {
+			netWorldClientUpTo(s_PoseRt);
+		}
 	}
 }
 
@@ -2530,6 +2656,26 @@ static void netClientPosePuppetsRun(void)
 			break;
 		}
 
+		// (protocol 29) the host's crumpling of the object, as state
+		// (decided by the newest record at hand, never an older one: a render
+		// clock that steps back a tick posed the record from before a
+		// crumpling again, and the object was made whole and crumpled anew)
+		if ((rec == NETREC_OBJ || rec == NETREC_DOOR) && prop->obj) {
+			const u8 *nr = ra && netStoreTick(ra) > netStoreTick(rb) ? ra : rb;
+			const u32 nt = (u32)netStoreTick(nr);
+
+			if (u->deformgen != gen) {
+				u->deform = 0;
+				u->deformgen = gen;
+				u->deformtick = 0;
+			}
+
+			if (nt >= u->deformtick) {
+				u->deformtick = nt;
+				u->deform = netWorldClientDeform(prop->obj, nr[NETSNAP_STOREHDR + (rec == NETREC_OBJ ? 23 : 5)], u->deform);
+			}
+		}
+
 		netPupTrace(rt, id, kind, prop);
 	}
 
@@ -2581,11 +2727,9 @@ u32 netPuppetObjTick(struct prop *prop)
 	}
 
 	if (obj->type == OBJTYPE_AUTOGUN) {
-		struct autogunobj *autogun = (struct autogunobj *)obj;
-
-		if (autogun->beam) {
-			beamTick(autogun->beam);
-		}
+		// (protocol 31) aimed and firing as the host's record says
+		// (netPupObj): its flashes, sound and tracer drawn here
+		s_AutogunShots += autogunTickNetClient(prop);
 	} else if (obj->type == OBJTYPE_CHOPPER) {
 		struct chopperobj *chopper = (struct chopperobj *)obj;
 
@@ -2706,6 +2850,36 @@ s32 netClientPuppetPlayerTick(s32 playernum)
 	return 1;
 }
 
+/**
+ * Online counter-op (netcoop.c): a player whose counter-op went into another
+ * guard wears that guard's body here too - built again from
+ * playerChooseBodyAndHead() (the counter-op's guard, coop.c) the way the host's
+ * playerSpawnAnti() builds it, the same prop and still live.
+ */
+void netPupRebuildPlayerBody(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	struct player *player = playernum >= 0 && playernum < PLAYERCOUNT() ? g_Vars.players[playernum] : NULL;
+	s32 idx;
+
+	if (!player || !player->prop || !player->prop->chr || !player->prop->chr->model) {
+		return;
+	}
+
+	setCurrentPlayerNum(playernum);
+	idx = netPupLocalIndex(player->prop);
+	player->haschrbody = false;
+	player->model00d4 = NULL;
+	chrRemove(player->prop, false);
+	playerTickChrBody();
+
+	if (idx >= 0 && idx < s_LiveMax) {
+		s_LiveGen[idx] = netEntsPropGen(idx);
+	}
+
+	setCurrentPlayerNum(prevplayernum);
+}
+
 s32 netClientRenderPass(s32 order, s32 count, s32 *islast)
 {
 	s32 j;
@@ -2764,9 +2938,9 @@ s32 netClientInMatch(void)
 
 void netPuppetsLog(const char *why)
 {
-	sysLogPrintf(LOG_NOTE, "net: puppets %s (tick %u): poses %u (interpolated %u, extrapolated %u, held past 100 ms %u, before every snapshot %u), render delay %.1f ticks (jitter %.2f, clock resyncs %u); first records %u, teleport snaps %u, sim deaths %u; made: weapons %u, hats %u, crates %u, scenario props %u; make failed %u, no descriptor %u, freed %u, taken back by this machine %u; held-item swaps %u (setup objects dropped before their record %u), bad anims %u; doors moved %u, door sounds %u, fall-away doors placed %u, regens %u, unpaused %u, let go %u, taken out %u, put back %u, trails %u, player puppet deaths %u; content: bodies made %u (no wearer %u, built from the tables %u, Guards Alerted! guards %u), hats worn %u, GE guns held %u, GE guns made %u (Golden Gun %u, in a puppet's hand %u, holders in turn %u), held guns not made %u, lift moves %u; chr records older than the last posed %u, blended towards an older one %u, posed from other snapshots %u",
+	sysLogPrintf(LOG_NOTE, "net: puppets %s (tick %u): poses %u (interpolated %u, extrapolated %u, held past 100 ms %u, before every snapshot %u), render delay %.1f ticks (jitter %.2f, clock resyncs %u); first records %u, teleport snaps %u, sim deaths %u; made: weapons %u, hats %u, crates %u, scenario props %u; make failed %u, no descriptor %u, freed %u, taken back by this machine %u; held-item swaps %u (setup objects dropped before their record %u), bad anims %u; doors moved %u, door sounds %u, fall-away doors placed %u, regens %u, unpaused %u, let go %u, taken out %u, put back %u, trails %u, player puppet deaths %u; content: bodies made %u (no wearer %u, built from the tables %u, Guards Alerted! guards %u), hats worn %u, GE guns held %u, GE guns made %u (Golden Gun %u, in a puppet's hand %u, holders in turn %u), held guns not made %u, lift moves %u; chr records older than the last posed %u, blended towards an older one %u, posed from other snapshots %u; tank riders put on this machine's tank %u; thrown laptops made %u, autogun shots drawn %u",
 			why, g_NetTick, s_Poses, s_Interp, s_Extrap, s_Held, s_Behind, s_DelayLast, s_Jit, s_Resyncs,
 			s_FirstRecords, s_Snaps, s_Deaths, s_Created[NETDESC_DYNWEAPON], s_Created[NETDESC_HAT], s_Created[NETDESC_AMMOCRATE], s_Created[NETDESC_SCENOBJ],
 			s_CreateFail, s_NoDesc, s_Freed, s_Stolen, s_HeldSwaps, s_HeldDrops, s_BadAnims, s_DoorMoves, s_DoorSounds, s_DoorFalls, s_Regens, s_Unpaused, s_LetGo, s_TakenOut, s_PutBack, s_Trails, s_PlayerDeaths,
-			s_Created[NETDESC_BODY], s_BodyLoads, s_BodyBuilt, s_AlarmBuilt, s_HatsWorn, s_GeGunsHeld, s_GeGunsMade, s_GoldenGuns, s_GoldenHands, s_GoldenHolders, s_HeldFails, s_LiftMoves, s_Backsteps, s_StaleAfter, s_Restitched);
+			s_Created[NETDESC_BODY], s_BodyLoads, s_BodyBuilt, s_AlarmBuilt, s_HatsWorn, s_GeGunsHeld, s_GeGunsMade, s_GoldenGuns, s_GoldenHands, s_GoldenHolders, s_HeldFails, s_LiftMoves, s_Backsteps, s_StaleAfter, s_Restitched, s_RidersMapped, s_Laptops, s_AutogunShots);
 }

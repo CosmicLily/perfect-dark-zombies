@@ -403,6 +403,8 @@ want() {
 # the newest summaries' counters
 pupnum() { num "$(lastline "$OUT/$1-client.log" "net: puppets")" "$2"; }
 evnum() { lastline "$OUT/$1-client.log" "net: events client" | grep -o "$2 [0-9]*/[0-9]*" | head -1 | cut -d' ' -f2 | cut -d/ -f1; }
+# (protocol 29) the world block's line: glass, storms, gas (networld.c)
+worldnum() { num "$(lastline "$OUT/$1-client.log" "net: world client")" "$2"; }
 
 checkrefused() {
 	local name=$1 code=$2 pattern=$3
@@ -431,9 +433,15 @@ run() {
 		ge)     runcase ge "${GEMAPS}StartArmed=1\n" "$GEMAPS" "--net-test-map Complex --net-test-ge 0" "" "hats()|hatdrop()" ;;
 		# You Only Live Twice on Facility, and gas let go there (its fog has
 		# the second sky gas fades to); sim 0 and the client's player killed
-		# twice over (three tries, seven seconds apart, for the respawns)
+		# twice over (two tries for the second, seven seconds apart). The gas
+		# goes between the kills: the death takes ~420 ticks to let a START
+		# respawn it, so a kill seven seconds after the first had its attach
+		# stall the host just as that START came, and the dropped catch-up
+		# put the respawn past it ("respawns from START alone" at 1246, the
+		# second kill finding it dead, 1 run in 3 on 2026-10-12, the shipped
+		# build too). Fourteen seconds on, it is up.
 		geyolt) STEPGAP=7 SHOTNOW=1 runcase geyolt "${GEMAPS}StartArmed=1\n" "$GEMAPS" "--net-test-map Facility --net-test-ge 1 --net-test-timelimit 2" \
-				"--net-test-input $OUT/respawn.script" "kill()|kill()|gas()|kill()" ;;
+				"--net-test-input $OUT/respawn.script" "kill()|gas()|kill()|kill()" ;;
 		gegg)   runcase gegg "${GEMAPS}StartArmed=1\n" "$GEMAPS" "--net-test-map Archives --net-test-ge 4" "" ;;
 		# a GoldenEye stage's MUST key that differs: refused at the start, named
 		gelook) runcase gelook "${GEMAPS}XblaMeshes=1\nGeXblaCommunityEditionArt=1\nStartArmed=1\n" "${GEMAPS}XblaMeshes=0\nGeXblaCommunityEditionArt=0\n" \
@@ -531,7 +539,7 @@ for c in $CASES; do
 		[ "$(num "$yl" "out yet alive")" = 0 ] && pass "geyolt: no chr out of lives came back on the client ($(num "$yl" "out ticks") chr-ticks out)" \
 			|| fail "geyolt: chrs out of lives alive again on the client: ${yl:-no yolt line}"
 		grep "STAGE kill" "$OUT/run.log" | tail -3 | sed 's/^ *//; s/^/     /'
-		want geyolt "gas released on the client" "$(echo "$(lastline "$C" "net: events client")" | grep -o "gas released [0-9]*" | awk '{print $NF}')"
+		want geyolt "gas released on the client (the world block)" "$(worldnum geyolt "gas")"
 		;;
 	gegg)
 		checkplay gegg "map Archives from mod GoldenEye Arenas"
@@ -665,15 +673,15 @@ for c in $CASES; do
 		checkplay props "stage 0x47 of mod mod_allinone"
 		want props "Mod.Bodies corpses made on the client" "$(pupnum props "bodies made")"
 		want props "lift moves posed" "$(pupnum props "lift moves")"
-		want props "glass broken (events that acted)" "$(evnum props glass)"
-		want props "glass broken that the client never had in scope (by its setup command)" \
-			"$(lastline "$C" "net: events client" | grep -o "glass by setup command [0-9]*" | awk '{print $NF}')"
+		# (protocol 29) the world block, scope or none: the pane furthest away included
+		gf=$(worldnum props "glass broken as it broke"); gq=$(worldnum props "as it stood")
+		want props "glass broken from the world block" "$(( ${gf:-0} + ${gq:-0} ))"
 		want props "loose ammo crates made" "$(pupnum props crates)"
 		want props "explosions (rockets, grenades, mines)" "$(evnum props explosion)"
 		want props "projectile trails" "$(pupnum props trails)"
 		want props "thrown or dropped weapons made" "$(lastline "$C" "net: puppets" | grep -o "made: weapons [0-9]*" | awk '{print $NF}')"
 		want props "ammo crates picked up and back (regens)" "$(pupnum props regens)"
-		want props "N-bomb storms" "$(evnum props nbomb)"
+		want props "N-bomb storms (the world block)" "$(worldnum props "storms")"
 		ev=$(lastline "$C" "net: events client")
 		echo "     events: $(echo "$ev" | grep -o "unresolved by type.*")"
 		;;

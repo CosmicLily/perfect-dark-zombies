@@ -30,6 +30,7 @@
 #include "modloader.h"
 #include "system.h"
 #include "net/net.h"
+#include "net/netlobby.h"
 #include "texpack.h"
 #include "xblaimport.h"
 #include "xblamesh.h"
@@ -56,6 +57,7 @@
 #include "langpack.h"
 #include "simbrain.h"
 #include "audio.h"
+#include "killfeed.h"
 
 static s32 g_ExtMenuPlayer = 0;
 static struct menudialogdef *g_ExtNextDialog = NULL;
@@ -1748,6 +1750,19 @@ static MenuItemHandlerResult menuhandlerDisableMpDeathMusic(s32 operation, struc
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerMuteUnfocused(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return audioGetMuteUnfocused();
+	case MENUOP_SET:
+		audioSetMuteUnfocused(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 /**
  * Surround: the game's own Sound Mode picks it, these say what it comes out as
  * (port/src/audio.c). The two labels say what is playing now and what the
@@ -1848,6 +1863,14 @@ struct menuitem g_ExtendedAudioMenuItems[] = {
 		(uintptr_t)"Disable MP Death Music",
 		0,
 		menuhandlerDisableMpDeathMusic,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Mute When Unfocused",
+		0,
+		menuhandlerMuteUnfocused,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,
@@ -2744,16 +2767,17 @@ struct modpreset {
 	s32 glassseethrough;
 	s32 decalclip;
 	s32 sitinchairs;
+	s32 killfeed;
 };
 
 #define MODPRESET_CUSTOM 0
 
 static const struct modpreset g_ModPresets[] = {
-	//  name              jump  roll              melee  flinch  tilt            fwd    sway  bodies  time  drawn  cod    shake  tranq  clean  smooth  enhance        vivid          black          ghost            splits  xblacut  glareclip  quickswap  nofog  glass  decal  sit
-	{ "Custom",           0,    0,                0,     0,      0,              0,     0,    0,      0,    0,     0,     0,     0,     0,     0,      0,             0,             0,             0,               0,      0,       0,         0,         0,     0,     0,     0     },
-	{ "Vanilla",          0,    MODROLL_OFF,      false, false,  MODTILT_OFF,    false, true, 0,      0,    64,    false, false, true,  false, false,  MODENHANCE_OFF, MODVIVID_OFF,  MODBLACK_OFF,  MODGHOST_OFF,    true,   true,    false,     false,     false, 0,     true,  false },
-	{ "Dab's Settings",   1,    MODROLL_EVERYONE, true,  true,   MODTILT_NORMAL, false, true, 128,    0,    64,    false, false, true,  true,  true,   MODENHANCE_2X, MODVIVID_LIGHT, MODBLACK_LIGHT, MODGHOST_OFF,    true,   true,    true,      true,      false, 50,    true,  true  },
-	{ "Ghost Trials",     0,    MODROLL_OFF,      false, false,  MODTILT_OFF,    false, true, 0,      0,    64,    false, false, true,  false, false,  MODENHANCE_OFF, MODVIVID_OFF,  MODBLACK_OFF,  MODGHOST_RACE,   true,   true,    false,     false,     false, 0,     true,  false },
+	//  name              jump  roll              melee  flinch  tilt            fwd    sway  bodies  time  drawn  cod    shake  tranq  clean  smooth  enhance        vivid          black          ghost            splits  xblacut  glareclip  quickswap  nofog  glass  decal  sit    feed
+	{ "Custom",           0,    0,                0,     0,      0,              0,     0,    0,      0,    0,     0,     0,     0,     0,     0,      0,             0,             0,             0,               0,      0,       0,         0,         0,     0,     0,     0,     0              },
+	{ "Vanilla",          0,    MODROLL_OFF,      false, false,  MODTILT_OFF,    false, true, 0,      0,    64,    false, false, true,  false, false,  MODENHANCE_OFF, MODVIVID_OFF,  MODBLACK_OFF,  MODGHOST_OFF,    true,   true,    false,     false,     false, 0,     true,  false, KILLFEED_AUTO },
+	{ "Dab's Settings",   1,    MODROLL_EVERYONE, true,  true,   MODTILT_NORMAL, false, true, 128,    0,    64,    false, false, true,  true,  true,   MODENHANCE_2X, MODVIVID_LIGHT, MODBLACK_LIGHT, MODGHOST_OFF,    true,   true,    true,      true,      false, 50,    true,  true,  KILLFEED_ON   },
+	{ "Ghost Trials",     0,    MODROLL_OFF,      false, false,  MODTILT_OFF,    false, true, 0,      0,    64,    false, false, true,  false, false,  MODENHANCE_OFF, MODVIVID_OFF,  MODBLACK_OFF,  MODGHOST_RACE,   true,   true,    false,     false,     false, 0,     true,  false, KILLFEED_AUTO },
 };
 
 static void menuhandlerModPresetApply(const struct modpreset *preset)
@@ -2788,6 +2812,7 @@ static void menuhandlerModPresetApply(const struct modpreset *preset)
 	g_ModOptions.glassseethrough = preset->glassseethrough;
 	g_ModOptions.decalclip = preset->decalclip;
 	g_ModOptions.sitinchairs = preset->sitinchairs;
+	g_ModOptions.killfeed = preset->killfeed;
 
 	// The ways of playing, off in every preset.
 	g_ModOptions.spawnweapon = SPAWNWEAPON_OFF;
@@ -2831,6 +2856,7 @@ static bool menuhandlerModPresetMatches(const struct modpreset *preset)
 		&& g_ModOptions.glassseethrough == preset->glassseethrough
 		&& g_ModOptions.decalclip == preset->decalclip
 		&& g_ModOptions.sitinchairs == preset->sitinchairs
+		&& g_ModOptions.killfeed == preset->killfeed
 		&& g_ModOptions.spawnweapon == SPAWNWEAPON_OFF
 		&& g_ModOptions.guardsalerted == MODALARM_OFF
 		&& g_ModOptions.akimbo == MODAKIMBO_OFF
@@ -2927,6 +2953,8 @@ static void modEnhancementsCapture(struct modpreset *preset, s32 *extra)
 	preset->nofog = g_ModOptions.nofog;
 	preset->glassseethrough = g_ModOptions.glassseethrough;
 	preset->decalclip = g_ModOptions.decalclip;
+	preset->sitinchairs = g_ModOptions.sitinchairs;
+	preset->killfeed = g_ModOptions.killfeed;
 
 	extra[MODENHANCE_EXTRA_SPAWNWEAPON] = g_ModOptions.spawnweapon;
 	extra[MODENHANCE_EXTRA_GUARDSALERTED] = g_ModOptions.guardsalerted;
@@ -2987,6 +3015,16 @@ void modEnhancementsSetOn(s32 on)
 		}
 
 		g_ModEnhancementsSaved[0] = '\0';
+
+		// A note from before the kill feed (one field fewer, the last of
+		// the preset's): the feed's default where it goes, the rest moved up
+		if (version == MODENHANCE_SAVED_VERSION && count == (s32)ARRAYCOUNT(values) - 1) {
+			const s32 at = offsetof(struct modpreset, killfeed) / sizeof(s32) - offsetof(struct modpreset, jumpheight) / sizeof(s32);
+
+			memmove(&values[at + 1], &values[at], (count - at) * sizeof(values[0]));
+			values[at] = KILLFEED_AUTO;
+			count++;
+		}
 
 		// A note this build cannot read (a different field count) is dropped
 		// rather than half applied: the settings stay Vanilla.
@@ -3867,6 +3905,41 @@ static MenuItemHandlerResult menuhandlerModVividColours(s32 operation, struct me
 		break;
 	case MENUOP_GETSELECTEDINDEX:
 		data->dropdown.value = g_ModOptions.vividcolours;
+	}
+
+	return 0;
+}
+
+/**
+ * Kill Feed: "Killer [Weapon] Victim" at a match's top right (killfeed.c).
+ * Online Only is Mod.KillFeed's -1, the default: on in an online match, off
+ * in one played here, as every addition is off offline unless chosen.
+ */
+static MenuItemHandlerResult menuhandlerModKillFeed(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *opts[] = { "Off", "Online Only", "On" };
+	static const s32 values[] = { KILLFEED_OFF, KILLFEED_AUTO, KILLFEED_ON };
+	s32 i;
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		if (data->dropdown.value < ARRAYCOUNT(values)) {
+			g_ModOptions.killfeed = values[data->dropdown.value];
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = 1;
+
+		for (i = 0; i < (s32)ARRAYCOUNT(values); i++) {
+			if (g_ModOptions.killfeed == values[i]) {
+				data->dropdown.value = i;
+			}
+		}
 	}
 
 	return 0;
@@ -5510,6 +5583,14 @@ struct menuitem g_ExtendedDabsModDisplayMenuItems[] = {
 		(uintptr_t)"Clip Decals at Edges",
 		0,
 		menuhandlerModDecalClip,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Kill Feed",
+		0,
+		menuhandlerModKillFeed,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,
@@ -7669,6 +7750,24 @@ static MenuItemHandlerResult menuhandlerMaxExplosions(s32 operation, struct menu
 	return 0;
 }
 
+// The online pages' text, 50-100% of the fonts' own size (netlobbymenu.c)
+static MenuItemHandlerResult menuhandlerOnlineTextSize(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (netLobbyMenuGetTextScale() - 50) / 5;
+		break;
+	case MENUOP_SET:
+		netLobbyMenuSetTextScale(50 + data->slider.value * 5);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d%%", 50 + data->slider.value * 5);
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerReportOffer(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -7762,6 +7861,14 @@ struct menuitem g_ExtendedAdvancedMenuItems[] = {
 		(uintptr_t)"Explosion Limit",
 		90,
 		menuhandlerMaxExplosions,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Online Text Size",
+		10,
+		menuhandlerOnlineTextSize,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,
@@ -7956,8 +8063,11 @@ void optionsMenuInit()
  * match's start, pd.ini is written with the player's own all along (the
  * page's close too: configSave's swap), and leaving the room puts the own
  * back. The next room starts at stock again. A player's own
- * (NETKEY_PLAYER: COD aiming, the third person camera...) and the picture
- * stay in each player's own menu. Mission Respawn and Lives only for a co-op
+ * (NETKEY_PLAYER: COD aiming, Quick Weapon Swap...) and the picture stay in
+ * each player's own menu. Skip Death Screen and Third Person are the room's
+ * (pass 37): a death's timing and a view round corners are the match's; the
+ * third person camera's keys are Room Rules at their stock values (no rows:
+ * one camera for every seat). Mission Respawn and Lives only for a co-op
  * room, GoldenEye's only for a GoldenEye room, Simulant AI only for a match.
  */
 static s32 roomRulesCoop(void)
@@ -8005,6 +8115,22 @@ static MenuItemHandlerResult menuhandlerRoomGeRevision(s32 operation, struct men
 	return operation == MENUOP_CHECKHIDDEN ? !roomRulesGoldenEye() : menuhandlerGePlusRevisionFixes(operation, item, data);
 }
 
+// Third person in the room's matches (Mod.NetThirdPerson; stock off). Its
+// camera is the room's too: the Third Person camera keys are Room Rules at
+// their stock values (netrules.c), one camera for every seat
+static MenuItemHandlerResult menuhandlerRoomThirdPerson(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_ModNetThirdPerson;
+	case MENUOP_SET:
+		g_ModNetThirdPerson = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+
 static MenuDialogHandlerResult menudialogRoomRules(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
 {
 	if (operation == MENUOP_CLOSE) {
@@ -8023,6 +8149,8 @@ static struct menuitem g_NetRoomRulesMenuItems[] = {
 	ROOMRULE(MENUITEMTYPE_DROPDOWN, "Combat Roll", menuhandlerModRoll),
 	ROOMRULE(MENUITEMTYPE_CHECKBOX, "Melee Combos", menuhandlerModMelee),
 	ROOMRULE(MENUITEMTYPE_CHECKBOX, "Flinch When Shot", menuhandlerModFlinch),
+	ROOMRULE(MENUITEMTYPE_CHECKBOX, "Skip Death Screen", menuhandlerModSkipDeathScreen),
+	ROOMRULE(MENUITEMTYPE_CHECKBOX, "Third Person", menuhandlerRoomThirdPerson),
 	ROOMRULE(MENUITEMTYPE_DROPDOWN, "Simulant AI", menuhandlerRoomSimBrain),
 	ROOMRULE_SEPARATOR,
 	ROOMRULE(MENUITEMTYPE_DROPDOWN, "Start Armed", menuhandlerModStartArmed),

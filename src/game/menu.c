@@ -637,7 +637,31 @@ void menuGetItemBlocksRequired(struct menuitem *item, s32 *numwords)
 #define PORT_CJK_LIST_EXTRA 22
 #endif
 
+#ifndef PLATFORM_N64
+static void menuCalculateItemSizeOwn(struct menuitem *item, s16 *width, s16 *height, struct menudialog *dialog);
+
+/**
+ * An item's size, for a dialog that draws its items smaller than their fonts
+ * (the online pages' windows, netLobbyMenuItemPct()): its rows as tall as
+ * what is drawn in them, and the mouse's picking with them (dialogRender()
+ * draws each such item scaled from its corner, laid out at full size).
+ */
 void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struct menudialog *dialog)
+{
+	const s32 pct = netLobbyMenuItemPct(dialog, item);
+
+	menuCalculateItemSizeOwn(item, width, height, dialog);
+
+	if (pct != 100) {
+		*width = (*width * pct + 99) / 100;
+		*height = (*height * pct + 99) / 100;
+	}
+}
+
+static void menuCalculateItemSizeOwn(struct menuitem *item, s16 *width, s16 *height, struct menudialog *dialog)
+#else
+void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struct menudialog *dialog)
+#endif
 {
 	char *text;
 	s32 textwidth;
@@ -980,6 +1004,13 @@ void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struc
 		*width = 130;
 		*height = item->param3;
 		break;
+#ifndef PLATFORM_N64
+	case MENUITEMTYPE_TABS:
+		// a hidden row (MENUOP_CHECKHIDDEN, above) leaves the dialog as it was
+		*width = menuitemTabsWidth(item);
+		*height = LINEHEIGHT + 5;
+		break;
+#endif
 	default:
 		*width = 80;
 		*height = 12;
@@ -1322,6 +1353,7 @@ bool menuIsItemFocusable(struct menuitem *item, struct menudialog *dialog, s32 a
 	case MENUITEMTYPE_CONTROLLER:
 #ifndef PLATFORM_N64
 	case MENUITEMTYPE_COLORBOX:
+	case MENUITEMTYPE_TABS:
 #endif
 		return false;
 	case MENUITEMTYPE_10:
@@ -1507,8 +1539,19 @@ bool dialogChangeItemFocusWithMouse(struct menudialog *dialog, s32 mx, s32 my)
 
 	for (col = 0; col < dialog->numcols; col++, curx += colwidth) {
 		s32 colindex = dialog->colstart + col;
+		s32 pickwidth;
 		colwidth = menu->cols[colindex].width;
-		if (mx <= curx || mx >= curx + colwidth) {
+		pickwidth = colwidth;
+
+		// the last column as wide as its items are drawn, out to the
+		// dialog's side (dialogRender()): the online pages' windows are
+		// wider than their columns, and a row's right half - where its value
+		// is - did not take the pointer
+		if (col == dialog->numcols - 1 && curx + colwidth < dialog->x + dialog->width - 2) {
+			pickwidth = dialog->x + dialog->width - 2 - curx;
+		}
+
+		if (mx <= curx || mx >= curx + pickwidth) {
 			continue;
 		}
 
@@ -3187,7 +3230,13 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 	// Render the walls/floor/ceiling coming from the projection source.
 	// Each surface is rendered a second time with the colours swapped.
 	// The order is top, right, bottom, left.
-	if (g_MenuData.root != MENUROOT_MPSETUP && (g_MenuData.root != MENUROOT_MPPAUSE || g_Vars.normmplayerisrunning)) {
+	if (g_MenuData.root != MENUROOT_MPSETUP && (g_MenuData.root != MENUROOT_MPPAUSE || g_Vars.normmplayerisrunning)
+#ifndef PLATFORM_N64
+			// drawn later at the menu's centre: not to a dialog held to
+			// one side, whose x is in that side's space
+			&& !netLobbyMenuDialogAlign(dialog->definition)
+#endif
+			) {
 		var800a4634 = menugfxDrawPlane(var800a4634, bgx1, bgy1, bgx2, bgy1, colour4, colour5, MENUPLANE_00);
 		var800a4634 = menugfxDrawPlane(var800a4634, bgx2, bgy1, bgx2, bgy2, colour5, colour4, MENUPLANE_00);
 		var800a4634 = menugfxDrawPlane(var800a4634, bgx2, bgy2, bgx1, bgy2, colour4, colour5, MENUPLANE_00);
@@ -3418,6 +3467,9 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 			s32 focused;
 			s32 colindex;
 			s32 rowindex;
+#ifndef PLATFORM_N64
+			s32 itempct;
+#endif
 
 			sumwidth = 0;
 			curx = dialogleft;
@@ -3481,6 +3533,26 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 					if (context.height == 0) {
 						offscreen = true;
 					}
+
+#ifndef PLATFORM_N64
+					// An item drawn smaller than its font (the online pages,
+					// menuCalculateItemSize()): laid out in a box as much
+					// bigger as it is drawn smaller, and drawn - its text, its
+					// highlight and its shapes - scaled from its corner into
+					// its row
+					itempct = offscreen ? 100 : netLobbyMenuItemPct(dialog, item);
+
+					if (itempct != 100) {
+						context.width = context.width * 100 / itempct;
+						context.height = context.height * 100 / itempct;
+						gDPSetRectScaleEXT(gdl++, itempct / 100.0f, context.x, context.y);
+
+						// its text laid out past the 320 units is still
+						// drawn: scaled, it is inside the row (a right-hand
+						// value at a small text size, game_1531a0.c)
+						g_TextMaxX = 960;
+					}
+#endif
 
 					if (!offscreen) {
 						context.item = item;
@@ -3572,6 +3644,13 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 						}
 					}
 
+#ifndef PLATFORM_N64
+					if (itempct != 100) {
+						gDPSetRectScaleEXT(gdl++, 1.0f, 0, 0);
+						g_TextMaxX = 0;
+					}
+#endif
+
 					cury += menu->rows[rowindex].height;
 				}
 
@@ -3583,6 +3662,9 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 				gdl = textSetPrimColour(gdl, 0x00000000);
 
 				curx = dialogleft;
+#ifndef PLATFORM_N64
+				sumwidth = 0;
+#endif
 
 				for (i = 0; i < dialog->numcols; i++) {
 #if VERSION >= VERSION_NTSC_1_0
@@ -3590,7 +3672,24 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 #else
 					s32 cury = dialogtop + LINEHEIGHT + 1;
 #endif
+#ifndef PLATFORM_N64
+					// The last column as wide as its items were drawn, out
+					// to the dialog's side (the render loop above): a dropdown
+					// is put at its row's right by this width, and a dialog
+					// wider than its columns (the online pages' windows,
+					// netlobbymenu.c) had the list open mid-row, over the
+					// labels, away from the value it sets
+					s32 overlaywidth;
+#endif
 					colindex = dialog->colstart + i;
+#ifndef PLATFORM_N64
+					overlaywidth = menu->cols[colindex].width;
+					sumwidth += overlaywidth;
+
+					if (i == dialog->numcols - 1 && sumwidth < (dialogright - dialogleft) - 2) {
+						overlaywidth += (dialogright - dialogleft) - 2 - sumwidth;
+					}
+#endif
 
 					for (j = 0; j < menu->cols[colindex].numrows; j++) {
 						union menuitemdata *itemdata;
@@ -3604,7 +3703,53 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 							itemdata = (union menuitemdata *)&menu->blocks[menu->rows[rowindex].blockindex];
 						}
 
+#ifndef PLATFORM_N64
+						itempct = netLobbyMenuItemPct(dialog, item);
+
+						if (itempct != 100) {
+							// and the dialog's top and foot, which a dropdown's
+							// list keeps itself between, in the row's frame for it
+							const s32 savedy = dialog->y;
+							const s32 savedheight = dialog->height;
+							// and no lower than the screen in that frame: a
+							// list's scissor is held to the 220 units there
+							// (menuitemListRender()) and its glyphs to them
+							// (text0f15568c()) before the renderer scales it
+							// about the row, so a list laid out past them was
+							// cut off short of the dialog's foot, the options
+							// under the cut never shown and never scrolled to
+							// (F3 20261012-104020: the co-op Mission list)
+							const s32 bufh = viGetBufHeight();
+							s32 top = cury + (savedy - cury) * 100 / itempct;
+							s32 bottom = cury + (savedy + savedheight - cury) * 100 / itempct;
+
+							if (top < 0) {
+								top = 0;
+							}
+
+							// a list opened under the row ends 2 past it
+							if (bottom > bufh - 2) {
+								bottom = bufh - 2;
+							}
+
+							dialog->y = top;
+							dialog->height = bottom - top;
+
+							gDPSetRectScaleEXT(gdl++, itempct / 100.0f, curx, cury);
+							g_TextMaxX = 960;
+							gdl = menuitemOverlay(gdl, curx, cury, overlaywidth * 100 / itempct,
+									menu->rows[rowindex].height * 100 / itempct, item, dialog, itemdata);
+							g_TextMaxX = 0;
+							gDPSetRectScaleEXT(gdl++, 1.0f, 0, 0);
+
+							dialog->y = savedy;
+							dialog->height = savedheight;
+						} else {
+							gdl = menuitemOverlay(gdl, curx, cury, overlaywidth, menu->rows[rowindex].height, item, dialog, itemdata);
+						}
+#else
 						gdl = menuitemOverlay(gdl, curx, cury, menu->cols[colindex].width, menu->rows[rowindex].height, item, dialog, itemdata);
+#endif
 
 						cury += menu->rows[rowindex].height;
 					}
@@ -4013,6 +4158,12 @@ void dialogCalculatePosition(struct menudialog *dialog)
 	dialog->dstwidth = width;
 	dialog->dstheight = height;
 
+#ifndef PLATFORM_N64
+	// A dialog that places itself: the Game Lobby's buttons under its chat
+	// (netlobbymenu.c), in the space of the side of the screen it is held to
+	netLobbyMenuPlaceDialog(dialog);
+#endif
+
 	if (dialog->swipedir != 0) {
 		func0f0f7594(dialog->swipedir, &vdir, &hdir);
 
@@ -4134,6 +4285,22 @@ void menuSetBackground(s32 bg)
 
 	if (screenshot && g_MenuData.bg == 0) {
 		g_MenuData.screenshottimer = 1;
+
+#ifndef PLATFORM_N64
+		// The cone's first frame draws it over the level at once (layer 2
+		// of the next background, menuRender()), dialogs and all, and that
+		// presented frame is what schedConsiderScreenshot() copied: the
+		// Combat Simulator's root after a match (the online pages' too)
+		// had a still of the cone, and the Perfect Menu backed out to later
+		// blurred it - the tie-dye behind the Perfect Menu (F3
+		// 20261012-124052). Taken from this frame's level instead, under
+		// the menus (menugfxCaptureBlur()), as Mods: Camera's is; not while
+		// GoldenEye's front hides the level (that waits for a frame of it)
+		if (bg == MENUBG_CONEALPHA && IS8MB() && !gexFrontHidesLevel()) {
+			g_MenuData.screenshottimer = 0;
+			menugfxCreateBlurInList();
+		}
+#endif
 	}
 }
 
@@ -4254,11 +4421,36 @@ u32 g_MenuCThresh = 120;
 
 Gfx *menuRenderDialog(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool lightweight)
 {
+#ifndef PLATFORM_N64
+	const s32 side = netLobbyMenuDialogAlign(dialog->definition);
+#endif
+
 	mainOverrideVariable("cthresh", &g_MenuCThresh);
 
 	textSetWaveBlend(dialog->unk54, dialog->unk58, g_MenuCThresh);
 
+#ifndef PLATFORM_N64
+	// Held to one side of a widescreen display (the Game Lobby's buttons):
+	// dropping the other half of G_ASPECT_CENTER_EXT moves the dialog out
+	// to that edge at its own size. Set before dialogRender() sets its
+	// scissor, which fast3d turns into pixels with the alignment in force.
+	if (side) {
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+		gSPSetExtraGeometryModeEXT(gdl++, side | G_ASPECT_WIDE_EXT);
+	}
+#endif
+
 	gdl = dialogRender(gdl, dialog, menu, lightweight);
+
+#ifndef PLATFORM_N64
+	if (side) {
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_WIDE_EXT);
+		gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	}
+
+	// and the windows it draws around itself, in the dialog's blends
+	gdl = netLobbyMenuRenderPanels(gdl, dialog);
+#endif
 
 	textResetBlends();
 
@@ -4540,6 +4732,18 @@ void menuReset(void)
 
 	g_MenuData.unk5d4 = 0;
 	g_MenuData.unk5d5_05 = false;
+
+#ifndef PLATFORM_N64
+	// The dialogs go below, and a keyboard among them stops typing only as it
+	// closes itself: one up as the stage changed (the Game Lobby's Chat as
+	// the host launched, F3 20261012-021339) left the keys letters all the
+	// next match - no walking, the mouse alone still firing and looking
+	if (g_MenuKeyboardPlayer != -1) {
+		sysLogPrintf(LOG_NOTE, "menu: a keyboard was up for player %d as the menus were reset; typing stopped", g_MenuKeyboardPlayer);
+		g_MenuKeyboardPlayer = -1;
+		inputStopTextInput();
+	}
+#endif
 
 	for (i = 0; i < ARRAYCOUNT(g_Menus); i++) {
 		g_Menus[i].curdialog = NULL;
@@ -5198,6 +5402,16 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 				dstscroll = dialog->height - dialog->contentheight;
 			}
 
+#ifndef PLATFORM_N64
+			// a dialog placed taller than its rows (the online pages'
+			// windows, netlobbymenu.c): its rows from its top, where the
+			// clamp above put them at its foot (no stock dialog is taller
+			// than its rows)
+			if (dstscroll > 0 && netLobbyMenuDialogAlign(dialog->definition)) {
+				dstscroll = 0;
+			}
+#endif
+
 			dialog->dstscroll = dstscroll;
 		} else {
 			dialog->dstscroll = 0;
@@ -5220,6 +5434,12 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 		if (dialog->dstscroll < dialog->height - dialog->contentheight) {
 			dialog->dstscroll = dialog->height - dialog->contentheight;
 		}
+
+#ifndef PLATFORM_N64
+		if (dialog->dstscroll > 0 && netLobbyMenuDialogAlign(dialog->definition)) {
+			dialog->dstscroll = 0;
+		}
+#endif
 
 		dialog->scroll = dialog->dstscroll;
 	}
@@ -5325,6 +5545,9 @@ void menuProcessInput(void)
 	s32 stickintervalbase;
 	s32 ystickintervalmult;
 	s32 allowdiagonal;
+#ifndef PLATFORM_N64
+	s32 rstickfree;
+#endif
 
 	yhelddir = 0;
 	xhelddir = 0;
@@ -5334,6 +5557,12 @@ void menuProcessInput(void)
 
 	menu = &g_Menus[g_MpPlayerNum];
 	dialog = g_Menus[g_MpPlayerNum].curdialog;
+
+#ifndef PLATFORM_N64
+	// the online pages with a chat window scroll it with the right stick
+	// (netlobbymenu.c), which moves no cursor there
+	rstickfree = !(dialog && netLobbyMenuChatScrolls(dialog->definition));
+#endif
 
 	if (g_MenuData.root == MENUROOT_MPPAUSE) {
 		g_AmIndex = g_Vars.currentplayernum;
@@ -5370,6 +5599,17 @@ void menuProcessInput(void)
 			// aspect correct the X
 			const f32 cx = ((f32)inputs.mousex - (f32)(SCREEN_WIDTH_LO / 2)) * (videoGetAspect() / SCREEN_ASPECT);
 			inputs.mousex = (f32)(SCREEN_WIDTH_LO / 2) + cx;
+
+			// a dialog held to one side of a widescreen display is drawn
+			// that far from where its x says (menuRenderDialog())
+			if (dialog) {
+				inputs.mousex -= netLobbyMenuDialogAlignOffset(dialog->definition);
+			}
+
+			// the wheel over an online page's chat scrolls that, not the page
+			if (inputs.mousescroll && netLobbyMenuChatWheel(dialog, inputs.mousex, inputs.mousey, inputs.mousescroll)) {
+				inputs.mousescroll = 0;
+			}
 		}
 		if (dialog && inputs.mousemoved) {
 			g_MenuUsingMouse = true;
@@ -5482,7 +5722,7 @@ void menuProcessInput(void)
 			}
 
 #ifndef PLATFORM_N64
-			if ((stickx < 0 ? -stickx : stickx) < (thisrstickx < 0 ? -thisrstickx : thisrstickx)) {
+			if (rstickfree && (stickx < 0 ? -stickx : stickx) < (thisrstickx < 0 ? -thisrstickx : thisrstickx)) {
 				stickx = thisrstickx;
 			}
 #endif
@@ -5492,7 +5732,7 @@ void menuProcessInput(void)
 			}
 
 #ifndef PLATFORM_N64
-			if ((sticky < 0 ? -sticky : sticky) < (thisrsticky < 0 ? -thisrsticky : thisrsticky)) {
+			if (rstickfree && (sticky < 0 ? -sticky : sticky) < (thisrsticky < 0 ? -thisrsticky : thisrsticky)) {
 				sticky = thisrsticky;
 			}
 #endif
@@ -6541,7 +6781,7 @@ u32 menuChooseMusic(void)
 	}
 
 	if (g_MenuData.root == MENUROOT_MPENDSCREEN) {
-		if (g_Vars.coopplayernum >= 0) {
+		if (g_Vars.coopplayernum >= 0 && g_Vars.antiplayernum < 0) {
 			if (coopAllDead()
 					|| coopAnyAborted()
 					|| !objectiveIsAllComplete()) {
@@ -6552,7 +6792,7 @@ u32 menuChooseMusic(void)
 		}
 
 		if (g_Vars.antiplayernum >= 0) {
-			if (g_Vars.bond->isdead || g_Vars.bond->aborted || !objectiveIsAllComplete()) {
+			if (coopAgentsDead() || coopAgentsAborted() || !objectiveIsAllComplete()) {
 				return MUSIC_MISSION_FAILED;
 			}
 

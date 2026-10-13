@@ -88,22 +88,31 @@
 #           thief on the mainframe completes the download, and the host's
 #           Mission Respawn death leaves every list's Bond on the host's
 #           player and no list at its dead end (the exit stayed shut).
+#   tankride  GoldenEye's tank ridden on top (protocol 31): a client rides on
+#           the hull while the host drives with turns, then the host rides
+#           while the client drives; the rider stays where it stood on the
+#           hull on both machines (case_tankride below).
 #   pdguest  a third player's objectives on Defection: the co-op uplink given
 #           to it too, its necklace completing the objective (host and its own
 #           screen), the PC's list taking it as the one who used it.
+#   camspy  the CamSpy on Investigation (F3 20261012-022730): the host (Akimbo
+#           Triggers on, its radial key the left hand's menu) and a guest each
+#           pick it from the radial menu and fly it; out, viewed and moved on
+#           the host and on the guest's own machine, the guest's in one place
+#           on both (case_camspy below).
 #   (campleave also reads A's level frame in B's mission: a game that hosted
 #           before had run every match it joined paused, F3 20261010-053457.)
 #
 #   netcooptest.sh [BIN]   BIN a file name in build/ (pd.x86_64) or a path
 #
-# Env: OUT (build/netcoop-out), PORT (27600), CASES (pair twelve lobby ge campaign geend camproom death endjoin letgo nomodroom campleave gebunker pdguest),
+# Env: OUT (build/netcoop-out), PORT (27600), CASES (pair twelve lobby ge campaign geend camproom death endjoin letgo nomodroom campleave gebunker pdguest tankride gfrespawn camspy),
 # FRAMES (twelve's client frames, 2700), MODDIR (mod_allinone, the lobby case).
 # Exit status: 0 all good, 1 a check failed, 2 a run failed to start.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BUILD=${BUILD:-$ROOT/build}
 OUT=${OUT:-$BUILD/netcoop-out}; PORT=${PORT:-27600}
-CASES=${CASES:-pair twelve lobby ge campaign geend camproom death endjoin letgo nomodroom campleave gebunker pdguest}
+CASES=${CASES:-pair twelve lobby ge campaign geend camproom death endjoin letgo nomodroom campleave gebunker pdguest tankride gfrespawn camspy}
 FRAMES=${FRAMES:-2700}
 MODDIR=${MODDIR:-mod_allinone}
 BIN=${1:-pd.x86_64}
@@ -903,9 +912,9 @@ cat > "$OUT/nomodroom-status.py" <<'PY'
 import gdb
 st = int(gdb.parse_and_eval("netLobbyLaunchState()"))
 try:
-    line = gdb.parse_and_eval("textRoomStatus((struct menuitem *)0)").string()
+    line = gdb.parse_and_eval("netLobbyMenuStatusText()").string()
 except Exception as e:
-    line = "(textRoomStatus: %s)" % e
+    line = "(netLobbyMenuStatusText: %s)" % e
 print("STAGE nomodroom: launch state %d, status line: %s" % (st, " ".join(line.split())))
 PY
 
@@ -1035,7 +1044,7 @@ case_campleave() {
 		sleep 3
 		ap=$(gamepid campleave-a)
 		[ -n "$ap" ] && st=$(timeout 40 gdb -p "$ap" -batch -x "$OUT/campleave.gdb" -ex "call (void)netLobbyMenuPushRoom()" \
-			-ex 'python import gdb; print("STAGE campleave: A launch state %d, status line: %s" % (int(gdb.parse_and_eval("netLobbyLaunchState()")), " ".join(gdb.parse_and_eval("textRoomStatus((struct menuitem *)0)").string().split())))' \
+			-ex 'python import gdb; print("STAGE campleave: A launch state %d, status line: %s" % (int(gdb.parse_and_eval("netLobbyLaunchState()")), " ".join(gdb.parse_and_eval("netLobbyMenuStatusText()").string().split())))' \
 			2>/dev/null | grep "^STAGE")
 		echo "$st" | tee -a "$OUT/stage.log" | sed 's/^/     /'
 		# B's feed drawn over its end screen (a full-screen menu: lvRender's
@@ -1174,6 +1183,93 @@ case_gebunker() {
 	[ "$dl" != 0 ] && pass "$name: the co-op player's download completed (stage flags $fl)" || fail "$name: no download (stage flags ${fl:-unread})"
 }
 
+# ---------------------------------------------------------------- tankride
+# GoldenEye's tank ridden on top online (protocol 31, F3 20261011-065750):
+# Runway in co-op at 180 ms (--net-sim 0,90 both ways). --net-test-tankride
+# (getank.c) at host tick 1500 puts one player in the tank and the other on
+# the back of its hull, where it climbs on (a driven tank's collision is off:
+# geTankBoard names it by its hull). Mode 1 the host drives (straight, a left
+# turn, a right turn, straight) and a client rides; mode 2 the client's script
+# climbs in and drives the same way (C-up, C-left, C-right) and the host rides.
+# Every 30 ticks both log the rider against the tank as each has them: it
+# must stay on through the drive (to T+1050, before either game ends), where it stands on the hull within 40 units
+# of where it stood before the tank moved, on both machines (a client's own
+# rider by its prediction, compared on the hull: no corrections while it
+# rides; the host's rider as the driving client's puppet, put on the tank as
+# the client drives it), and the tank must have gone some way and turned.
+tankride_check() {
+	local name=$1 log=$2 who=$3
+	awk -v who="$who" '
+		/net: tankride (host|client) tick/ {
+			t = $0; sub(/.* tick /, "", t); t += 0
+			on = ($0 ~ / on, rel /)
+			r = $0; sub(/.*rel /, "", r); split(r, a, /[ ,]/); along = a[3] + 0
+			k = $0; sub(/.*tank /, "", k); split(k, b, /[ ,]/); x = b[1] + 0; z = b[2] + 0; y = b[4] + 0
+			if (t >= 90 && t <= 1050) {
+				n++
+				if (!on && who == "rider") off++
+				if (!have) { ref = along; have = 1; x0 = x; z0 = z }
+				d = along - ref; if (d < 0) d = -d; if (d > worst) worst = d
+				if (seen) { dx = x - px; dz = z - pz; dist += sqrt(dx * dx + dz * dz) }
+				if (!seen || y < ymin) ymin = y; if (!seen || y > ymax) ymax = y
+				px = x; pz = z; seen = 1
+			}
+		}
+		END { printf "%d %d %.1f %.0f %.2f\n", n, off, worst, dist, ymax - ymin }' "$log"
+}
+
+case_tankride() {
+	local mode
+	for mode in 1 2; do
+		local name=tankride$mode port=$((PORT + 13 + mode)) H=$OUT/tankride$mode-host.log C=$OUT/tankride$mode-client.log
+		echo "== $name"
+		if [ $mode = 1 ]; then
+			echo "1580 1610 0000 0 40 0 0 0 0" > "$OUT/tankride1.script"
+		else
+			printf '1560 1562 4000 0 0 0 0 0 0\n1700 1799 0008 0 0 0 0 0 0\n1800 1999 000a 0 0 0 0 0 0\n2000 2199 0009 0 0 0 0 0 0\n2200 2279 0008 0 0 0 0 0 0\n' > "$OUT/tankride2.script"
+		fi
+		game $name-host 300 '[Mod]\nMapMods=GoldenEye Arenas\n' --host "$port" --net-test-host 1 --rng-seed 7 \
+			--net-test-coop 2 --net-test-coop-game ge --net-sim 0,90 --net-test-tankride 1500,$mode --exit-frame 3400 &
+		local host=$!
+		waitfor "$H" "net: hosting on UDP port\|cannot be played online" 90 || { fail "$name: host did not start"; kill -TERM $host; wait $host; continue; }
+		if grep -q "cannot be played online" "$H"; then
+			echo "skip $name: GoldenEye is not converted here"; kill -TERM $host; wait $host; continue
+		fi
+		game $name-client 290 '[Mod]\nMapMods=\n' --connect "127.0.0.1:$port" --net-test-join --net-sim 0,90 \
+			--net-test-input "$OUT/tankride$mode.script" --net-test-tankride 1500,$mode --exit-frame 3300 &
+		local client=$!
+		wait "$client"; local cx=$?
+		[ "$cx" = 143 ] && cx=0
+		wait "$host"; local hx=$?
+		[ "$hx" = 143 ] && hx=0
+		crashed "$H" && fail "$name: the host crashed" || { [ "$hx" = 0 ] && pass "$name: host ran to the end" || fail "$name: host exit $hx"; }
+		crashed "$C" && fail "$name: the client crashed" || { [ "$cx" = 0 ] && pass "$name: client ran to the end" || fail "$name: client exit $cx"; }
+		grep -q "net: tankride: \(the host in the tank\|player 1 beside the tank\)" "$H" && pass "$name: $(grep -o 'tankride: [a-z].*' "$H" | head -1)" || { fail "$name: the host never staged the ride"; continue; }
+		local h c
+		h=$(tankride_check $name "$H" rider)
+		set -- $h
+		[ "$1" -ge 30 ] && [ "$2" = 0 ] && pass "$name: host: the rider on the hull at all $1 looks from tick 90" || fail "$name: host: the rider off the hull at $2 of $1 looks"
+		awk -v w="$3" 'BEGIN { exit !(w <= 40) }' && pass "$name: host: where it stands on the hull moved at most $3 units" || fail "$name: host: it moved $3 units on the hull"
+		awk -v d="$4" -v y="$5" 'BEGIN { exit !(d >= 1500 && y >= 1.0) }' && pass "$name: the tank went $4 units and turned through $5 radians" || fail "$name: the tank went $4 units, turned $5 radians"
+		c=$(tankride_check $name "$C" $([ $mode = 1 ] && echo rider || echo puppet))
+		set -- $c
+		[ "$1" -ge 30 ] && [ "$2" = 0 ] && pass "$name: client: the rider on the hull at all $1 looks" || fail "$name: client: the rider off the hull at $2 of $1 looks"
+		awk -v w="$3" 'BEGIN { exit !(w <= 40) }' && pass "$name: client: where the rider stands on the tank as drawn here moved at most $3 units" || fail "$name: client: the rider moved $3 units on the tank as drawn here"
+		if [ $mode = 1 ]; then
+			local c1 c2
+			c1=$(grep "net: prediction so far (tick 1800)" "$C" | grep -o "corrections [0-9]*" | awk '{print $2}')
+			c2=$(grep "net: prediction so far (tick 2700)\|net: prediction so far (tick 3000)" "$C" | head -1 | grep -o "corrections [0-9]*" | awk '{print $2}')
+			local rb; rb=$(lastline "$C" "net: prediction" | grep -o "tank rider blocks [0-9]*" | awk '{print $NF}')
+			[ -n "$c1" ] && [ -n "$c2" ] && [ $((c2 - c1)) -le 10 ] && [ "${rb:-0}" -ge 300 ] \
+				&& pass "$name: client: $((c2 - c1)) corrections while it rode (${rb} blocks compared on the hull)" \
+				|| fail "$name: client: corrections ${c1:-?} -> ${c2:-?} while it rode, ${rb:-0} blocks on the hull"
+		else
+			local rm; rm=$(lastline "$C" "net: puppets" | grep -o "tank riders put on this machine's tank [0-9]*" | awk '{print $NF}')
+			[ "${rm:-0}" -ge 300 ] && pass "$name: client: the host's rider put on the tank as driven here ${rm} times" || fail "$name: client: the rider puppet put on the tank ${rm:-0} times"
+		fi
+	done
+}
+
 # ---------------------------------------------------------------- pdguest
 # A third player's objectives on Perfect Dark's own Defection (Perfect Agent;
 # the owner, 2026-10-10: "only host can complete objectives online"). Past two
@@ -1244,6 +1340,179 @@ case_pdguest() {
 		|| fail "$name: $(grep -o "the PC's line.*" "$OUT/stage.log" | head -1)"
 }
 
+# ---------------------------------------------------------------- gfrespawn
+# A conversion's mission whose intro has GoldenEye's watch time (crash
+# 20261012-012711: a Goldfinger 64 co-op host, the guest's sixth death): the
+# new life's walk of the intro stepped over INTROCMD_WATCHTIME by one word,
+# fell out of step, ran past the list's end into the stage's memory beyond -
+# 400 KB and more, live allocations among it - and handed out "kit" from
+# there; an ammo type of 1.7 billion crashed the host. Goldfinger 64's Miami
+# (index 2: watch time 10:00, the list's last command) in co-op with Mission
+# Respawn; the client's player is killed on the host twice, and through gdb
+# each new life must give Miami's kit (the PP7, 94, and its two ammo
+# commands) and nothing else, and must never read the word after the list's
+# end (a read watchpoint there for the length of playerStartNewLife).
+cat > "$OUT/gfrespawn.py" <<'PY'
+import gdb
+def i(e): return int(gdb.parse_and_eval(e))
+def brk(t):
+    gdb.execute("break netScenHostTickEnd if g_NetTick >= %d" % t); gdb.execute("continue"); gdb.execute("delete")
+inf = gdb.selected_inferior()
+def word(a): return int.from_bytes(bytes(inf.read_memory(a, 4)), "little", signed=True)
+LEN = {0: 3, 1: 4, 2: 4, 3: 8, 4: 2, 5: 2, 6: 10, 7: 3, 8: 2, 9: 3, 10: 3, 11: 2}
+def listend():
+    a = i("(long)g_StageSetup.intro")
+    while word(a) != 12:
+        a += 4 * LEN.get(word(a), 1)
+    return a
+kit = []
+past = [0]
+readers = []
+inside = [False]
+watch = []
+class Past(gdb.Breakpoint):
+    def stop(self):
+        if inside[0]:
+            past[0] += 1
+            readers.append("%s@%x" % (gdb.newest_frame().name(), gdb.newest_frame().pc()))
+        return False
+class Kit(gdb.Breakpoint):
+    def stop(self):
+        if self.location == "playerStartNewLife":
+            if i("g_Vars.currentplayernum") == 1:
+                if not watch:
+                    watch.append(Past("*(int *)%d" % (listend() + 4), gdb.BP_WATCHPOINT, gdb.WP_READ, internal=True))
+                inside[0] = True
+                Done(gdb.newest_frame(), internal=True)
+        elif i("g_Vars.currentplayernum") == 1:
+            kit.append("%s(%s)" % (self.location, ",".join(str(i(a)) for a in self.args)))
+        return False
+class Done(gdb.FinishBreakpoint):
+    def stop(self):
+        inside[0] = False
+        return False
+for loc, args in (("playerStartNewLife", []), ("bgunSetAmmoQuantity", ["ammotype", "quantity"]),
+        ("invGiveSingleWeapon", ["weaponnum"]), ("invGiveDoubleWeapon", ["right", "left"])):
+    b = Kit(loc, internal=True); b.args = args
+for n, t in ((1, 900), (2, 2100)):
+    brk(t)
+    del kit[:]
+    del readers[:]
+    past[0] = 0
+    gdb.execute("call (void)setCurrentPlayerNum(1)")
+    gdb.execute("call (void)playerDie(1)")
+    gdb.execute("call (void)setCurrentPlayerNum(0)")
+    print("STAGE gfrespawn: the client's player killed at tick %d (dead %d)" % (i("g_NetTick"), i("g_Vars.players[1]->isdead")))
+    while i("g_Vars.players[1]->isdead") and t < 3400:
+        t += 10
+        brk(t)
+    print("STAGE gfrespawn: new life %d at tick %d (dead %d), kit %s, reads past the list's end %d %s" % (n, i("g_NetTick"), i("g_Vars.players[1]->isdead"), " ".join(kit), past[0], " ".join(readers)))
+PY
+
+case_gfrespawn() {
+	local name=gfrespawn port=$((PORT + 17)) H=$OUT/gfrespawn-host.log C=$OUT/gfrespawn-client.log
+	echo "== $name"
+	game gfrespawn-host 300 '[Mod]\nMapMods=GoldenEye Arenas;Goldfinger 64\nMissionRespawn=1\nMissionLives=0\n' --host "$port" --net-test-host 1 --rng-seed 7 \
+		--net-test-coop 2 --net-test-coop-game gf64 --exit-frame 3900 &
+	local host=$!
+	waitfor "$H" "net: hosting on UDP port\|cannot be played online" 90 || { fail "$name: host did not start"; kill -TERM $host; wait $host; return; }
+	if grep -q "cannot be played online" "$H"; then
+		echo "skip $name: Goldfinger 64 is not converted here"; kill -TERM $host; wait $host; return
+	fi
+	game gfrespawn-client 290 '[Mod]\nMapMods=\n' --connect "127.0.0.1:$port" --net-test-join --exit-frame 3700 &
+	local client=$!
+	waitfor "$C" "net: match 1: GO" 150 || echo "     no GO on the client"
+	local hp; hp=$(gamepid gfrespawn-host)
+	[ -n "$hp" ] && timeout 180 gdb -p "$hp" -batch -x "$OUT/gfrespawn.py" 2>/dev/null | grep "^STAGE" | tee -a "$OUT/stage.log" | sed 's/^/     host: /'
+	wait "$client"; local cx=$?
+	[ "$cx" = 143 ] && cx=0
+	wait "$host"; local hx=$?
+	[ "$hx" = 143 ] && hx=0
+	crashed "$H" && fail "$name: the host crashed" || { [ "$hx" = 0 ] && pass "$name: host ran to the end" || fail "$name: host exit $hx"; }
+	crashed "$C" && fail "$name: the client crashed" || { [ "$cx" = 0 ] && pass "$name: client ran to the end" || fail "$name: client exit $cx"; }
+	grep -q "net: co-op: starting Miami (Goldfinger 64, index 2" "$H" && pass "$name: the host started Miami" || fail "$name: the host did not start Miami"
+	local n line
+	for n in 1 2; do
+		line=$(grep -o "STAGE gfrespawn: new life $n .*" "$OUT/stage.log" | tail -1)
+		echo "$line" | grep -q "(dead 0), kit invGiveSingleWeapon(1) invGiveSingleWeapon(1) invGiveSingleWeapon(94) bgunSetAmmoQuantity(1,200) bgunSetAmmoQuantity(2,200) invGiveSingleWeapon(1), reads past the list's end 0 *$" \
+			&& pass "$name: death $n's new life took Miami's kit alone and stopped at the list's end" || fail "$name: death $n: ${line:-not read}"
+	done
+	grep -q "player: stage 0x[0-9a-f]*'s intro has" "$H" && fail "$name: $(grep -o "player: stage.*" "$H" | head -1)" || pass "$name: no intro command refused"
+}
+
+# ---------------------------------------------------------------- camspy
+# The CamSpy online (F3 20261012-022730, ElmoBear: "i cannot use my camspy rn
+# in an online mission"). dataDyne Investigation gives every player one. The
+# host plays with Akimbo Triggers on, as the reporter did: its radial key
+# opens the left hand's menu, which listed the CamSpy and did nothing with
+# it. Each player opens its radial menu with the script's D-pad down, holds
+# the stick at the CamSpy's slot (the bottom one) and lets go, then flies
+# it forward with the right stick: the host from tick 700, the client from
+# 1100. Checked through gdb: the host's CamSpy out and moved on the host;
+# the client's out, its view on it (camera mode 2) and moved on its own
+# machine (its launch from the co-op spawn spot had been refused there,
+# "Not enough room to launch": the host's player's collision cylinder never
+# left that spot on a client) and on the host; and the two machines' places
+# for the client's CamSpy agree (the host's copy sent back to the client had
+# been a second body its own bumped into and drifted off the host's path by).
+cat > "$OUT/camspy.py" <<'PY'
+import gdb
+def i(e): return int(gdb.parse_and_eval(e))
+def f(e): return float(gdb.parse_and_eval(e))
+gdb.execute("break netTickEnd if g_NetTick >= %d" % T)
+gdb.execute("continue")
+gdb.execute("delete")
+for pn in PNS:
+    p = "g_Vars.players[%d]" % pn
+    if not i("(long)%s->eyespy" % p):
+        print("STAGE camspy %s: player %d has no CamSpy" % (WHO, pn))
+        continue
+    print("STAGE camspy %s: player %d deployed %d active %d camera %d at %.0f %.0f body %.0f %.0f tick %d" % (WHO, pn,
+        i(p + "->eyespy->deployed"), i(p + "->eyespy->active"), i(p + "->cameramode"),
+        f(p + "->eyespy->prop->pos.x"), f(p + "->eyespy->prop->pos.z"), f(p + "->prop->pos.x"), f(p + "->prop->pos.z"), i("g_NetTick")))
+PY
+case_camspy() {
+	local name=camspy port=$((PORT + 14)) H=$OUT/camspy-host.log C=$OUT/camspy-client.log
+	echo "== $name"
+	# from to buttons sx sy rsx rsy mdx mdy: D-pad down, then the stick down with it, then the right stick forward
+	printf '700 719 0400 0 0 0 0 0 0\n720 760 0400 0 -80 0 0 0 0\n800 1000 0 0 0 0 80 0 0\n' > "$OUT/camspy-host.script"
+	printf '1100 1119 0400 0 0 0 0 0 0\n1120 1160 0400 0 -80 0 0 0 0\n1200 1400 0 0 0 0 80 0 0\n' > "$OUT/camspy-client.script"
+	game camspy-host 300 '[Mod]\nAkimboTriggers=1\n' --host "$port" --net-test-host 1 --rng-seed 7 --net-test-coop 1 --net-test-difficulty 0 \
+		--skip-cutscenes --net-test-invincible --net-test-input "$OUT/camspy-host.script" --exit-frame 2400 &
+	local host=$!
+	waitfor "$H" "net: hosting on UDP port" 90 || { fail "$name: host did not start"; kill -TERM $host; wait $host; return; }
+	game camspy-client 290 '[Mod]\n' --connect "127.0.0.1:$port" --net-test-join --net-test-input "$OUT/camspy-client.script" --exit-frame 2200 &
+	local client=$!
+	waitfor "$C" "net: match 1: GO" 150 || echo "     no GO on the client"
+	local hp cp; hp=$(gamepid camspy-host); cp=$(gamepid camspy-client)
+	[ -n "$hp" ] && timeout 60 gdb -p "$hp" -batch -ex "python T=1050; WHO='host'; PNS=[0]" -x "$OUT/camspy.py" 2>/dev/null | grep "^STAGE" | tee -a "$OUT/stage.log" | sed 's/^/     /'
+	# both after the client's flight, at once
+	[ -n "$cp" ] && timeout 60 gdb -p "$cp" -batch -ex "python T=1460; WHO='client'; PNS=[1]" -x "$OUT/camspy.py" 2>/dev/null | grep "^STAGE" > "$OUT/camspy-c.stage" &
+	local g=$!
+	[ -n "$hp" ] && timeout 60 gdb -p "$hp" -batch -ex "python T=1460; WHO='host'; PNS=[1]" -x "$OUT/camspy.py" 2>/dev/null | grep "^STAGE" | tee -a "$OUT/stage.log" | sed 's/^/     /'
+	wait $g; tee -a "$OUT/stage.log" < "$OUT/camspy-c.stage" | sed 's/^/     /'
+	wait $client; local cx=$?; [ "$cx" = 143 ] && cx=0
+	wait $host; local hx=$?; [ "$hx" = 143 ] && hx=0
+	crashed "$H" && fail "$name: the host crashed" || { [ "$hx" = 0 ] && pass "$name: host ran to the end" || fail "$name: host exit $hx"; }
+	crashed "$C" && fail "$name: the client crashed" || { [ "$cx" = 0 ] && pass "$name: client ran to the end" || fail "$name: client exit $cx"; }
+	local l0 l1h l1c
+	l0=$(grep "STAGE camspy host: player 0 " "$OUT/stage.log" | tail -1)
+	l1h=$(grep "STAGE camspy host: player 1 " "$OUT/stage.log" | tail -1)
+	l1c=$(grep "STAGE camspy client: player 1 " "$OUT/stage.log" | tail -1)
+	# out, active, the view on it, and flown 300 units or more from the body
+	flown() { echo "$1" | awk '{for (k = 1; k <= NF; k++) { if ($k == "at") { x = $(k+1); z = $(k+2) } if ($k == "body") { bx = $(k+1); bz = $(k+2) } }
+		exit !(/deployed 1 active 1 camera 2 / && (x-bx)*(x-bx) + (z-bz)*(z-bz) >= 300*300)}'; }
+	flown "$l0" && pass "$name: the host's CamSpy from its left hand's menu, flown: ${l0#*player 0 }" || fail "$name: the host's CamSpy: ${l0:-not read}"
+	flown "$l1c" && pass "$name: the client's CamSpy on its own machine: ${l1c#*player 1 }" || fail "$name: the client's CamSpy on its machine: ${l1c:-not read}"
+	flown "$l1h" && pass "$name: and on the host: ${l1h#*player 1 }" || fail "$name: the client's CamSpy on the host: ${l1h:-not read}"
+	local xh zh xc zc
+	xh=$(echo "$l1h" | grep -o ' at [-0-9]* [-0-9]*' | awk '{print $2}'); zh=$(echo "$l1h" | grep -o ' at [-0-9]* [-0-9]*' | awk '{print $3}')
+	xc=$(echo "$l1c" | grep -o ' at [-0-9]* [-0-9]*' | awk '{print $2}'); zc=$(echo "$l1c" | grep -o ' at [-0-9]* [-0-9]*' | awk '{print $3}')
+	awk -v a="${xh:-0}" -v b="${zh:-0}" -v c="${xc:-99999}" -v d="${zc:-99999}" 'BEGIN { exit !((a-c)*(a-c) + (b-d)*(b-d) <= 30*30) }' \
+		&& pass "$name: the client's CamSpy where the host has it ($xc $zc against $xh $zh)" \
+		|| fail "$name: the client's CamSpy at ${xc:-?} ${zc:-?}, the host's copy at ${xh:-?} ${zh:-?}"
+}
+
 {
 for c in $CASES; do
 	case $c in
@@ -1261,6 +1530,9 @@ for c in $CASES; do
 		campleave) case_campleave ;;
 		gebunker) case_gebunker ;;
 		pdguest) case_pdguest ;;
+		tankride) case_tankride ;;
+		gfrespawn) case_gfrespawn ;;
+		camspy) case_camspy ;;
 		*) fail "unknown case $c" ;;
 	esac
 done

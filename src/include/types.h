@@ -1453,6 +1453,9 @@ struct chrdata {
 	// The level time a converted mission's chr last had its target player
 	// chosen again past two co-op players (coopRetarget(), coop.c)
 	s32 coopretarget60;
+	// Online counter-op: a bit per agent whose view has the chr on screen
+	// (CHRHFLAG_ONBONDSSCREEN is any agent's: coopNoteChrOnScreen())
+	u16 coopagentseen;
 #endif
 };
 
@@ -3076,6 +3079,10 @@ struct player {
 	// The level frame a converted mission's list last had this player's body
 	// (playerTickThirdPerson()); -10 when none did. A gap is a new list.
 	s32 gelistbodyframe;
+	// GoldenEye's camera (ITEM_CAMERA) winds its own zoom in aim mode as the
+	// sniper rifle does (camera_zoom, gun.c): 20 degrees at a level's start,
+	// 7 to 60 (currentPlayerGetGunZoomFov())
+	f32 gecamerazoom;
 #endif
 };
 

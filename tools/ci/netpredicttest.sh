@@ -27,6 +27,16 @@
 #   lag     --net-sim 0,75 on both ends (150 ms round trip); screenshots of
 #           the client go to build/net-shots/predict-lag-*.png
 #   loss    --net-sim 2,75 on both ends (150 ms, 2% of datagrams lost)
+#   relay   a transatlantic relay (F3 20261012-123035: 219 ms, 94.4%):
+#           --net-sim 0,110,10,0,3000,300 on both ends, 220 ms round trip
+#           with a 300 ms stall about every 3 s each way, everything in it
+#           let through at its end. The host's walk of the client's player
+#           must wait out a stall and walk the commands that then come
+#           together each in turn (netPlayersHostWalk; the host's slot line
+#           counts both), and the prediction is gated as clean's: a dry tick
+#           had walked on by the last command (a step the client never
+#           took) and the burst after it folded into one tick (steps the
+#           client took that the host never did), a correction for each
 #   wine    the Windows build (build-win/pd.x86_64.exe) as the client under
 #           wine on the GPU's display (:0), the Linux host, 150 ms round trip
 #           (all of it held by the host's simulator: the Windows build's own
@@ -38,6 +48,13 @@
 #           for ticks it spent dead here come in)
 #   time    a 1-minute time limit: the host ends it at 3600 ticks (give or
 #           take a few) and the client's level clock agrees
+#   teamlimit  the time run with teams off, a team score limit of 3 and the
+#           client's seat given 4 kills at tick 600 (--net-test-givekills):
+#           online a team number with teams off is nothing a player chose (a
+#           lobby deals its members onto teams 0 and 1, a seat past the
+#           fourth is team 0), and Perfect Dark checks the team limit teams
+#           or not, so summed kills ended a free-for-all early. No team
+#           limit online with teams off: the clock ends it at 3600
 #   hands   the local-player block's guns under Akimbo (F3 20261010-034434),
 #           Ravine, 150 ms: the host hands the client's player GoldenEye's
 #           Golden Gun with a DY357 in its inventory, then the DY357 alone
@@ -52,6 +69,29 @@
 #           client must play the host's (RULES, protocol 28), and its
 #           inventory changes and ammo sets stay few (its own had the host's
 #           block put its guns and ammo back every half second all match)
+#   pitch   the clean run with the client's own Reverse Pitch the other way
+#           from the host's (--net-test-forward-pitch: host 1, client 0;
+#           F3 20261011-225920 + 20261012-021339): a client in a match has
+#           the host's player in its first player's config, and its
+#           mid-match SLOTCFG sent that player's options as its own, so the
+#           host played the client's seat by the host's pitch while the
+#           client predicted it by its own (the script's mouse looks up and
+#           down: corrections). The host must play slot 1 by the client's
+#           value and its own by its own, the client its seat by its own, no
+#           "settings changed mid-match" with nothing changed, and the
+#           prediction gated as clean's
+#   skipdeath  Skip Death Screen is the host's (the owner, pass 37: a
+#           desync with it set on one machine only): host 1, client 0; the
+#           host kills the client's seat at tick 600 (--net-test-kill) and the
+#           client presses START from 610. Both must play by the host's 1 and
+#           log the death and the respawn (--net-test-deathlog) within a few
+#           ticks of each other, the respawn soon after the death
+#   views   the host's room has no third person (Mod.NetThirdPerson=0, stock)
+#           and nobody has the free camera online: the client presses V's
+#           button at tick 300 and the Spectator key's at 500; at ticks 400
+#           and 700 (--net-test-viewlog) both machines have it in first
+#           person, no free camera. views3p: the host allows third person:
+#           the same V gives it (both machines), the Spectator key still not
 #
 #   netpredicttest.sh [BIN]   BIN a file name in build/ (pd.x86_64) or a path
 #
@@ -67,7 +107,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BUILD=${BUILD:-$ROOT/build}
 OUT=${OUT:-$BUILD/netpredict-out}; PORT=${PORT:-27300}
 MODDIR=${MODDIR:-mod_allinone}
-CASES=${CASES:-clean lag loss wine sims time hands cheats}
+CASES=${CASES:-clean lag relay loss wine sims time teamlimit hands cheats pitch skipdeath views views3p}
 MAXCPM=${MAXCPM:-10}
 FRAMES=${FRAMES:-3000}
 MINMATCH=${MINMATCH:-99}
@@ -216,6 +256,21 @@ run() {
 	wait "$host"; echo "$label: host exit $?"
 }
 
+# check_relay: the relay run's stalls made the host's walk of the client's
+# player wait for commands and walk folded ones first (netPlayersHostWalk)
+check_relay() {
+	local line w c
+	line=$(grep -o "net: slot 1 commands [a-z ]*:.*" "$OUT/relay-host.log" | tail -1)
+	w=$(echo "$line" | sed -n 's/.*the walk waited \([0-9]*\) ticks, walked \([0-9]*\) folded.*/\1/p')
+	c=$(echo "$line" | sed -n 's/.*the walk waited \([0-9]*\) ticks, walked \([0-9]*\) folded.*/\2/p')
+	echo "     relay: host: ${line#net: }"
+	if [ "${w:-0}" -gt 0 ] && [ "${c:-0}" -gt 0 ]; then
+		pass "relay: the stalls had the host's walk wait $w ticks and walk $c folded commands first"
+	else
+		fail "relay: the host's walk never waited or caught up (waited ${w:-?}, walked ${c:-?})"
+	fi
+}
+
 # measure LABEL: the client's prediction log and stats line
 measure() {
 	local label=$1
@@ -339,36 +394,37 @@ check_run() {
 	return 0
 }
 
-# time: a 1-minute limit, no --endless
+# time: a 1-minute limit, no --endless (run_time PORT [LABEL [HOSTARGS...]])
 run_time() {
-	local port=$1
-	game "time-host" 300 --moddir "$MODDIR" --host "$port" --net-test-host 1 --net-test-stage 0x32 \
-		--net-test-sims 2 --rng-seed 1 --net-test-timelimit 1 --net-test-scorelimit 100 --exit-frame 5000 &
+	local port=$1 label=${2:-time}
+	shift; [ $# -gt 0 ] && shift
+	game "$label-host" 300 --moddir "$MODDIR" --host "$port" --net-test-host 1 --net-test-stage 0x32 \
+		--net-test-sims 2 --rng-seed 1 --net-test-timelimit 1 --net-test-scorelimit 100 --exit-frame 5000 "$@" &
 	local host=$!
-	waitfor "$OUT/time-host.log" "net: hosting on UDP port" 60 || { echo "FAIL: time host did not start"; kill -TERM $host; exit 2; }
-	game "time-client" 290 --moddir "$MODDIR" --connect "127.0.0.1:$port" --net-test-join \
+	waitfor "$OUT/$label-host.log" "net: hosting on UDP port" 60 || { echo "FAIL: $label host did not start"; kill -TERM $host; exit 2; }
+	game "$label-client" 290 --moddir "$MODDIR" --connect "127.0.0.1:$port" --net-test-join \
 		--net-test-input "$OUT/client.script" --exit-frame 5000 &
 	local client=$!
-	waitfor "$OUT/time-host.log" "match 1 ended" 200
+	waitfor "$OUT/$label-host.log" "match 1 ended" 200
 	sleep 3
 	kill -TERM "$client" "$host" 2>/dev/null
 	wait "$client"; wait "$host"
 }
 
 check_time() {
-	local h c ht hl ct
-	h=$(grep -h "net: match clock at the end" "$OUT/time-host.log" | tail -1)
-	c=$(grep -h "net: match clock at the end" "$OUT/time-client.log" | tail -1)
+	local label=${1:-time} h c ht hl ct
+	h=$(grep -h "net: match clock at the end" "$OUT/$label-host.log" | tail -1)
+	c=$(grep -h "net: match clock at the end" "$OUT/$label-client.log" | tail -1)
 	echo "     host:   ${h#*net: }"
 	echo "     client: ${c#*net: }"
 	ht=$(echo "$h" | sed -n 's/.*tick \([0-9]*\),.*/\1/p')
 	hl=$(echo "$h" | sed -n 's/.*level time \([0-9]*\) .*/\1/p')
 	ct=$(echo "$c" | sed -n 's/.*level time \([0-9]*\) .*/\1/p')
-	[ -n "$ht" ] && [ "$ht" -ge 3590 ] && [ "$ht" -le 3610 ] && pass "time: the host ended the 1-minute match at tick $ht" \
-		|| fail "time: the host ended it at tick '${ht}', not 3600"
+	[ -n "$ht" ] && [ "$ht" -ge 3590 ] && [ "$ht" -le 3610 ] && pass "$label: the host ended the 1-minute match at tick $ht" \
+		|| fail "$label: the host ended it at tick '${ht}', not 3600"
 	[ -n "$hl" ] && [ -n "$ct" ] && [ $((hl - ct)) -le 30 ] && [ $((ct - hl)) -le 30 ] \
-		&& pass "time: the client's level clock ($ct) agrees with the host's ($hl) within half a second" \
-		|| fail "time: the client's level clock '$ct' against the host's '$hl'"
+		&& pass "$label: the client's level clock ($ct) agrees with the host's ($hl) within half a second" \
+		|| fail "$label: the client's level clock '$ct' against the host's '$hl'"
 }
 
 # hands / cheats: a host and a client, the client's local-player block
@@ -384,6 +440,56 @@ run_lp() {
 	wait "$client"
 	kill -TERM "$host" 2>/dev/null
 	wait "$host"
+}
+
+# rules runs: run_rules LABEL PORT HINI CINI SCRIPTLINES HARGS CARGS (the
+# client scripted by SCRIPTLINES, "from to buttons" a line)
+run_rules() {
+	local label=$1 port=$2 hini=$3 cini=$4 lines=$5 hargs=$6 cargs=$7
+	printf '%b' "$lines" | awk 'NF { print $1, $2, $3, 0, 0, 0, 0, 0, 0 }' > "$OUT/$label.script"
+	INI=$hini game "$label-host" 300 --moddir "$MODDIR" --host "$port" --net-test-host 1 --net-test-stage 0x32 --rng-seed 1 --endless \
+		--net-sim 0,38 --exit-frame 1600 $hargs &
+	local host=$!
+	waitfor "$OUT/$label-host.log" "net: hosting on UDP port" 60 || { echo "FAIL: $label host did not start"; kill -TERM $host; exit 2; }
+	INI=$cini game "$label-client" 290 --moddir "$MODDIR" --connect "127.0.0.1:$port" --net-test-join --net-sim 0,38 \
+		--net-test-input "$OUT/$label.script" --exit-frame 1200 $cargs &
+	local client=$!
+	wait "$client"
+	kill -TERM "$host" 2>/dev/null
+	wait "$host"
+}
+
+check_skipdeath() {
+	local H=$OUT/skipdeath-host.log C=$OUT/skipdeath-client.log hd hr cd cr
+	check_run skipdeath || return
+	grep -q "net: rules: Mod.SkipDeathScreen 0 -> 1 (the host's, for the match)" "$C" \
+		&& pass "skipdeath: the client plays the host's Skip Death Screen (1), not its own (0)" || fail "skipdeath: the client never took the host's Skip Death Screen"
+	hd=$(sed -n 's/.*deathlog: slot 1 died at tick \([0-9]*\) (Skip Death Screen in force 1).*/\1/p' "$H" | head -1)
+	hr=$(sed -n 's/.*deathlog: slot 1 respawned at tick \([0-9]*\) (Skip Death Screen in force 1).*/\1/p' "$H" | head -1)
+	cd=$(sed -n 's/.*deathlog: slot 1 died at tick \([0-9]*\) (Skip Death Screen in force 1).*/\1/p' "$C" | head -1)
+	cr=$(sed -n 's/.*deathlog: slot 1 respawned at tick \([0-9]*\) (Skip Death Screen in force 1).*/\1/p' "$C" | head -1)
+	echo "     host: died $hd respawned $hr; client: died $cd respawned $cr"
+	if [ -n "$hd" ] && [ -n "$hr" ] && [ -n "$cd" ] && [ -n "$cr" ] && [ $((hr - hd)) -le 60 ] \
+			&& [ $((cr - hr)) -le 20 ] && [ $((hr - cr)) -le 20 ] && [ $((cd - hd)) -le 20 ] && [ $((hd - cd)) -le 20 ]; then
+		pass "skipdeath: host and client agree on the death and the quick respawn (both by the host's rule)"
+	else
+		fail "skipdeath: the death and respawn ticks disagree or the respawn was slow"
+	fi
+	[ "$(grep -c 'deathlog: slot 1 respawned' "$C")" = 1 ] && pass "skipdeath: one respawn on the client" || fail "skipdeath: $(grep -c 'deathlog: slot 1 respawned' "$C") respawns on the client"
+}
+
+# check_views LABEL GIVEN: third person given (GIVEN at 400) and no free camera at 700, both machines
+check_views() {
+	local label=$1 want=$2 l
+	check_run "$label" || return
+	for l in host client; do
+		grep -q "viewlog: tick 400 slot 1: third person asked $want given $want" "$OUT/$label-$l.log" \
+			&& pass "$label: $l: the client's seat third person $want after V (room allows $([ "$want" = 1 ] && echo it || echo none))" \
+			|| fail "$label: $l: $(grep -o 'viewlog: tick 400 slot 1.*' "$OUT/$label-$l.log")"
+		grep -q "viewlog: tick 700 slot 1: .*free camera 0" "$OUT/$label-$l.log" \
+			&& pass "$label: $l: the Spectator key gave the playing seat no free camera" \
+			|| fail "$label: $l: $(grep -o 'viewlog: tick 700 slot 1.*' "$OUT/$label-$l.log")"
+	done
 }
 
 # the last "local block" line's count NAME ("ammo sets", "inventory changes")
@@ -407,6 +513,20 @@ check_hands() {
 	[ -n "$sets" ] && [ "$sets" -le 6 ] && pass "hands: $sets ammo sets all match" || fail "hands: ${sets:-no} ammo sets (want 6 at most)"
 }
 
+check_pitch() {
+	local H=$OUT/pitch-host.log C=$OUT/pitch-client.log n
+	check_run pitch || return
+	grep -q 'forward-pitch: tick 600: slot 0 ("[^"]*"), this machine.s plays forward pitch 1' "$H" \
+		&& pass "pitch: the host plays its own player by its own (forward pitch 1)" || fail "pitch: host's own: $(grep -o 'tick 600: slot 0.*' "$H")"
+	grep -q 'forward-pitch: tick 600: slot 1 ("[^"]*") plays forward pitch 0' "$H" \
+		&& pass "pitch: the host plays the client's seat by the client's (forward pitch 0)" || fail "pitch: host's slot 1: $(grep -o 'tick 600: slot 1.*' "$H")"
+	grep -q 'forward-pitch: tick 600: slot 1 ("[^"]*"), this machine.s plays forward pitch 0' "$C" \
+		&& pass "pitch: the client predicts its seat by its own (forward pitch 0)" || fail "pitch: client's seat: $(grep -o 'tick 600: slot 1.*' "$C")"
+	n=$(grep -c "settings changed mid-match" "$C")
+	[ "$n" = 0 ] && pass "pitch: no mid-match SLOTCFG with nothing changed" || fail "pitch: $n mid-match SLOTCFGs sent with nothing changed"
+	measure pitch && pass "pitch: prediction" || fail "pitch: prediction"
+}
+
 check_cheats() {
 	local sets inv
 	check_run cheats || return
@@ -424,13 +544,22 @@ i=0
 for c in $CASES; do
 	case $c in
 		clean) run clean $((PORT + i)) "$FRAMES" 0 "0,0" ;;
+		pitch) HOSTARGS="--net-test-forward-pitch 1" CLIENTARGS="--net-test-forward-pitch 0" run pitch $((PORT + i)) "$FRAMES" 0 "0,38" ;;
 		lag)   run lag $((PORT + i)) "$FRAMES" 0 "0,75" ;;
 		loss)  run loss $((PORT + i)) "$FRAMES" 0 "2,75" ;;
+		relay) run relay $((PORT + i)) "$FRAMES" 0 "0,110,10,0,3000,300" ;;
 		sims)  SIMS=6 run sims $((PORT + i)) "$FRAMES" 0 "0,75" ;;
 		wine)  if [ -x "$(command -v wine)" ] && [ -e "$WINEEXE" ]; then run wine $((PORT + i)) "$FRAMES" 1 "${WINESIM-0,75}"; else echo "skip wine: no wine or no $WINEEXE"; fi ;;
 		time)  run_time $((PORT + i)) ;;
+		teamlimit) run_time $((PORT + i)) teamlimit --net-test-teamscorelimit 2 --net-test-givekills 1,600,4 ;;
 		hands) run_lp hands $((PORT + i)) "[Mod]\nAkimbo=1\n" "[Mod]\nAkimboTriggers=1\nQuickWeaponSwap=1\n" \
 				"--net-test-stage 0x17 --net-sim 0,72 --net-test-give 600,0x6d,-0x08/1200,0x08" "--net-sim 0,72" ;;
+		skipdeath) run_rules skipdeath $((PORT + i)) "[Mod]\nSkipDeathScreen=1\n" "[Mod]\nSkipDeathScreen=0\n" \
+				"$(for t in $(seq 610 2 900); do printf '%d %d 1000\\n' $t $t; done)" "--net-test-kill 1,600 --net-test-deathlog" "--net-test-deathlog" ;;
+		views) run_rules views $((PORT + i)) "[Mod]\nNetThirdPerson=0\n" "[Mod]\n" "300 300 10000000\n500 500 4000000\n" \
+				"--net-test-viewlog 400,700" "--net-test-viewlog 400,700" ;;
+		views3p) run_rules views3p $((PORT + i)) "[Mod]\nNetThirdPerson=1\n" "[Mod]\n" "300 300 10000000\n500 500 4000000\n" \
+				"--net-test-viewlog 400,700" "--net-test-viewlog 400,700" ;;
 		cheats) run_lp cheats $((PORT + i)) "[Mod]\nStartArmed=1\n" "[Mod]\nStartArmed=1\n" \
 				"--net-test-stage 0x32 --mp-weapons 1,4,7,9,10,1 --net-sim 0,38 --net-test-cheats 0x10" "--net-sim 0,38 --net-test-cheats 0x08" ;;
 	esac
@@ -439,9 +568,10 @@ done
 
 for c in $CASES; do
 	case $c in
-		clean|lag|loss|wine|sims)
+		clean|lag|relay|loss|wine|sims)
 			[ -e "$OUT/$c-client.log" ] || continue
 			check_run "$c" || continue
+			[ "$c" = relay ] && check_relay
 			if [ "$c" = loss ] || [ "$c" = wine ] || [ "$c" = sims ]; then
 				MINMATCH=0 MAXCPM=100000 measure "$c" && pass "$c: measured (reported, not gated on $MINMATCH%)" || fail "$c: measure"
 			else
@@ -449,7 +579,12 @@ for c in $CASES; do
 			fi
 			snaps "$c"
 			;;
+		pitch) [ -e "$OUT/pitch-client.log" ] && check_pitch ;;
+		skipdeath) [ -e "$OUT/skipdeath-client.log" ] && check_skipdeath ;;
+		views) [ -e "$OUT/views-client.log" ] && check_views views 0 ;;
+		views3p) [ -e "$OUT/views3p-client.log" ] && check_views views3p 1 ;;
 		time) [ -e "$OUT/time-host.log" ] && check_time ;;
+		teamlimit) [ -e "$OUT/teamlimit-host.log" ] && check_time teamlimit ;;
 		hands) [ -e "$OUT/hands-client.log" ] && check_hands ;;
 		cheats) [ -e "$OUT/cheats-client.log" ] && check_cheats ;;
 	esac

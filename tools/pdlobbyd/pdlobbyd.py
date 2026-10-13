@@ -50,6 +50,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import socket
 import struct
 import sys
@@ -58,7 +59,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-API_VERSION = 3   # 2: host migration (README "Host migration"); 3: the same shape, hardened (README "Limits")
+API_VERSION = 7   # 2: host migration (README "Host migration"); 3: the same shape, hardened (README "Limits"); 4: the main menu's chat (README "Main menu chat"); 5: the server's notices (README "Server notices"); 6: a launched room's host names who its session has, and a member gone from it frees its seat (README "Seats in a running match"); 7: who is online and where (README "Players online")
 
 
 def env(name, default):
@@ -113,6 +114,24 @@ class Config:
         self.min_humans = 2
         self.max_humans = 12
         self.chat_keep = 50
+        # A restart closes every room: for restart_notice_secs a seat from
+        # before it (a well-formed token this lobby never handed out) is told
+        # restart_notice in its 410, which the game shows when it leaves the
+        # room, not "you are no longer in this room". PDLOBBYD_RESTART_NOTICE
+        # gives an update its own words.
+        self.restart_notice = env("PDLOBBYD_RESTART_NOTICE",
+                                  "The lobby server restarted and its rooms closed: "
+                                  "make or join a room again. Apologies for the inconvenience!")
+        self.restart_notice_secs = 1800.0
+        # The server's notices (README "Server notices"): POST /notice on
+        # this port, bound to 127.0.0.1 only and never proxied, puts a line
+        # in every room's chat and the main menu's; -1 opens no port.
+        # Stopping (systemd's SIGTERM) says shutdown_notice to the rooms
+        # first and gives their parked polls shutdown_grace to carry it.
+        self.admin_port = int(env("PDLOBBYD_ADMIN_PORT", "8092"))
+        self.shutdown_notice = env("PDLOBBYD_SHUTDOWN_NOTICE",
+                                   "Restarting Server for Update, apologies for the inconvenience!")
+        self.shutdown_grace = 2.0
         self.countdown = 5.0
         self.host_timeout = 15.0
         # Host migration: a host silent this long (no heartbeat, nothing on
@@ -127,6 +146,15 @@ class Config:
         self.hostlost_keep = 20.0
         self.hostlost_votes = 2
         self.member_timeout = 30.0
+        # api 6: a launched room's host's "seated" list counts this long
+        # after its beat (three missed 5 s beats: no word, nobody reaped)
+        self.seated_fresh = 16.0
+        # api 7, GET /players: an account in no room counts as online this
+        # long after its session last asked for anything (the game's
+        # Briefing Room asks for the main menu's chat every 2 s), and a
+        # reply lists at most players_max of them (count says how many)
+        self.presence_ttl = 60.0
+        self.players_max = 200
         self.gone_keep = 120.0
         self.reap_interval = 1.0
 
@@ -209,6 +237,129 @@ class Config:
 # ------------------------------------------------------------------ text
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,15}\Z")
+
+# ---- name filter: begin (the same in tools/pdghostd/pdghostd.py and
+# tools/pdlobbyd/pdlobbyd.py; test_pdlobbyd.py checks the two copies match) ----
+#
+# Names that are slurs or obscenities are refused: an account's, when it is
+# made or signed in with, and a room's. A letter also matches what stands in
+# for it (a 4 @, i 1 l ! |, o 0, s 5 $, ...) and may repeat (niiigger). Three
+# lists, by how much of a name a word may hide in:
+#
+#   NF_SEVERE  anywhere at all, with spaces and _ . - left out (n.i.g.g.e.r):
+#              slurs nothing ordinary is spelled with
+#   NF_PART    anywhere inside one word of the name (Slutty, xXbitchXx). A
+#              word ends at a space, _ . -, or a capital after a small letter,
+#              so WhoReigns is not "whore" and MassHit is not "shit"
+#   NF_WHOLE   only as a whole word, or with an s on: short ones that sit
+#              inside ordinary words - raccoon, Janus, torpedo, Santiago,
+#              therapist, Japan, Pakistan, Spice, Grape
+#
+# Letters standing alone are one word ("N I G G E R"). NF_ALLOWED are
+# ordinary words holding one of them (Scunthorpe, snigger, shiitake), taken
+# out before the lists are asked. Not here on purpose: names and words that
+# are only rude in some company (dick - a tester's name - ass, damn, piss).
+
+NF_LOOKS = {
+    "a": "a4@", "b": "b8", "e": "e3", "g": "g96q", "i": "i1l!|", "l": "l1i|",
+    "o": "o0", "s": "s5$", "t": "t7+", "u": "uv", "z": "z2",
+}
+
+NF_SEVERE = (
+    "nigger", "nigga", "nigguh", "niggah", "niggur", "faggot", "fagot",
+    "fuck", "phuck", "cunt", "kkk", "1488", "hitler", "siegheil", "whitepower",
+    "wetback", "raghead", "towelhead", "cameljockey", "porchmonkey",
+    "junglebunny", "jigaboo", "zipperhead", "spearchucker", "chingchong",
+    "golliwog", "pedophile", "paedophile",
+)
+
+NF_PART = (
+    "niglet", "nignog", "negroid", "beaner", "tranny", "shemale", "retard",
+    "mongoloid", "whore", "slut", "bitch", "asshole", "pussy", "penis",
+    "vagina", "dildo", "jizz", "cumshot", "cumslut", "blowjob", "handjob",
+    "porn", "wanker", "shitty", "shithead", "bullshit", "molest", "rapist",
+)
+
+NF_WHOLE = (
+    "nig", "spic", "spick", "coon", "kike", "chink", "gook", "jap", "paki",
+    "wog", "wop", "dago", "honky", "injun", "squaw", "redskin", "negro",
+    "hymie", "fag", "dyke", "homo", "lesbo", "spaz", "tard", "nazi", "heil",
+    "rape", "pedo", "kys", "anal", "anus", "cum", "tits", "twat", "cock",
+    "wank", "shit",
+)
+
+NF_ALLOWED = (
+    "scunthorpe", "snigger", "niggard", "shiitake", "shitake", "pussycat",
+    "pussywillow", "retardant", "penistone", "beanery", "therapist",
+    "fagotto", "lesbos",
+)
+
+
+def _nf_pattern(word):
+    return "".join("[%s]+" % re.escape(NF_LOOKS.get(ch, ch)) for ch in word)
+
+
+_NF_SEVERE_RE = re.compile("|".join(_nf_pattern(w) for w in NF_SEVERE))
+_NF_PART_RE = re.compile("|".join(_nf_pattern(w) for w in NF_PART))
+_NF_WHOLE_RE = re.compile("[0-9]*(?:%s)[s5$z]?[0-9]*" % "|".join(_nf_pattern(w) for w in NF_WHOLE))
+
+
+def _nf_words(text):
+    """The name's words, small letters, ordinary words holding a listed one taken out."""
+    raw = re.split(r"[\s_.\-]+", re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text))
+    words, letters = [], ""
+
+    for word in raw:
+        word = re.sub(r"[^a-z0-9@$!|+]", "", word.lower())
+        if len(word) == 1:
+            letters += word
+            continue
+        if len(letters) > 1:
+            words.append(letters)
+        letters = ""
+        if word:
+            words.append(word)
+
+    if len(letters) > 1:
+        words.append(letters)
+
+    for ok in NF_ALLOWED:
+        words = [w.replace(ok, "") for w in words]
+
+    return [w for w in words if w]
+
+
+def name_offends(name):
+    """True when a name (an account's, a room's) is a slur or an obscenity."""
+    words = _nf_words(str(name))
+
+    if _NF_SEVERE_RE.search("".join(words)):
+        return True
+
+    for word in words:
+        if _NF_PART_RE.search(word) or _NF_WHOLE_RE.fullmatch(word):
+            return True
+
+    return False
+
+# ---- name filter: end ----
+
+
+def chat_mask(text):
+    """A chat line with every word that is a slur or an obscenity (name_offends())
+    starred out, letter for letter, so the rest still reads. A line that spells
+    one only across its words (n i g g e r, nig ger) is starred whole."""
+    def star(m):
+        word = m.group(0)
+        return re.sub(r"[A-Za-z0-9@$!|+]", "*", word) if name_offends(word) else word
+
+    out = re.sub(r"\S+", star, text)
+
+    if name_offends(out):
+        out = re.sub(r"[A-Za-z0-9@$!|+]", "*", out)
+
+    return out
+
 PIN_RE = re.compile(r"^[0-9]{4,8}\Z")
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}\Z")
 ROOM_RE = re.compile(r"^[0-9a-f]{8}\Z")
@@ -217,8 +368,13 @@ BUILD_RE = re.compile(r"^[A-Za-z0-9._+-]{1,40}\Z")
 RULE_KEY_RE = re.compile(r"^[a-z0-9_]{1,24}\Z")
 
 ROOM_NAME_MAX = 32
+# how long a stop waits for the HTTP connections to end (Lobby.close_server())
+STOP_WAIT = 5
 PASSWORD_MAX = 16
 CHAT_MAX = 120
+# The name the server's own chat lines are said under. They carry "system":
+# true as well, which only the server sets: a player named Server is a player.
+NOTICE_USER = "Server"
 FIELD_MAX = 32
 REGION_MAX = 16
 MOD_MAX = 127     # the host's overlay mod dir name (the game's NET_MAXMAPDIR)
@@ -579,10 +735,11 @@ class HttpError(Exception):
 
 
 class Session:
-    __slots__ = ("token", "user", "expires", "key")
+    __slots__ = ("token", "user", "expires", "key", "seen")
 
     def __init__(self, token, user, expires, key=""):
         self.token, self.user, self.expires, self.key = token, user, expires, key
+        self.seen = time.monotonic()   # its last request (GET /players: online while recent)
 
 
 class Member:
@@ -659,6 +816,12 @@ class Room:
         self.forced = False
         self.launched_at = 0
         self.host_seen = now
+        # api 6: the accounts the launched room's host has in its session
+        # (connected players and spectators, seats held for a drop), from its
+        # heartbeat; who sent it and when. None: no word (an older game).
+        self.seated = None
+        self.seated_by = None
+        self.seated_at = 0.0
         self.host_rtt = None
         self.probe_nonce = None
         self.probe_sent = 0.0
@@ -719,9 +882,16 @@ class Lobby:
         self.cfg = cfg or Config()
         self.rooms = {}
         self.tokens = {}         # member token -> Room
+        # The main menu's chat: everyone signed in, in a room or not (the
+        # game shows it on its Briefing Room). (version, user, text, time),
+        # the last chat_keep lines.
+        self.mainchat = collections.deque()
+        self.mainchat_version = 0
         self.user_room = {}      # lower(user) -> member token
         self.sessions = {}       # session token -> Session
         self.gone = {}           # member token -> (reason, until): why a token stopped working
+        self.started = time.monotonic()
+        self.issued = set()      # member tokens handed out while the restart notice holds
         self.udp_ids = {}        # member udp_id (8 bytes) -> member token
         self.waiters = 0
         self.ip_polls = {}       # address -> parked polls from it
@@ -736,6 +906,8 @@ class Lobby:
         self.reaper = None
         self.bound_port = None
         self.bound_udp_port = None
+        self.admin_server = None
+        self.bound_admin_port = None
         self.relays = {}         # relay id (8 bytes) -> Relay
         self.relay_secret = os.urandom(32)  # the return-routability proofs
         self.relay_next_port = 0
@@ -750,6 +922,17 @@ class Lobby:
         self.http_server = await asyncio.start_server(
             self.http_client, self.cfg.host, self.cfg.port, limit=self.cfg.max_header)
         self.bound_port = self.http_server.sockets[0].getsockname()[1]
+        if self.cfg.admin_port >= 0:
+            # loopback whatever cfg.host is: the operator's, on this box. A
+            # port taken (a second lobby on the box) costs the notices, not
+            # the lobby.
+            try:
+                self.admin_server = await asyncio.start_server(
+                    lambda r, w: self.http_client(r, w, admin=True), "127.0.0.1", self.cfg.admin_port,
+                    limit=self.cfg.max_header)
+                self.bound_admin_port = self.admin_server.sockets[0].getsockname()[1]
+            except OSError as e:
+                log("notices off: 127.0.0.1:%d: %s" % (self.cfg.admin_port, e))
         transport, _proto = await loop.create_datagram_endpoint(
             lambda: Rendezvous(self), local_addr=(self.cfg.udp_host, self.cfg.udp_port))
         self.udp = transport
@@ -763,14 +946,40 @@ class Lobby:
             self.close_relay(r, "lobby stopping")
         if self.udp:
             self.udp.close()
-        if self.http_server:
-            self.http_server.close()
-            await self.http_server.wait_closed()
+        for server in (self.http_server, self.admin_server):
+            if server:
+                await self.close_server(server)
         self.executor.shutdown(wait=False)
+
+    @staticmethod
+    async def close_server(server):
+        """Since Python 3.12 wait_closed() waits for every connection the
+        server has, and a kept-alive one (nginx's upstream, a game's poll)
+        never ends by itself: systemd's stop waited out its 90 s for SIGKILL,
+        and the old process served on meanwhile - a room launched a match in
+        that minute and lost it to the kill (2026-10-12 03:11). The
+        connections are ended (close_clients(), 3.13), and the wait is a few
+        seconds at most."""
+        server.close()
+        close_clients = getattr(server, "close_clients", None)
+        if close_clients:
+            close_clients()
+        try:
+            await asyncio.wait_for(server.wait_closed(), STOP_WAIT)
+        except asyncio.TimeoutError:
+            log("stopping: connections still open after %d s; left to the exit" % STOP_WAIT)
+
+    async def announce_shutdown(self):
+        """Stopping: the rooms are told (their games show it in the match's
+        chat), and the polls a moment to carry it before the rooms close."""
+        if not self.cfg.shutdown_notice or not self.rooms:
+            return
+        self.post_notice(self.cfg.shutdown_notice)
+        await asyncio.sleep(self.cfg.shutdown_grace)
 
     # ---------------------------------------------------------- HTTP transport
 
-    async def http_client(self, reader, writer):
+    async def http_client(self, reader, writer, admin=False):
         if self.conns >= self.cfg.max_conns:
             writer.close()
             return
@@ -791,6 +1000,7 @@ class Lobby:
                 if req is None:
                     await self.respond(writer, 400, {"ok": False, "error": "bad request"}, True)
                     break
+                req.admin = admin
 
                 if "transfer-encoding" in req.headers:
                     await self.respond(writer, 411, {"ok": False, "error": "length required"}, True)
@@ -862,6 +1072,13 @@ class Lobby:
         parts = [p for p in req.path.split("/") if p]
         m = req.method
 
+        # the admin port serves its own and nothing else; the public port
+        # never serves them
+        if req.admin:
+            if m == "POST" and parts == ["notice"]:
+                return self.post_notice(req.json().get("text", ""))
+            raise HttpError(404, "no such endpoint")
+
         if m == "GET" and parts == ["ping"]:
             return {"ok": True, "service": "pdlobbyd", "api": API_VERSION,
                     "udp_port": self.bound_udp_port, "auth": self.cfg.auth,
@@ -876,6 +1093,12 @@ class Lobby:
             return {"ok": True}
         if m == "POST" and parts == ["rooms"]:
             return self.create_room(req)
+        if m == "GET" and parts == ["chat"]:
+            return self.main_chat(req)
+        if m == "POST" and parts == ["chat"]:
+            return self.main_chat_say(req)
+        if m == "GET" and parts == ["players"]:
+            return self.list_players(req)
 
         if len(parts) == 3 and parts[0] == "rooms" and ROOM_RE.match(parts[1]):
             room_id, action = parts[1], parts[2]
@@ -898,6 +1121,9 @@ class Lobby:
         username = str(body.get("username", "")).strip()
         if not USERNAME_RE.match(username):
             raise HttpError(400, "3-15 chars, letters, digits, _ . - only")
+        # pdghostd refuses these too; an open (LAN) lobby asks nobody else
+        if name_offends(username):
+            raise HttpError(403, "that name is not allowed")
         if not self.windows.allow(("login", req.key), self.cfg.login_window[0],
                                   self.cfg.login_window[1], now):
             raise HttpError(429, "too many sign-ins, wait a few minutes")
@@ -948,6 +1174,7 @@ class Lobby:
         if s is None or s.expires < time.time():
             raise HttpError(401, "sign in first")
         s.expires = time.time() + self.cfg.session_ttl
+        s.seen = time.monotonic()
         return s
 
     def member_auth(self, req, room_id):
@@ -961,8 +1188,13 @@ class Lobby:
             # not (later, or after a restart): the client's answer is the same,
             # join or make the room again. 403 stays for "not allowed".
             gone = self.gone.get(tok)
-            raise HttpError(410, gone[0] if gone else "you are no longer in this room",
-                            reason="gone")
+            if gone:
+                why = gone[0]
+            elif self.restart_notice_holds() and tok not in self.issued:
+                why = self.cfg.restart_notice
+            else:
+                why = "you are no longer in this room"
+            raise HttpError(410, why, reason="gone")
         member = room.members[tok]
         member.seen = time.monotonic()
         return room, member
@@ -970,6 +1202,89 @@ class Lobby:
     def prune_sessions(self, wall):
         for k in [k for k, s in self.sessions.items() if s.expires < wall]:
             del self.sessions[k]
+
+    # ---------------------------------------------------------- main menu chat
+
+    def main_chat(self, req):
+        """The lines after `since` (all that are kept for 0), for a signed-in
+        player. A plain poll: the game asks every couple of seconds while its
+        Briefing Room is up, which the request rate already allows for."""
+        self.session_auth(req)
+        try:
+            since = int(req.query.get("since", "0"))
+        except ValueError:
+            raise HttpError(400, "bad since")
+        return {"ok": True, "version": self.mainchat_version, "chat": chat_out(self.mainchat, since)}
+
+    def main_chat_say(self, req):
+        s = self.session_auth(req)
+        body = req.json()
+        text = chat_mask(clean_text(body.get("text", ""), CHAT_MAX))
+        if not text:
+            raise HttpError(400, "nothing to say")
+        # per account, as a room's is per seat: a second session is no faster
+        if not self.windows.allow(("mainchat", s.user.lower()), self.cfg.chat_window[0],
+                                  self.cfg.chat_window[1], time.monotonic()):
+            raise HttpError(429, "slow down")
+        self.mainchat_version += 1
+        self.mainchat.append((self.mainchat_version, s.user, text, int(time.time()), False))
+        while len(self.mainchat) > self.cfg.chat_keep:
+            self.mainchat.popleft()
+        return {"ok": True, "version": self.mainchat_version}
+
+    def post_notice(self, text):
+        """The server's own line in every room's chat and the main menu's
+        (README "Server notices"): a game in a room shows it in the match's
+        chat too, as the server's."""
+        text = clean_text(str(text), CHAT_MAX)
+        if not text:
+            raise HttpError(400, "nothing to say")
+        now = int(time.time())
+        for room in self.rooms.values():
+            room.changed()
+            room.chat.append((room.version, NOTICE_USER, text, now, True))
+            while len(room.chat) > self.cfg.chat_keep:
+                room.chat.popleft()
+        self.mainchat_version += 1
+        self.mainchat.append((self.mainchat_version, NOTICE_USER, text, now, True))
+        while len(self.mainchat) > self.cfg.chat_keep:
+            self.mainchat.popleft()
+        log("notice to %d room(s): %s" % (len(self.rooms), text))
+        return {"ok": True, "rooms": len(self.rooms)}
+
+    # ---------------------------------------------------------- players online
+
+    def list_players(self, req):
+        """Who is online now and where (README "Players online"), for a
+        signed-in player: every member of every room - in its Game Lobby, or
+        in its match once it is launched - and every other account whose
+        session asked for anything in the last presence_ttl, which is the
+        Briefing Room. An account once, by its name; never an address. A
+        dedicated room's host is a server, not a player: left out. The names
+        are ones the lobby let sign in and the rooms' ones it let be made, so
+        the name filter has passed them all (its lists are this process's: a
+        change to them is a restart, which empties both)."""
+        self.session_auth(req)
+        now = time.monotonic()
+        wall = time.time()
+        found = {}
+        for room in self.rooms.values():
+            where = "match" if room.status == "launched" else "room"
+            for m in room.members.values():
+                key = m.user.lower()
+                if key in found:
+                    continue
+                if m.host and room.dedicated:
+                    found[key] = None
+                    continue
+                found[key] = {"user": m.user, "where": where, "room": room.name, "room_id": room.id,
+                              "host": m.host, "spectator": m.spectator and not m.host}
+        for s in self.sessions.values():
+            key = s.user.lower()
+            if key not in found and now - s.seen <= self.cfg.presence_ttl and s.expires >= wall:
+                found[key] = {"user": s.user, "where": "menu"}
+        players = sorted((p for p in found.values() if p), key=lambda p: (p["user"].lower(), p["user"]))
+        return {"ok": True, "count": len(players), "players": players[:self.cfg.players_max]}
 
     # ---------------------------------------------------------- rooms
 
@@ -1031,6 +1346,8 @@ class Lobby:
             name = clean_text(body.get("name", ""), ROOM_NAME_MAX)
             if not name:
                 raise HttpError(400, "room needs a name")
+            if name_offends(name):
+                raise HttpError(400, "that room name is not allowed")
             upd["name"] = name
         if "password" in body:
             pw = body.get("password") or ""
@@ -1179,9 +1496,17 @@ class Lobby:
         room.changed()
         return self.join_reply(room, m)
 
+    def restart_notice_holds(self):
+        if time.monotonic() - self.started < self.cfg.restart_notice_secs:
+            return True
+        self.issued.clear()
+        return False
+
     def add_member(self, room, m):
         room.members[m.token] = m
         self.tokens[m.token] = room
+        if self.restart_notice_holds():
+            self.issued.add(m.token)
         self.user_room[m.user.lower()] = m.token
         while m.udp_id in self.udp_ids:
             m.udp_id = os.urandom(8)
@@ -1391,6 +1716,7 @@ class Lobby:
         room.countdown_handle = None
         room.status = "launched"
         room.launched_at = int(time.time())
+        room.seated = None    # the last launch's word is not this one's
         room.changed()
         log("room %s launched" % room.id)
 
@@ -1456,8 +1782,7 @@ class Lobby:
                     "udp": m.udp_public is not None,
                     "path": m.path, "ping": m.ping, "can_host": m.can_host}
                    for m in room.members.values()]
-        chat = [{"v": v, "user": u, "text": t, "t": at}
-                for (v, u, t, at) in room.chat if v > since]
+        chat = chat_out(room.chat, since)
         out = {"ok": True, "version": room.version, "time": int(time.time()),
                "room": self.room_summary(room),
                "rules": room.rules, "members": members, "chat": chat,
@@ -1528,14 +1853,14 @@ class Lobby:
         return {"ok": True, "version": room.version}
 
     def act_chat(self, req, room, m, body):
-        text = clean_text(body.get("text", ""), CHAT_MAX)
+        text = chat_mask(clean_text(body.get("text", ""), CHAT_MAX))
         if not text:
             raise HttpError(400, "nothing to say")
         if not self.windows.allow(("chat", m.token), self.cfg.chat_window[0],
                                   self.cfg.chat_window[1], time.monotonic()):
             raise HttpError(429, "slow down")
         room.changed()
-        room.chat.append((room.version, m.user, text, int(time.time())))
+        room.chat.append((room.version, m.user, text, int(time.time()), False))
         while len(room.chat) > self.cfg.chat_keep:
             room.chat.popleft()
         return {"ok": True, "version": room.version}
@@ -1612,6 +1937,11 @@ class Lobby:
     def act_heartbeat(self, req, room, m, body):
         self.require_host(m)
         room.host_seen = time.monotonic()
+        seated = body.get("seated")
+        if isinstance(seated, list):
+            room.seated = set(str(u).lower()[:64] for u in seated[:64])
+            room.seated_by = m.token
+            room.seated_at = room.host_seen
         if "endpoints" in body:
             eps = read_endpoints(body.get("endpoints"), req.ip)
             if eps != room.endpoints:
@@ -1730,6 +2060,19 @@ class Lobby:
             if room.status != "launched":
                 for m in list(room.members.values()):
                     if not m.host and m.poll is None and now - m.seen > self.cfg.member_timeout:
+                        self.remove_member(room, m, "you timed out of the room")
+            elif (room.seated is not None and host is not None and room.seated_by == host.token
+                  and now - room.seated_at <= self.cfg.seated_fresh):
+                # api 6: the host says who its session has (its heartbeat's
+                # "seated"); a member it has not, whose game has stopped
+                # asking too (crashed, gone), gives its seat back to the
+                # room, so a newcomer can take it in the match in progress.
+                # One the host still holds a seat for (its drop's hold) stays
+                # on the roster to come back to it.
+                for m in list(room.members.values()):
+                    if (not m.host and m.poll is None and now - m.seen > self.cfg.member_timeout
+                            and m.user.lower() not in room.seated):
+                        log("room %s: %s gone from the host's match; seat freed" % (room.id, m.user))
                         self.remove_member(room, m, "you timed out of the room")
             if room.udp_ok_host(now, self.cfg.udp_ttl) and now - room.probe_sent > self.cfg.probe_interval:
                 self.send_probe(room, now)
@@ -2213,7 +2556,7 @@ ROOM_ACTIONS = frozenset(("ready", "team", "chat", "settings", "kick", "launch",
 
 
 class Request:
-    __slots__ = ("method", "path", "query", "headers", "body", "ip", "key", "close")
+    __slots__ = ("method", "path", "query", "headers", "body", "ip", "key", "close", "admin")
 
     def json(self):
         """The body as a JSON object; an empty body is an empty object, and
@@ -2229,6 +2572,19 @@ class Request:
         return obj
 
 
+def chat_out(lines, since):
+    """A chat's (version, user, text, time, system) lines after `since`, as
+    the game reads them; the server's own say so."""
+    out = []
+    for (v, u, t, at, system) in lines:
+        if v > since:
+            line = {"v": v, "user": u, "text": t, "t": at}
+            if system:
+                line["system"] = True
+            out.append(line)
+    return out
+
+
 def parse_request_head(head, peer_ip):
     try:
         text = head.decode("latin-1")
@@ -2239,6 +2595,7 @@ def parse_request_head(head, peer_ip):
     if len(parts) != 3 or not parts[2].startswith("HTTP/1."):
         return None
     req = Request()
+    req.admin = False
     req.method = parts[0]
     target = parts[1]
     path, _, qs = target.partition("?")
@@ -2356,6 +2713,7 @@ def main():
     cfg = Config()
     args = sys.argv[1:]
     for flag, attr, conv in (("--port", "port", int), ("--udp-port", "udp_port", int),
+                             ("--admin-port", "admin_port", int),
                              ("--host", "host", str), ("--udp-host", "udp_host", str),
                              ("--auth", "auth", str), ("--ghost-url", "ghost_url", str),
                              ("--relay-ports", "relay_ports", str)):
@@ -2368,7 +2726,17 @@ def main():
         log("pdlobbyd listening on %s:%d, rendezvous udp %s:%d, auth %s, relay ports %s"
             % (cfg.host, lobby.bound_port, cfg.udp_host, lobby.bound_udp_port, cfg.auth,
                cfg.relay_ports or "any"))
-        await asyncio.Event().wait()
+        if lobby.admin_server:
+            log("notices on 127.0.0.1:%d (POST /notice)" % lobby.bound_admin_port)
+        # systemd's stop is a SIGTERM: the rooms are told before they close
+        stopping = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stopping.set)
+        await stopping.wait()
+        log("stopping: %d room(s)" % len(lobby.rooms))
+        await lobby.announce_shutdown()
+        await lobby.stop()
 
     try:
         asyncio.run(run())

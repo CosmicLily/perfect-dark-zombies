@@ -23,6 +23,9 @@
  *   NET_CHAN_RELIABLE    events, chat, stage flow: reliable and in order
  *   NET_CHAN_BULK        rules blobs and manifests: reliable, own order, so a
  *                        big one does not hold up the events behind it
+ *   NET_CHAN_EVFX        (protocol 29) explosions and hits: reliable, in an
+ *                        order of their own (netevents.c's classes)
+ *   NET_CHAN_EVSHOT      (protocol 29) shots, sparks, grunts: unreliable
  *
  * Raw datagrams: anything starting with the four bytes NET_RAWMAGIC is
  * taken off the socket before ENet sees it and comes out as NETEVENT_RAW
@@ -46,7 +49,9 @@
 #define NET_CHAN_UNRELIABLE 0
 #define NET_CHAN_RELIABLE   1
 #define NET_CHAN_BULK       2
-#define NET_NUMCHANNELS     3
+#define NET_CHAN_EVFX       3 // (protocol 29) EVFX: reliable, its own order
+#define NET_CHAN_EVSHOT     4 // (protocol 29) EVSHOT: unreliable, unsequenced
+#define NET_NUMCHANNELS     5
 
 #define NET_MTU             1200            // UDP payload ENet will build up to
 #define NET_MAXUNRELIABLE   1100            // an unreliable send that fits one datagram whole
@@ -184,5 +189,8 @@ void netHostSetSim(struct nethost *h, s32 droppct, s32 delayms, s32 jitterms, u3
 // The simulator's bottleneck: what this host receives goes through a link of
 // that many bytes a second, queued (0 none)
 void netHostSetSimRate(struct nethost *h, u32 bytespersec);
+// The simulator's stalls: about every everyms (0 none) what this host receives
+// is held for lenms and let through at once (a relay's hiccup), for tests
+void netHostSetSimSpikes(struct nethost *h, s32 everyms, s32 lenms);
 
 #endif

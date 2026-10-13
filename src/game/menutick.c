@@ -10,6 +10,7 @@
 #include "game/menu.h"
 #include "game/filelist.h"
 #include "game/mainmenu.h"
+#include "game/coop.h"
 #include "game/endscreen.h"
 #include "game/playermgr.h"
 #include "game/lv.h"
@@ -656,7 +657,8 @@ void menuTick(void)
 						}
 
 						if (playernum >= 0) {
-							if (g_Vars.coopplayernum >= 0) {
+							// (online counter-op: a counter-op's is anti's)
+							if (g_Vars.coopplayernum >= 0 && !coopIsAntiNum(playernum)) {
 								s32 prevplayernum = g_Vars.currentplayernum;
 								setCurrentPlayerNum(playernum);
 								endscreenPushCoop();
@@ -760,7 +762,7 @@ void menuTick(void)
 							// netplay: another machine's player has its end screen there
 						} else
 #endif
-						if (g_Vars.coopplayernum >= 0) {
+						if (g_Vars.coopplayernum >= 0 && !coopIsAntiNum(playernum)) {
 							if (g_Vars.stagenum == STAGE_DEEPSEA
 #ifndef PLATFORM_N64
 									&& g_NetMode == NETMODE_NONE // online: the end screen, like any mission
@@ -994,7 +996,14 @@ void menuTick(void)
 
 			if ((g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0)
 					&& PLAYERCOUNT() >= 2
-					&& g_Menus[mpindex].curdialog) {
+					&& g_Menus[mpindex].curdialog
+#ifndef PLATFORM_N64
+					// The split screen's rule. Online every player has a
+					// screen of their own and the host never sees a guest's
+					// menu, so the goggles stay on (F3 20261012-035155)
+					&& (g_NetMode == NETMODE_NONE || g_NetClockTest)
+#endif
+					) {
 				g_Vars.players[i]->devicesinhibit = 0
 					| DEVICE_NIGHTVISION
 					| DEVICE_XRAYSCANNER

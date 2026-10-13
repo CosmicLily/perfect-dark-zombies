@@ -131,6 +131,14 @@ MenuItemHandlerResult amPickTargetMenuList(s32 operation, struct menuitem *item,
 				}
 			} while (numremaining >= 0);
 
+#ifndef PLATFORM_N64
+			// netplay: a client's Attack goes to the host's sims (NETCMD_ORDER)
+			if (g_NetMode == NETMODE_CLIENT && netIsLocalSlot(g_Vars.currentplayernum)) {
+				netPlayersClientOrder(g_AmMenus[g_AmIndex].prevallbots ? -1
+						: g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2], AIBOTCMD_ATTACK, chrindex);
+			}
+#endif
+
 			if (g_AmMenus[g_AmIndex].prevallbots) {
 				g_AmMenus[g_AmIndex].prevallbots = false;
 
@@ -323,8 +331,15 @@ void amApply(s32 slot)
 
 			if (invindex < invGetCount()) {
 				weaponnum = invGetWeaponNumByIndex(invindex);
+				state = weaponnum ? currentPlayerGetDeviceState(weaponnum) : DEVICESTATE_UNEQUIPPED;
 
-				if (weaponnum && currentPlayerGetDeviceState(weaponnum) == DEVICESTATE_UNEQUIPPED) {
+				if (state != DEVICESTATE_UNEQUIPPED) {
+					// A device is no hand's gun: switched as the right
+					// hand's menu does. The radial key opens this menu
+					// under Akimbo Triggers, and the CamSpy, goggles and
+					// cloak listed here did nothing (F3 20261012-022730)
+					currentPlayerSetDeviceActive(weaponnum, state == DEVICESTATE_INACTIVE);
+				} else if (weaponnum) {
 					amApplyLeftWeapon(weaponnum);
 				}
 			}
@@ -446,7 +461,13 @@ void amApply(s32 slot)
 #endif
 				}
 			}
-		} else if (g_Vars.normmplayerisrunning) {
+		} else if (g_Vars.normmplayerisrunning
+#ifndef PLATFORM_N64
+				// netplay: a remote player's Team Control orders come in its
+				// commands (NETCMD_ORDER), never from its pad replayed here
+				&& !(g_NetMode == NETMODE_SERVER && !netIsLocalSlot(g_Vars.currentplayernum))
+#endif
+				) {
 			if (g_AmMenus[g_AmIndex].allbots) {
 				for (i = 0; i < g_Vars.currentplayer->numaibuddies; i++) {
 					botcmdApply(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[i]], g_AmBotCommands[slot]);
@@ -454,6 +475,15 @@ void amApply(s32 slot)
 			} else {
 				botcmdApply(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2]], g_AmBotCommands[slot]);
 			}
+
+#ifndef PLATFORM_N64
+			// netplay: a client's sims are the host's; the order goes there
+			// too (Attack once its target is picked)
+			if (g_NetMode == NETMODE_CLIENT && netIsLocalSlot(g_Vars.currentplayernum) && g_AmBotCommands[slot] != AIBOTCMD_ATTACK) {
+				netPlayersClientOrder(g_AmMenus[g_AmIndex].allbots ? -1
+						: g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2], g_AmBotCommands[slot], -1);
+			}
+#endif
 		}
 	}
 }

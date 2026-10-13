@@ -93,6 +93,7 @@ struct modoptions g_ModOptions = {
 	false,                    // sitinchairs: stock's chairs are furniture
 	false,                    // muzzleflashlight: on GoldenEye's levels, off until it is lit per pixel (user, F3 20260929-045427)
 	false,                    // geroomdim: GoldenEye darkens only the fixture shot, never the room (F3 20260930-225233)
+	-1,                       // killfeed: KILLFEED_AUTO, on online and off offline (vanilla defaults, owner 2026-10-12)
 };
 
 /**
@@ -912,6 +913,24 @@ bool modIsMissionRespawnOn(void)
  * stock's, which are part of how those modes end. See the
  * isdead block in playerRenderHud() (player.c).
  */
+/**
+ * Third person online is the room's (Mod.NetThirdPerson, a Room Rule; stock
+ * off, Perfect Dark's first person): it sees round corners and over cover.
+ * Offline it is always the player's (V).
+ */
+s32 g_ModNetThirdPerson = 0;
+
+bool modIsThirdPersonAllowed(void)
+{
+#ifndef PLATFORM_N64
+	// (the clock test is offline, in netplay's loop)
+	if (g_NetMode != NETMODE_NONE && !g_NetClockTest) {
+		return g_ModNetThirdPerson != 0;
+	}
+#endif
+	return true;
+}
+
 bool modIsSkipDeathScreenOn(void)
 {
 	return modOwn(&g_ModOptions.skipdeathscreen) != 0 && g_Vars.normmplayerisrunning;

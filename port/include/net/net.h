@@ -83,6 +83,12 @@ s32 netLocalUiIndex(s32 playernum);
 void netMouseDelta(s32 playernum, f32 *dx, f32 *dy);
 void netMouseAbsDelta(s32 playernum, f32 *dx, f32 *dy);
 s32 netMouseLocked(s32 playernum);
+// bmoveTick on the host: a client's player walks by its commands alone - a
+// tick whose command has not come waits (1: no walk now), commands folded
+// into the tick walk first, each as the client walked it (netplayers.c)
+s32 netPlayersHostWalk(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ignorec2);
+// ... and the walk of a tick that waits: as on a frame drawn between ticks, put back after (netpredict.c)
+void netPredictWalkHold(s32 begin);
 
 // player0f0bd358: the aspect of the screen this player is seen on
 f32 netSlotAspect(s32 playernum);
@@ -156,6 +162,7 @@ s32 netCheatsEnabled(u32 *bank0, u32 *bank1);
 // or on the host
 void netPlayersClientEquip(s32 right, s32 left);
 void netPlayersClientDevice(s32 weaponnum, s32 on);
+void netPlayersClientOrder(s32 sim, s32 command, s32 target); // Team Control's order (protocol 31): mpchr indexes, -1 all sims / no target
 static inline void netRemotePassEnd(void)
 {
 	g_NetRemotePass = 0;
@@ -224,6 +231,17 @@ void netStageStart(void);
 void netSessionModSwapped(void); // modmode.c: the host's PD mod was just entered at a STAGE_LOAD's stage change (protocol 25)
 // The Game Lobby (netlobbymenu.c): a client's fetch of the host's content under way, its progress in out; 0 none
 s32 netContentFetchLine(char *out, s32 size);
+// and its Mods window: what the room plays with, and where this machine stands with each
+#define NETCONTENTROW_HERE    0 // installed, converted or served already
+#define NETCONTENTROW_BUSY    1 // on its way: downloading, or (the host) sending
+#define NETCONTENTROW_MISSING 2 // not here: the host sends it at the launch
+struct netcontentrow {
+	char dir[128]; // NET_MAXMAPDIR + 1 (netproto.h)
+	char name[64];
+	char state[32];
+	s32 kind; // NETCONTENTROW_*
+};
+s32 netContentLobbyRows(const char *mod, const char *ge, const char *stagekey, struct netcontentrow *rows, s32 max);
 void netCheckQuit(void);
 
 // Tick passes (pdmain.c mainTick)
@@ -340,6 +358,8 @@ void netHudAimFrame(void);      // lv.c lvRender, the local player's pass: the p
 s32 netHudChatOpen(void);       // the line is open: the keyboard's keys are letters
 s32 netHudAteEscape(void);      // this frame's ESC was the line's (for what reads inputKeyPressedThisFrame)
 void netHudLobbyFrame(void);    // netlobbymenu.c: the Game Lobby is the dialog on screen this frame
+s32 netHudLobbyChatOpen(void);  // netlobbymenu.c: the Game Lobby's Chat row opens the line (a keyboard or mouse press)
+void netHudMainChatFrame(void); // netlobbymenu.c: the Briefing Room is, with the main menu's chat
 s32 netHudChatLine(char *out, s32 size, s32 maxchars); // the line as typed (its tail, a cursor); 0 shut
 void netHudSay(const char *text); // a line said from a menu (the pause menu's Players page)
 const char *netHudChatKeyName(void); // "T", or "T or Space"
@@ -347,6 +367,7 @@ const char *netHudChatKeyName(void); // "T", or "T or Space"
 // match's and the spectators; its k-th row (the seats played or kept, then
 // the spectators), name and ping as shown; 0 past the last
 void netHudCounts(s32 *in, s32 *of, s32 *specs);
+s32 netHudPanelUp(void);       // the players panel (hold P) is up: killfeed.c keeps out of it
 s32 netHudPlayerRow(s32 k, char *name, s32 namesize, char *value, s32 valuesize);
 
 /**
@@ -382,7 +403,7 @@ void netEvGas(struct coord *pos);                                               
  * screen is put where that player saw it when it fired (its matrices
  * rebuilt in fresh gfx memory, the live ones never written) and put back
  * after; on a client the shot's hits are logged for the harness.
- * Net.LagComp=0 turns the rewind off, Net.LagCompMaxMs caps it (200).
+ * Net.LagComp=0 turns the rewind off, Net.LagCompMaxMs caps it (300).
  */
 struct shotdata;
 void netLagCompShotBegin(struct shotdata *sd, s32 isshooting);
@@ -391,8 +412,17 @@ void netLagCompShotEnd(struct shotdata *sd, s32 isshooting, s32 cheap);
 // (its autoaim follows the others where it saw them, so with the autoaim on
 // everything on its screen is rewound for the two)
 void netLagCompPassBegin(void);
+void netLagCompRaiseOldDefault(void); // Mod.SettingsRevision 2: Net.LagCompMaxMs 200 -> 300
 void netLagCompPassEnd(void);
 const struct coord *netLagCompAimPos(struct prop *prop); // the autoaim's line of sight to a chr: its rewound place in a remote pass
+// A guest's blast (netlagcomp.c, F3 20261010-030750): an explosion from a
+// client player's projectile or Phoenix round hurts the chrs where that
+// player saw them. The host's own and offline play are untouched.
+void netLagCompBlastFromWeapon(s32 on);        // propExplode: the explosion about to be made is a weapon's (a projectile, a mine)
+void netLagCompBlastNote(s32 expindex, s32 type, s32 owner, struct coord *pos); // explosionCreate: whether this explosion is rewound, and how far
+s32 netLagCompBlastPos(s32 expindex, struct prop *prop, struct prop *expprop, struct coord *out); // explosionInflictDamage: a chr's place for the blast
+void netLagCompBlastProps(s32 expindex, s16 *propnums, s32 max, f32 radius, struct prop *expprop); // ... and chrs out of its rooms now
+void netLagCompBlastHit(s32 expindex, struct prop *prop, f32 damage, s32 firstframe); // the harness's record of a blast's damage
 void netLagCompAimTrace(void);  // --net-lagcomp-debug: a line per tick of a player's aim on both machines
 
 /**
@@ -410,12 +440,20 @@ struct netcoopsetup {
 	s32 friendlyfire;
 	char game[16];    // the set: "" Perfect Dark's, else a conversion's tag ("ge", "gf64", "tnd64": protocol 14)
 	s32 campaign;     // the host picks the missions in its own menus (the set's folder); each one is the session's next match
+	s32 anti;         // a counter-op mission (protocol 32): each member's side its room team, 0 agent and 1 counter-op
 };
 extern struct netcoopsetup g_NetCoopSetup;
 // Room Settings: a hash of the host's rules (the SYNC keys and Simulant AI), to see the Room Rules page changed one
 u32 netRulesSyncHash(void);
 // mainmenu.c Accept Mission in a net session: 1 handled (started, or refused with a notice)
 s32 netCoopAcceptMission(void);
+// player.c, the host: an online counter-op mission none of whose agents is
+// in play any more (every one left): 1 once, to end it
+s32 netCoopAgentsGone(void);
+// player.c playerSpawnAnti, the host: a counter-op takes this guard (freed
+// next); a setup chr's copy goes from every client too (netcoop.c)
+struct prop;
+void netCoopAntiTookChr(struct prop *prop);
 // mainmenu.c Abort Mission: 1 handled (a client leaves; the host's abort ends it for all)
 s32 netCoopClientAbort(void);
 // pdmain.c mainEndStage's co-op branch: MATCH_END from the host, the final block on a client
@@ -513,7 +551,8 @@ s32 netCoopCampaignOn(void);
 void netCoopCampaignEnd(void);                       // the room is left
 s32 netCoopCampaignAfterMatch(void);                 // host, after a match: back to the set's menus; 1 handled
 void netCoopCampaignMenusOpen(void);                 // host: the set's menus again (the Game Lobby's row)
-void netCoopModeName(s32 difficulty, char *out, s32 size); // "Co-op Agent"
+void netCoopModeName(const char *game, s32 difficulty, char *out, s32 size); // "Co-op Agent", "Co-op Secret Agent"
+const char *netCoopDifficultyNameOf(const char *game, s32 difficulty); // a set's own name for it ("Secret Agent"), no newline
 
 // The session's hooks (H1-H14, HA-HD)
 #include "net/netsession.h"

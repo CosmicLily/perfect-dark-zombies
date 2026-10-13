@@ -52,6 +52,7 @@
 #include "langpack.h"
 #include "lib/main.h"
 #include "lib/rng.h"
+#include "game/coop.h"
 #include "game/playermgr.h"
 #include "game/player.h"
 #include "game/modghost.h"
@@ -8917,6 +8918,13 @@ static const char *gebeanPartsNote(s32 numparts, s32 numverts)
  *   own, which the "opaque black is no colour at all" rule below turned white;
  *   black was meant, and the Community Edition's dark grey keeps them dark
  *   ("Tweak wooden table prop vertex colors").
+ * - cryptdoor1b: its two end faces are baked dark (10% and 35%) for Egyptian,
+ *   where the block sits in the wall and they are never seen. Temple's six
+ *   doors are the same model squashed across that axis, so those ends are
+ *   the doors' big faces - near black on one side and dim on the other ("lit
+ *   wrong on certain sides", F3 20261011-053330). GoldenEye's own lights them
+ *   as it does the block's front and back (an average of 0x48 and 0x60 against
+ *   the front's 0x3a and 0x5c); they take the release's front's mean colour.
  */
 static const struct {
 	const char *source;
@@ -8931,6 +8939,8 @@ static const struct {
 	{ "new/prop/doorprison1", 0, 8, 9, 0xffffffff, 0xff4a4a4a },
 	{ "new/prop/doorprison1", 0, 10, 11, 0xffffffff, 0xff666666 },
 	{ "new/prop/woodentable1", 0, 0, 67, 0xff000000, 0xff292929 },
+	{ "new/prop/cryptdoor1b", 0, 12, 15, 0xff584a3b, 0xffab9173 },
+	{ "new/prop/cryptdoor1b", 0, 20, 23, 0xff191510, 0xffab9173 },
 };
 
 /**
@@ -14466,7 +14476,9 @@ static s32 gebeanPlayerWearsGlove(void)
 	// Bond on a converted mission, as player.c dresses the player there:
 	// playerChooseBodyAndHead() answers Joanna, whose hands the watch's
 	// sleeve and the first person hands take their own way
+	// (a counter-op online wears its guard's)
 	if (!g_Vars.normmplayerisrunning
+			&& !coopIsAnti(g_Vars.currentplayer)
 			&& !modGhostGetTrialCharacter(&bodynum, &headnum)
 			&& !modGhostGetMenuCharacter(&bodynum, &headnum)
 			&& gexPlusMissionBond(g_Vars.currentplayer->bondtype, &bodynum, &headnum)) {
@@ -14703,19 +14715,11 @@ u8 *gebeanBuild(s32 row, s32 original, struct modeldef *modeldef, struct modelno
 	fromchar = strncmp(r->source, "char/", 5) == 0;
 	const s32 arm = !ishead && gebeanRowIsWatchArm(r);
 
-	// Also what the pictures are keyed on, so the two looks never share one
+	// Also what the pictures are keyed on, so the two looks never share one.
+	// (Doctor Doak, Cgx051Z, is head/headdave: the release's Dr. Rakhmanov, and
+	// with the Community Edition's art on its own Doak face under the same name,
+	// which beanLoad() takes from the overlay - gebeance.c's ceArtFiles)
 	snprintf(source, sizeof(source), "%s/%s", original ? "original" : "new", r->source);
-
-	// Doctor Doak with the Community Edition's art on: its own Doak head, the
-	// release's headneil (his face, which he wears otherwise) refitted for his
-	// place and without the glasses GoldenEye's Doak never wore (gebeance.c)
-	if (!original && r->file && strcmp(r->file, "Cgx051Z") == 0) {
-		char cepath[FS_MAXPATH + 1];
-
-		if (gebeanCeFilePath(cepath, sizeof(cepath), "new/head/headdave", "default.bin")) {
-			snprintf(source, sizeof(source), "new/head/headdave");
-		}
-	}
 
 	if (gebeanEnvNames("PD_GEBEAN_FAILBUILD", r->source)) {
 		beanWhy = "its mesh did not build (PD_GEBEAN_FAILBUILD)";

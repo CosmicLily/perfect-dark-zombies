@@ -39,7 +39,7 @@ class LobbyThread:
 
     def __init__(self, **over):
         cfg = dict(port=0, udp_port=0, udp_host="127.0.0.1", auth="open",
-                   reap_interval=0.05, countdown=0.3, relay_ports="")
+                   reap_interval=0.05, countdown=0.3, relay_ports="", admin_port=0)
         cfg.update(over)
         self.cfg = L.Config(**cfg)
         self.loop = asyncio.new_event_loop()
@@ -59,6 +59,7 @@ class LobbyThread:
             raise RuntimeError("lobby did not start")
         self.port = self.lobby.bound_port
         self.udp_port = self.lobby.bound_udp_port
+        self.admin_port = self.lobby.bound_admin_port
 
     def stop(self):
         fut = asyncio.run_coroutine_threadsafe(self.lobby.stop(), self.loop)
@@ -331,6 +332,109 @@ class RoomTests(Base):
         self.assertEqual(codes[:6], [200] * 6)
         self.assertEqual(codes[6:], [429, 429])
 
+    def test_main_chat(self):
+        a = self.client("alpha")
+        b = self.client("bravo")
+        # signed in to read or say
+        anon = Client(self.srv.port, ip="10.0.0.9")
+        self.assertEqual(anon.req("GET", "/chat")[0], 401)
+        self.assertEqual(anon.req("POST", "/chat", {"text": "hi"})[0], 401)
+        st, r = a.req("GET", "/chat")
+        self.assertEqual((st, r["version"], r["chat"]), (200, 0, []))
+        st, r = b.req("POST", "/chat", {"text": "hello\x07 \x1b[2Jthere " + "x" * 300})
+        self.assertEqual(st, 200)
+        v = r["version"]
+        st, r = a.req("GET", "/chat?since=0")
+        self.assertEqual(len(r["chat"]), 1)
+        line = r["chat"][0]
+        self.assertEqual((line["user"], line["v"]), ("bravo", v))
+        self.assertTrue(line["text"].startswith("hello [2Jthere x"))
+        self.assertEqual(len(line["text"]), L.CHAT_MAX)
+        # since the version seen, nothing again; a new line, only it
+        self.assertEqual(a.req("GET", "/chat?since=%d" % v)[1]["chat"], [])
+        self.assertEqual(a.req("POST", "/chat", {"text": "  yo  "})[0], 200)
+        st, r = b.req("GET", "/chat?since=%d" % v)
+        self.assertEqual([(l["user"], l["text"]) for l in r["chat"]], [("alpha", "yo")])
+        self.assertEqual(a.req("POST", "/chat", {"text": "   "})[0], 400)
+        self.assertEqual(a.req("GET", "/chat?since=x")[0], 400)
+        # a room's members say theirs there, and see this one all the same
+        self.assertEqual(a.req("GET", "/ping")[1]["api"], L.API_VERSION)
+
+    def test_main_chat_rate_and_keep(self):
+        a = self.client("alpha")
+        codes = [a.req("POST", "/chat", {"text": "spam %d" % i})[0] for i in range(8)]
+        self.assertEqual(codes[:6], [200] * 6)
+        self.assertEqual(codes[6:], [429, 429])
+        # per account, not per session
+        a2 = self.client("alpha", ip="10.0.0.7")
+        self.assertEqual(a2.req("POST", "/chat", {"text": "again"})[0], 429)
+        # the last chat_keep lines are kept
+        # (filled past the cap by hand, then one said: the oldest go)
+        lobby = self.srv.lobby
+        self.srv.call(lambda: [lobby.mainchat.append((1000 + i, "x", "line %d" % i, 0, False))
+                               for i in range(80)])
+        b = self.client("bravo")
+        self.assertEqual(b.req("POST", "/chat", {"text": "last"})[0], 200)
+        st, r = a.req("GET", "/chat")
+        self.assertEqual(len(r["chat"]), self.srv.cfg.chat_keep)
+        self.assertEqual(r["chat"][-1]["text"], "last")
+
+    def test_notice_in_every_chat_and_wakes_polls(self):
+        host, (a,) = self.room_with("alpha")
+        other = self.client("other")
+        self.assertEqual(other.create()[0], 200)
+        a.act("chat", {"text": "hi"})
+        v = a.state()[1]["version"]
+        out = {}
+        th = threading.Thread(target=lambda: out.setdefault("r", a.state(since=v, wait=10)))
+        th.start()
+        time.sleep(0.2)
+        t0 = time.monotonic()
+        admin = Client(self.srv.admin_port)
+        st, r = admin.req("POST", "/notice", {"text": "  Restarting\tin a minute  "})
+        self.assertEqual((st, r["rooms"]), (200, 2), r)
+        th.join(5)
+        # the parked poll answered at once, with the line marked as the server's
+        self.assertLess(time.monotonic() - t0, 3)
+        st, s = out["r"]
+        self.assertEqual(s["chat"], [{"v": s["version"], "user": "Server", "text": "Restarting in a minute",
+                                      "t": s["chat"][0]["t"], "system": True}])
+        # a player's line is not
+        st, s = host.state()
+        self.assertEqual([("system" in c, c["user"]) for c in s["chat"]], [(False, "alpha"), (True, "Server")])
+        st, s = other.state()
+        self.assertEqual(s["chat"][-1]["text"], "Restarting in a minute")
+        # the main menu's chat has it as well
+        st, r = self.client("bravo").req("GET", "/chat")
+        self.assertEqual((r["chat"][-1]["user"], r["chat"][-1].get("system")), ("Server", True))
+        # only on the admin port: never the public one, which serves nothing
+        # else on it either
+        self.assertEqual(Client(self.srv.port).req("POST", "/notice", {"text": "x"})[0], 404)
+        self.assertEqual(admin.req("GET", "/rooms")[0], 404)
+        self.assertEqual(admin.req("POST", "/notice", {"text": " \x1b "})[0], 400)
+        self.assertEqual(Client(self.srv.port).req("GET", "/ping")[1]["api"], 7)
+
+    def test_notice_port_taken_is_not_fatal(self):
+        # a second lobby on the same notice port: it runs, without notices
+        second = LobbyThread(admin_port=self.srv.admin_port)
+        try:
+            self.assertIsNone(second.admin_port)
+            self.assertEqual(Client(second.port).req("GET", "/ping")[0], 200)
+        finally:
+            second.stop()
+
+    def test_shutdown_tells_the_rooms(self):
+        lobby = self.srv.lobby
+        self.srv.cfg.shutdown_grace = 0.05
+        # no rooms: nothing said, no wait
+        asyncio.run_coroutine_threadsafe(lobby.announce_shutdown(), self.srv.loop).result(5)
+        self.assertEqual(self.srv.call(lambda: len(lobby.mainchat)), 0)
+        host, (a,) = self.room_with("alpha")
+        asyncio.run_coroutine_threadsafe(lobby.announce_shutdown(), self.srv.loop).result(5)
+        st, s = a.state()
+        self.assertEqual((s["chat"][-1]["user"], s["chat"][-1]["text"], s["chat"][-1]["system"]),
+                         ("Server", self.srv.cfg.shutdown_notice, True))
+
     def test_settings_host_only_and_unready(self):
         host, (a,) = self.room_with("alpha")
         a.act("ready")
@@ -478,6 +582,98 @@ class RoomTests(Base):
 
 # ------------------------------------------------------------------ long-poll
 
+# ------------------------------------------------------------------ players online
+
+class PlayersTests(Base):
+    """API 7: GET /players, who is online now and where (README "Players
+    online")."""
+
+    def names(self, c):
+        st, r = c.req("GET", "/players")
+        self.assertEqual(st, 200, r)
+        return [p["user"] for p in r["players"]]
+
+    def test_where_everyone_is(self):
+        # signed in to ask
+        self.assertEqual(Client(self.srv.port, ip="10.0.0.9").req("GET", "/players")[0], 401)
+        alpha = self.client("alpha")
+        host, (bravo,) = self.room_with("bravo", name="Night Room")
+        delta = self.client("delta")
+        self.assertEqual(delta.join(host.room, spectator=True)[0], 200)
+        charlie = self.client("charlie")
+        self.assertEqual(charlie.create(name="Match Room")[0], 200)
+        self.assertEqual(charlie.act("launch")[0], 200)
+        for _ in range(60):
+            if charlie.state()[1]["room"]["state"] == "launched":
+                break
+            time.sleep(0.05)
+        st, r = alpha.req("GET", "/players")
+        self.assertEqual(st, 200, r)
+        self.assertEqual(r["count"], 5)
+        # by name; the asker itself is online, in no room: the Briefing Room
+        self.assertEqual([p["user"] for p in r["players"]], ["alpha", "bravo", "charlie", "delta", "hostess"])
+        got = {p["user"]: p for p in r["players"]}
+        self.assertEqual(got["alpha"], {"user": "alpha", "where": "menu"})
+        self.assertEqual(got["bravo"], {"user": "bravo", "where": "room", "room": "Night Room", "room_id": host.room,
+                                        "host": False, "spectator": False})
+        self.assertEqual((got["hostess"]["where"], got["hostess"]["host"]), ("room", True))
+        self.assertEqual((got["delta"]["where"], got["delta"]["spectator"]), ("room", True))
+        self.assertEqual((got["charlie"]["where"], got["charlie"]["room"], got["charlie"]["host"]),
+                         ("match", "Match Room", True))
+        # names and places only: nobody's address, session or member token
+        text = json.dumps(r)
+        for c in (alpha, host, bravo, delta, charlie):
+            self.assertNotIn(c.ip, text)
+            self.assertNotIn(c.session, text)
+            if c.token:
+                self.assertNotIn(c.token, text)
+        for p in r["players"]:
+            self.assertLessEqual(set(p), {"user", "where", "room", "room_id", "host", "spectator"})
+        # leaving the room is the Briefing Room again; a reopened room's
+        # match over, its members back in its Game Lobby
+        self.assertEqual(bravo.act("leave")[0], 200)
+        self.assertEqual(charlie.act("reopen")[0], 200)
+        got = {p["user"]: p for p in delta.req("GET", "/players")[1]["players"]}
+        self.assertEqual(got["bravo"], {"user": "bravo", "where": "menu"})
+        self.assertEqual(got["charlie"]["where"], "room")
+
+    def test_dedicated_host_is_not_a_player(self):
+        server = self.client("server")
+        self.assertEqual(server.create(name="Always On", dedicated=True)[0], 200)
+        alpha = self.client("alpha")
+        self.assertEqual(alpha.join(server.room)[0], 200)
+        self.assertEqual(self.names(alpha), ["alpha"])
+
+    def test_one_line_an_account(self):
+        alpha = self.client("alpha")
+        self.client("Bravo")
+        self.client("bravo", ip="10.0.0.77")   # a second session, another machine
+        self.assertEqual(self.names(alpha), ["alpha", "Bravo"])
+
+
+class PlayersPresenceTests(Base):
+    over = dict(presence_ttl=0.4, players_max=2)
+
+    def test_presence_lapses_and_returns(self):
+        alpha = self.client("alpha")
+        bravo = self.client("bravo")
+        host, _ = self.room_with()
+        time.sleep(0.6)
+        # bravo has asked for nothing since: not online; the asker is, and a
+        # room's member (the room says so) whatever its session did
+        st, r = alpha.req("GET", "/players")
+        self.assertEqual((r["count"], [p["user"] for p in r["players"]]), (2, ["alpha", "hostess"]))
+        # its game asks again (the main menu's chat, every 2 s on the Briefing Room)
+        self.assertEqual(bravo.req("GET", "/chat")[0], 200)
+        st, r = alpha.req("GET", "/players")
+        # three now, the first players_max of them by name in the reply
+        self.assertEqual((r["count"], [p["user"] for p in r["players"]]), (3, ["alpha", "bravo"]))
+        # signed out: gone at once
+        self.assertEqual(bravo.req("POST", "/logout")[0], 200)
+        st, r = alpha.req("GET", "/players")
+        self.assertEqual((r["count"], [p["user"] for p in r["players"]]), (2, ["alpha", "hostess"]))
+
+
 class PollTests(Base):
     def test_long_poll_wakes_on_change(self):
         host, (a,) = self.room_with("alpha")
@@ -574,6 +770,87 @@ class ReapTests(Base):
         th.join(5)
         self.assertEqual(out["r"][0], 200)
         self.assertEqual(len(out["r"][1]["members"]), 2)
+
+
+class SeatedTests(Base):
+    """API 6: the launched room's host names who its session has; a member
+    gone from it whose game stopped asking frees its seat for a newcomer."""
+    over = dict(host_timeout=5.0, member_timeout=0.8)
+
+    def launched(self):
+        host, (a, b) = self.room_with("alpha", "bravo", max_humans=3)
+        a.act("ready")
+        b.act("ready")
+        self.assertEqual(host.act("launch")[0], 200)
+        for _ in range(40):
+            if a.state()[1]["room"]["state"] == "launched":
+                break
+            time.sleep(0.05)
+        self.assertEqual(a.state()[1]["room"]["state"], "launched")
+        return host, a, b
+
+    def beat(self, host, polling, seated, secs=1.5):
+        end = time.time() + secs
+        while time.time() < end:
+            body = {} if seated is None else {"seated": seated}
+            self.assertEqual(host.act("heartbeat", body)[0], 200)
+            for c in polling:
+                c.state()
+            time.sleep(0.2)
+
+    def members(self, host):
+        return sorted(m["user"] for m in host.state()[1]["members"])
+
+    def test_gone_member_frees_its_seat(self):
+        host, a, b = self.launched()
+        c = self.client("charlie")
+        self.assertEqual(c.join(host.room)[1]["reason"], "full")
+        # bravo's game died: the host has only alpha, and bravo asks nothing
+        self.beat(host, [a], ["alpha"])
+        self.assertEqual(self.members(host), ["alpha", "hostess"])
+        self.assertEqual(b.state()[0], 410)
+        # the newcomer takes the seat in the match in progress, with a ticket
+        st, r = c.join(host.room)
+        self.assertEqual(st, 200, r)
+        self.assertIn("ticket", r)
+
+    def test_member_still_asking_keeps_its_seat(self):
+        # bravo used End Game: out of the host's session, but back in the
+        # Game Lobby and polling - its seat is its own (offered back in)
+        host, a, b = self.launched()
+        self.beat(host, [a, b], ["alpha"])
+        self.assertEqual(self.members(host), ["alpha", "bravo", "hostess"])
+        self.assertEqual(self.client("charlie").join(host.room)[1]["reason"], "full")
+
+    def test_held_seat_and_no_word_reap_nobody(self):
+        host, a, b = self.launched()
+        # the host holds bravo's seat for its drop: bravo stays to come back
+        self.beat(host, [a], ["alpha", "bravo"])
+        self.assertEqual(self.members(host), ["alpha", "bravo", "hostess"])
+        # an older host (no "seated"): nobody is reaped mid-match, as before
+        host2, a2, b2 = host, a, b
+        self.beat(host2, [a2], None)
+        self.assertEqual(self.members(host2), ["alpha", "bravo", "hostess"])
+
+    def test_old_list_not_used_after_reopen_and_relaunch(self):
+        host, a, b = self.launched()
+        self.beat(host, [a, b], ["alpha"], secs=0.4)
+        self.assertEqual(host.act("reopen")[0], 200)
+        a.act("ready")
+        b.act("ready")
+        self.assertEqual(host.act("launch")[0], 200)
+        for _ in range(40):
+            if a.state()[1]["room"]["state"] == "launched":
+                break
+            time.sleep(0.05)
+        # the new launch has no list yet: bravo, silent, is not reaped on the
+        # last launch's word
+        end = time.time() + 1.5
+        while time.time() < end:
+            self.assertEqual(host.act("heartbeat")[0], 200)
+            a.state()
+            time.sleep(0.2)
+        self.assertEqual(self.members(host), ["alpha", "bravo", "hostess"])
 
 
 # ------------------------------------------------------------------ tickets
@@ -1703,6 +1980,29 @@ class SecurityTests(Base):
                                           headers={"X-PD-Member": "ab" * 16})
         self.assertEqual(st, 410)
 
+    def test_seat_from_before_a_restart_is_told_the_notice(self):
+        host, (a,) = self.room_with("alpha")
+        a.act("leave")
+        self.srv.call(lambda: self.srv.lobby.gone.clear())
+        # this lobby's own seat, its reason forgotten: the plain words
+        st, r = a.state()
+        self.assertEqual((st, r["reason"]), (410, "gone"))
+        self.assertEqual(r["error"], "you are no longer in this room")
+        # a seat it never handed out (one from before a restart): the notice
+        st, r = Client(self.srv.port).req("GET", "/rooms/%s/state" % host.room,
+                                          headers={"X-PD-Member": "ab" * 16})
+        self.assertEqual((st, r["reason"]), (410, "gone"))
+        self.assertEqual(r["error"], self.srv.cfg.restart_notice)
+        st, r = Client(self.srv.port).req("POST", "/rooms/%s/heartbeat" % ("cd" * 4), {},
+                                          headers={"X-PD-Member": "cd" * 16})
+        self.assertEqual((st, r["error"]), (410, self.srv.cfg.restart_notice))
+        # once it has held its time, the plain words again
+        self.srv.call(lambda: setattr(self.srv.lobby, "started", time.monotonic() - 3600))
+        st, r = Client(self.srv.port).req("GET", "/rooms/%s/state" % host.room,
+                                          headers={"X-PD-Member": "ab" * 16})
+        self.assertEqual(r["error"], "you are no longer in this room")
+        self.assertFalse(self.srv.lobby.issued)
+
     def test_registration_wakes_polls(self):
         host, (a,) = self.room_with("alpha")
         v = a.state()[1]["version"]
@@ -1899,6 +2199,114 @@ class BuildTests(unittest.TestCase):
         self.assertFalse(L.same_build("487ae2", "487ae2e07"))  # under seven never matches
         self.assertFalse(L.same_build("", ""))
         self.assertFalse(L.same_build(None, "487ae2e"))
+
+
+
+
+class StopTests(unittest.TestCase):
+    def test_stop_with_a_kept_alive_connection(self):
+        # nginx keeps its upstream connections alive: a stop has to end them
+        # rather than wait for them (Python 3.12's wait_closed() would wait
+        # for good, and systemd SIGKILLed the lobby 90 s on)
+        srv = LobbyThread()
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        conn.request("GET", "/ping", headers={"X-Real-IP": "10.0.0.1"})
+        self.assertEqual(conn.getresponse().status, 200)
+        t0 = time.monotonic()
+        srv.stop()
+        self.assertLess(time.monotonic() - t0, L.STOP_WAIT + 2)
+        conn.close()
+
+
+# ------------------------------------------------------------------ names
+
+# Spellings the filter must refuse and real names (testers', rooms', places',
+# GoldenEye's) it must not. The slurs are written out because the list they
+# test is; nothing here is shown to anyone.
+OFFENSIVE_NAMES = (
+    "nigger", "N1GGER", "n.i.g.g.e.r", "N I G G E R", "Nigg3r_Slayer", "xXniggaXx",
+    "TheNiggerKing", "niiigga", "nigguh", "n1gg@", "fuckyou", "FvckYou", "Phuck",
+    "Fuck_You_All", "Scunt", "Hitler88", "Siegheil", "KKKmember", "pl4yer1488",
+    "faggot", "Fag", "Fags_R_Us", "spic", "sp1c", "Coon", "big_coon", "w0rd_c00n",
+    "Kike", "KillKikes", "Kike123", "Chinks", "Paki", "Jap", "Dago", "Negro", "Nig",
+    "towelhead", "wetback", "Retarded", "whore", "SlutKing", "bitch", "Pu$$y",
+    "Rapist", "rape", "Pedo", "Nazi", "Kys", "Tranny", "Shemale", "Shit", "BullShit",
+    "Shithead", "Porn", "Dildo", "Cock", "Twat", "Tits", "a-n-a-l",
+)
+FINE_NAMES = (
+    "dab", "dabba", "dick", "Dickens", "Dickson", "savantique", "Parabolee",
+    "ElmoBear02", "KingZakkart", "froexiaSim", "Kvothe", "Cheeto", "JillyJane240",
+    "Odeyseis", "Casey", "Dyldan", "dblaney1", "Brandon", "LINKmendez", "Raccoon",
+    "Coonhound", "Tycoon", "Cocoon", "Janus", "Uranus", "Torpedo", "Pedometer",
+    "Santiago", "Therapist", "Japan", "Pakistan", "Scunthorpe", "Sniggering",
+    "Shiitake", "Shitake", "Grape", "Scrape", "Peacock", "Cockpit", "Hancock",
+    "Assassin", "Classic", "Bass", "Analyst", "Analog", "Canal", "Title", "Titan",
+    "Petite", "Document", "Cucumber", "Cumberland", "Spice", "Spicy", "Spices",
+    "Nigel", "Niger", "Nigeria", "Homogenous", "Homer", "Sapiens", "Swank", "Wanko",
+    "Mass_Hit", "WhoReigns", "Glasshouse", "Penistone", "Pussycat", "Retardant",
+    "Beanery", "Tardis", "Tardy", "Lesbos", "Nazir", "Kakariko", "Hokkaido",
+    "froexiaSim's Room", "KingZakkart's Room", "Stock Game Tuesday Night Brawl",
+    "Mass Hit Squad", "This Hit List", "Shockwave S08", "GoldenEye 007",
+    "Ourumov", "Natalya", "Oddjob", "Trevelyan", "Xenia", "Zukovsky",
+)
+
+
+class NameFilterTests(Base):
+    def test_lists(self):
+        for name in OFFENSIVE_NAMES:
+            self.assertTrue(L.name_offends(name), name)
+        for name in FINE_NAMES:
+            self.assertFalse(L.name_offends(name), name)
+
+    def test_sign_in_refused(self):
+        for name in ("nigger", "Fag", "Hitler88", "KillKikes"):
+            st, r = Client(self.srv.port).login(name)
+            self.assertEqual(st, 403, (name, r))
+            self.assertIn("not allowed", r["error"])
+        st, r = Client(self.srv.port).login("Raccoon")
+        self.assertEqual(st, 200, r)
+
+    def test_room_name_refused(self):
+        host = self.client("hostess")
+        for name in ("Fuck Off", "n i g g e r s only", "KKK Den", "Nazi Room"):
+            st, r = host.create(name=name)
+            self.assertEqual(st, 400, (name, r))
+            self.assertIn("not allowed", r["error"])
+        st, r = host.create(name="Mass Hit Squad")
+        self.assertEqual(st, 200, r)
+        st, r = host.act("settings", {"name": "Shit Room"})
+        self.assertEqual(st, 400, r)
+
+    def test_chat_masked(self):
+        self.assertEqual(L.chat_mask("you are a nigger lol"), "you are a ****** lol")
+        self.assertEqual(L.chat_mask("fuck this map"), "**** this map")
+        self.assertEqual(L.chat_mask("n i g g e r"), "* * * * * *")
+        self.assertEqual(L.chat_mask("u r a fag"), "u r a ***")
+        for fine in ("gg ez", "nice shot", "the raccoon in the cockpit", "Janus is here",
+                     "Scunthorpe united", "mass hit squad", "dick joined", "go to Japan"):
+            self.assertEqual(L.chat_mask(fine), fine)
+        # what the room and the main menu's chat keep and hand out is the starred line
+        a = self.client("alpha")
+        st, r = a.req("POST", "/chat", {"text": "this is bullshit"})
+        self.assertEqual(st, 200, r)
+        st, r = a.req("GET", "/chat?since=0")
+        self.assertEqual(r["chat"][-1]["text"], "this is ********")
+        host, (b,) = self.room_with("bravo")
+        st, r = b.act("chat", {"text": "kys noob"})
+        self.assertEqual(st, 200, r)
+        st, s = host.state()
+        self.assertEqual(s["chat"][-1]["text"], "*** noob")
+
+    def test_same_filter_as_pdghostd(self):
+        # one list for the two servers: pdghostd refuses the same names
+        # at sign-up and sign-in that this does at sign-in and on rooms
+        def block(path):
+            with open(path) as f:
+                text = f.read()
+            start = text.index("# ---- name filter: begin")
+            return text[start:text.index("# ---- name filter: end", start)]
+        self.assertEqual(block(os.path.join(HERE, "pdlobbyd.py")),
+                         block(os.path.join(HERE, "..", "pdghostd", "pdghostd.py")))
 
 
 if __name__ == "__main__":

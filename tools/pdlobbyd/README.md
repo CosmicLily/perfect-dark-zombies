@@ -61,8 +61,11 @@ code. Two credentials:
   with `"reason": "gone"`; for two minutes the `error` says why
   (`"the host removed you from the room"`, `"you timed out of the room"`,
   `"the host stopped responding"`, `"the host closed the room"`,
-  `"you joined another room"`), after that (or after a lobby restart)
-  `"you are no longer in this room"`. `403` is only ever a refusal of the
+  `"you joined another room"`), after that `"you are no longer in this
+  room"`. For 30 minutes after the lobby starts, a token it never handed
+  out (a seat from before a restart) is told the restart notice instead:
+  `PDLOBBYD_RESTART_NOTICE`, or a line saying the lobby restarted and its
+  rooms closed. The game shows a 410's `error` when it leaves the room. `403` is only ever a refusal of the
   action (`"reason": "host_only"` for host-only actions, `kicked`,
   `password`), never a dead token.
 
@@ -75,6 +78,9 @@ empty body is `{}`.
 | `POST /login` | anyone | `username`, `pin` | `session`, `user`, `expires` (unix) |
 | `POST /logout` | session | | |
 | `GET /rooms?proto=&build=` | anyone | `proto` filters to that protocol; `build` adds `same_build` to each | `rooms: [summary]`, newest first |
+| `GET /chat?since=N` | session | | `version`, `chat: [{v, user, text, t, system?}]` after `N` (every kept line for 0); see **Main menu chat** |
+| `POST /chat` | session | `text` | `version` |
+| `GET /players` | session | | `count`, `players: [{user, where, room?, room_id?, host?, spectator?}]` by name, at most 200; see **Players online** |
 | `POST /rooms` | session | see **Create** | `room`, `token` (host's member token), `secret` (64 hex), `udp_id` (16 hex), `udp_key` (64 hex), `version`, `time` |
 | `POST /rooms/<id>/join` | session | `proto`, `build`, `content`, `password`?, `spectator`?, `can_host`? | `room`, `token`, `udp_id`, `udp_key`, `version`, `time`; plus `ticket`, `ticket_expires` when the room is counting down or launched (a re-join of your own seat) |
 | `GET /rooms/<id>/state?since=N&wait=S` | member | | see **State** |
@@ -86,7 +92,7 @@ empty body is `{}`.
 | `POST /rooms/<id>/launch` | host | `force`?, `cancel`? | `version`, `countdown` (s) |
 | `POST /rooms/<id>/reopen` | host | | back to `open` after a match, nobody ready |
 | `POST /rooms/<id>/leave` | member | | a host leaving hands the room on (**Host migration**), or closes it when nobody can host |
-| `POST /rooms/<id>/heartbeat` | host | `endpoints`? | `version`, `time`; every 5 s; 15 s without one hands the room on (or closes it) |
+| `POST /rooms/<id>/heartbeat` | host | `endpoints`?, `seated`? (API 6) | `version`, `time`; every 5 s; 15 s without one hands the room on (or closes it) |
 | `POST /rooms/<id>/ticket` | member | | a fresh `ticket`, `ticket_expires`, `time`; `409` (`reason: not_started`) while the room is open |
 | `POST /rooms/<id>/netinfo` | member | `path` (`lan`/`direct`/`punch`/`relay`/`none` or null), `ping` (0-9999 ms or null), `can_host`? (bool), `nat`? (`open`/`nat`) | `version`; the member's own report of how it reaches the host, shown in every roster; the host's path and ping are ignored; `can_host` and `nat` rank it as the next host; 8 / 10 s per member |
 | `POST /rooms/<id>/hostlost` | member (not host) | | `version`; its game lost its connection to the host (**Host migration**) |
@@ -180,7 +186,8 @@ the room over learns the key it checks tickets with. `launch` is null
 while the room is `migrating`.
 
 `chat` holds only lines posted after version `N` (the last 50 are kept), so a
-client passes back the `version` it last saw. `countdown` is null unless
+client passes back the `version` it last saw. The server's own lines carry
+`"system": true` (**Server notices**). `countdown` is null unless
 counting down; `launch` null unless launched (`public` is where the host's UDP
 socket was seen by the rendezvous, null if it never registered; a change of
 it, or of any member's `udp`, moves the version and wakes the polls).
@@ -198,9 +205,116 @@ closes it, **Host migration**); a member
 with no request for 30 s and no poll parked is removed - except while the
 room is `launched`: then only the host's heartbeat counts, nobody is reaped,
 and a member whose game crashed can re-join its seat for a new ticket (the
-roster is what the host admits against). `reopen` gives every member a fresh
+roster is what the host admits against); from API 6 one the host's `seated` no
+longer names is reaped then too (**Seats in a running match**). `reopen` gives every member a fresh
 30 s. A client should still keep its state poll running through the match:
 that is how it hears the room close.
+
+## Main menu chat
+
+API 4. One chat for everyone signed in, whether in a room or not: the game
+shows it on its Briefing Room, the page of rooms, in place of what used to be
+a status window there (the owner, 2026-10-11: "the small bottom right window
+that says Lobby, let's make that a Main Menu Chat"). Lines are cleaned and
+cut as a room's are (`CHAT_MAX`), said at most `chat_window` (6 in 10 s) per
+account rather than per seat, and the last `chat_keep` (50) are kept; a
+restart empties it, as it empties the rooms. Reading is a plain poll on the
+version (`since`), no parked waits: the game asks every two seconds while the
+page is up, well inside the request rate. A server before API 4 answers 404,
+and the game says so in the window.
+
+## Server notices
+
+API 5. A line from the server itself, said to everyone at once: it goes in
+every room's chat and in the main menu's, as `"user": "Server"` with
+`"system": true`, which only the server ever sets (a player named Server is a
+player). Every parked poll wakes with it. The game shows a room's notice in
+the match's chat as well, in the notices' colour, for twice a line's time
+(nethud.c `netHudServerNotice`); in the Game Lobby's chat and the Briefing
+Room's it is drawn in that colour too. A game from before API 5 shows it as a
+chat line from "Server" in its Game Lobby, and not in a match.
+
+It is said on the notice port, `admin_port` (`PDLOBBYD_ADMIN_PORT`,
+`--admin-port`; 8092, -1 for none), which is bound to 127.0.0.1 whatever
+`host` is, never proxied, and serves nothing but this. Whoever can open a
+socket on the box can say a notice; there is no other check. A port already
+taken leaves the lobby running without notices (logged).
+
+```sh
+ssh sdg@10.8.0.1 'curl -s -X POST -d "{\"text\": \"Restarting Server for Update in 1 minute, apologies for the inconvenience!\"}" http://127.0.0.1:8092/notice'
+```
+
+`{"ok": true, "rooms": N}`; `400` for nothing to say (cleaned and cut as a
+chat line). Stopping the lobby (systemd's stop and restart are a SIGTERM)
+says `shutdown_notice` (`PDLOBBYD_SHUTDOWN_NOTICE`, "Restarting Server for
+Update, apologies for the inconvenience!", the owner's words) to every room
+there is and waits `shutdown_grace` (2 s) for the polls to carry it before
+the rooms close. A restart is then told to the seats from before it by the
+410 (`restart_notice`, "HTTP API" above): the game shows that when it leaves
+the room. For a warning a while ahead, say a notice first, wait, then
+restart.
+
+## Seats in a running match
+
+API 6. A launched room takes joiners while its match runs (the host seats
+them in the match in progress), but the room's own count (`humans()`, members
+who are not spectators) only fell when a member left: nobody is reaped while a
+room is launched (a game may stop polling in a match, and a crashed player
+must still be on the roster to come back within the host's hold). So a
+member whose game crashed or dropped mid-match kept its room seat to the
+match's end and a newcomer heard "the room is full" while the match had an
+open seat (F3 20261012-020922, dab).
+
+Now the host's heartbeat carries `seated`: the accounts its session has (each
+client connected under a name, player or spectator, and each seat held for a
+dropped player within its hold; netsession.c `netSessionHostAccountsJson`).
+While the room is launched and that list is fresh (`seated_fresh`, 16 s, from
+the current host), a non-host member not on it, with no poll parked and
+nothing from it for `member_timeout` (30 s), is removed ("gone from the host's
+match; seat freed"): its seat is the room's again and a newcomer joins into
+the match in progress. A member still polling is never removed this way (a
+joiner connecting, a member back in the Game Lobby after End Game - the game
+offers it back into the match). A host without `seated` (older games), a
+stale list, or a list from a host since replaced reaps nobody mid-match, as
+before. A new launch forgets the last one's list.
+
+## Players online
+
+API 7. Who is signed in to the lobby now and where they are, for the game's
+Players Online list on its Briefing Room (the owner, F3 20261012-115245: "a
+button to show players online in the main menu"). `GET /players` with a
+session answers every account once, sorted by name (case folded):
+
+```json
+{"ok": true, "count": 3,
+ "players": [{"user": "dab", "where": "menu"},
+             {"user": "joiner", "where": "room", "room": "Dab's Room", "room_id": "0a1b2c3d",
+              "host": false, "spectator": false},
+             {"user": "ZaileX", "where": "match", "room": "Join ZaileX", "room_id": "4e5f6a7b",
+              "host": true, "spectator": false}]}
+```
+
+- `"room"`: a member of a room that is open or counting down (its Game
+  Lobby); `"match"`: a member of a launched room (its match is on, until its
+  host reopens the room after it). `room` is the room's name as the list
+  shows it, `room_id` its id, `host` and `spectator` the member's seat. A
+  dedicated room's host is a server, not a player, and is left out.
+- `"menu"`: an account in no room whose session asked the lobby for
+  anything in the last `presence_ttl` (60 s). The game's Briefing Room asks
+  for the main menu's chat every 2 s, so that is where such a player is (or
+  a page on from it, Create Room, for up to a minute); a game that left the
+  online pages or quit drops out a minute later, and a `logout` at once.
+- `count` is every one of them; the list holds the first `players_max`
+  (200) by name.
+
+Nothing else about anyone: no address (the per-address limits key on one,
+the list never shows it), no session, token, path or ping. The names are the
+ones the lobby let sign in and the room names the ones it let be made, so the
+name filter (**Names and chat that offend**) has passed them all: its lists
+are this process's, and a change to them is a restart, which empties the
+sessions and the rooms. A plain request on the request bucket, no parked
+wait: the game asks once as the list opens and every 5 s while it is up. A
+server before API 7 answers 404, and the game says the lobby has no list.
 
 ## Host migration
 
@@ -517,11 +631,14 @@ and nonces come from `os.urandom`.
 python3 tools/pdlobbyd/test_pdlobbyd.py
 ```
 
-100 cases in about twenty-seven seconds, each against its own server (an event
+121 cases in about forty seconds, each against its own server (an event
 loop on a background thread, HTTP and UDP on ports the kernel picks, timeouts
 cut to fractions of a second): create/list/filters, validation, join with
 password, the protocol and content refusals, the wrong-password limiter, full
 rooms and spectators, ready/team/chat with sanitising and the chat limiter,
+the players online list (where each is, one line an account, a dedicated host
+left out, no address or token in it, presence lapsing and back, signed out,
+the reply's cap),
 host-only settings (refused settings leave the room untouched) and kick, the
 launch countdown (refused while unready, cancelled by an unready, forced, run
 out into launched with filtered endpoints and a ticket, reopened), leaving,
@@ -573,7 +690,8 @@ worker there: about 500 parked polls before it refuses everyone, pdghostd
 included; raise it before a real crowd. A redeploy is `scp` the script over,
 `python3 -c "import ast; ast.parse(open('/home/sdg/pdlobbyd.py').read())"` on
 the box, `sudo -n systemctl restart pdlobbyd` (rooms are in memory: a restart
-empties them). `journalctl -u pdlobbyd -f` for the log.
+empties them; from API 5 the rooms are told first, "Server notices" above).
+`journalctl -u pdlobbyd -f` for the log.
 
 The unit binds the UDP side to the box's public address (104.156.237.19),
 not 0.0.0.0. A socket on every address answers from whichever address the
@@ -654,3 +772,15 @@ attribute of `Config` at the top of the file.
 
 Logs go to the journal: one line per room made, closed (with why) and
 launched. `journalctl -u pdlobbyd -f`.
+
+## Names and chat that offend (2026-10-12)
+
+`name_offends()` (the same block as pdghostd's; `test_pdlobbyd.py` checks the
+copies match) refuses an account name at `POST /login` (`403`, "that name is
+not allowed" - pdghostd refuses it too, this is for an open LAN lobby) and a
+room name at create and in settings (`400`, "that room name is not allowed").
+Chat, the rooms' and the main menu's, is kept and handed out through
+`chat_mask()`: a word that is a slur or an obscenity is starred letter for
+letter (`you are a ****** lol`), and a line that spells one only across its
+words (`n i g g e r`) is starred whole. The lists and how much of a name each
+may hide in are at the top of the block.

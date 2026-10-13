@@ -72,6 +72,18 @@
 #define JOB_ACTION   4 // POST /rooms/<id>/<path> as the member
 #define JOB_LEAVE    5
 #define JOB_SIGNIN   6 // signing in alone: the Online Game page says who this is as it opens
+#define JOB_MAINSAY  7 // POST /chat, the main menu's chat, as the session
+#define JOB_PLAYERS  8 // GET /players, who is online (the Briefing Room's Players Online page)
+
+#define LOBBY_MAINCHAT_POLL_MS 2000 // the main menu's chat is asked for this often while it is up
+#define LOBBY_MAINCHAT_WANT_MS 1500 // and "up" lasts this long after the Briefing Room last said so
+#define LOBBY_PLAYERS_POLL_MS  5000 // who is online, asked this often while Players Online is up
+#define LOBBY_PLAYERS_WANT_MS  1500 // and "up" lasts this long after the page last said so
+
+// the host's session accounts for its heartbeat (pdlobbyd api 6 "seated"),
+// written by the main thread, read by the beat thread, under s_Lock; "" none
+static char s_BeatSeated[1024] = "";
+static u64 s_BeatSeatedAt = 0;
 
 struct lobbyjob {
 	s32 kind;
@@ -125,12 +137,30 @@ static s64 s_PendTime = 0;        // the lobby's clock in the reply that brought
 static s64 s_PendOffset = 0;      // that clock less ours, when the reply came
 static u32 s_EnteredSeq = 0;      // a create or join succeeded
 static u32 s_GoneSeq = 0;         // the seat went away (410), or the room closed
+// The lobby's notices (pdlobbyd API 5) that came in a room's chat since the
+// first reply: the poll thread queues them, the main thread gives them to
+// the match's chat (netHudServerNotice)
+#define LOBBY_MAXNOTICES 4
+static char s_PendNotice[LOBBY_MAXNOTICES][NETLOBBY_MAXCHATTEXT + 1];
+static u32 s_PendNoticeSeq = 0;
+static u32 s_SeenNoticeSeq = 0;
 static char s_GoneText[200] = "";
 static s32 s_LastStatus = 0;
 static SDL_atomic_t s_Unreachable; // the last request on either thread got no answer at all
 static char s_PendTicket[NET_MAXTICKET + 2] = "";
+static u32 s_PendTicketSeq = 0;   // a ticket asked for by itself ("ticket" action): Back Into the Match
+static u32 s_SeenTicketSeq = 0;
 static char s_JobUser[GHOSTNET_MAXUSER + 2] = "";  // the account as the last job was queued
 static char s_JobPin[GHOSTNET_MAXPIN + 2] = "";     // (Ghost Trials edits g_GhostNet* meanwhile)
+// under s_Lock: the main menu's chat (pdlobbyd API 4: GET and POST /chat),
+// read by the poll thread while the Briefing Room is up and no room is
+static struct netlobbychat s_MainChat[NETLOBBY_MAXCHAT]; // oldest first
+static s32 s_MainChatN = 0;
+static s32 s_MainChatSince = 0;      // the version last read
+static s32 s_MainChatAvail = 0;      // 1 the lobby has it, -1 it answered 404, 0 not heard yet
+static u64 s_MainChatWantUntil = 0;  // lobbyNowMs(): the page is up until then
+static u64 s_MainChatLastPoll = 0;
+static s32 s_MainChatSigning = 0;    // a 401 queued a sign-in, not yet back
 static char s_UdpId[17] = "";     // this seat's rendezvous id and key (hex), from create/join
 static char s_UdpKey[65] = "";
 static struct netaddr s_PendUdpAddr; // the lobby's rendezvous, from /ping (action thread)
@@ -178,6 +208,8 @@ static u64 s_ReportedAt = 0;
 // the launch, as this machine follows it
 static u32 s_LaunchHandled = 0;    // the launch (its "at") this machine acted on
 static u32 s_LaunchEndedAt = 0;    // the launch whose session ended for good here (refused, left): not retried
+static s32 s_LaunchEndedLeft = 0;
+static s32 s_RejoinPending = 0;    // Back Into the Match: waiting for the fresh ticket it asked for  // ... by this player's own End Game: offered back in (netLobbyRejoin)
 static char s_LaunchEndedText[200] = ""; // why (kept apart from s_MainMessage, which the room's page clears on opening)
 static s32 s_LobbyConnSpectator = 0; // a member: the connection it made was a spectator's
 static u64 s_LaunchDeadline = 0;
@@ -220,12 +252,14 @@ static s32 s_ScriptSkipLadder = 0; // --net-test-skip-ladder: a launch takes the
 static s32 s_ScriptNoEcho = 0;     // --net-test-no-echo: the list's PING as if UDP to the lobby were blocked; the join script lists only
 static s32 s_ScriptShots = 0;      // --net-lobby-shots: the menus up, screenshots of them (netlobbyuitest.sh)
 static s32 s_ScriptShotStep = 0;   // 0 nothing yet, 1 menu up, 2 shot taken
+static s32 s_ScriptChatAtLaunch = 0; // --net-test-chat-at-launch: join: the Game Lobby's Chat open as each later match launches
 static u64 s_ScriptShotAt = 0;
 
 void netLobbyMenuPushRoom(void);     // netlobbymenu.c
 void netLobbyMenuPushRoomAfterMatch(void); // netlobbymenu.c
 void netLobbyMenuPushBriefing(void); // netlobbymenu.c
 s32 netLobbyMenuPageUp(s32 room);     // netlobbymenu.c
+s32 netLobbyMenuPushChat(void);       // netlobbymenu.c
 void screenshotRequest(void);        // screenshot.h
 extern struct menudialogdef g_MpEndscreenSavePlayerMenuDialog;
 
@@ -952,6 +986,8 @@ static void lobbyGone(u32 epoch, const char *why)
 	SDL_UnlockMutex(s_Lock);
 }
 
+static void lobbyPlayersFetch(void);
+
 static void lobbyRunJob(struct lobbyjob *job)
 {
 	char err[128];
@@ -1089,6 +1125,26 @@ static void lobbyRunJob(struct lobbyjob *job)
 			SDL_UnlockMutex(s_Lock);
 		}
 		break;
+	case JOB_MAINSAY:
+		status = lobbySessionRequest("/chat", job->body, &reply, &obj, &objok, err, sizeof(err));
+
+		SDL_LockMutex(s_Lock);
+
+		if (status == 200) {
+			// the line back at once, rather than at the next poll
+			s_MainChatLastPoll = 0;
+			SDL_CondBroadcast(s_Wake);
+		} else if (status == 404) {
+			s_MainChatAvail = -1;
+		}
+
+		SDL_UnlockMutex(s_Lock);
+
+		if (status != 200 && status != 404) {
+			lobbyReplyError(status, reply, obj, objok, err, msg, sizeof(msg));
+			lobbySetMessage(msg);
+		}
+		break;
 	case JOB_SIGNIN:
 		SDL_LockMutex(s_Lock);
 		i = s_Session[0] != '\0';
@@ -1098,6 +1154,9 @@ static void lobbyRunJob(struct lobbyjob *job)
 		if (!i) {
 			lobbyLogin();
 		}
+		break;
+	case JOB_PLAYERS:
+		lobbyPlayersFetch();
 		break;
 	case JOB_ACTION:
 	case JOB_LEAVE:
@@ -1121,6 +1180,17 @@ static void lobbyRunJob(struct lobbyjob *job)
 					s_PendOffset = s_PendTime - (s64)time(NULL);
 				}
 				SDL_UnlockMutex(s_Lock);
+			} else if (strcmp(job->path, "ticket") == 0 && objok) {
+				// a fresh ticket (its own nonce): the launch's last one was
+				// spent on the connection this player left
+				char ticket[NET_MAXTICKET + 2];
+
+				if (jsonGetStr(obj, "ticket", ticket, sizeof(ticket))) {
+					SDL_LockMutex(s_Lock);
+					snprintf(s_PendTicket, sizeof(s_PendTicket), "%s", ticket);
+					s_PendTicketSeq++;
+					SDL_UnlockMutex(s_Lock);
+				}
 			}
 		} else if (job->kind == JOB_LEAVE) {
 			// gone already, or the lobby is down: either way not in it
@@ -1313,12 +1383,87 @@ static int lobbyBeatThread(void *arg)
 		job.kind = JOB_ACTION;
 		job.epoch = s_Epoch;
 		snprintf(job.path, sizeof(job.path), "heartbeat");
-		snprintf(job.body, sizeof(job.body), "{}");
+
+		if (s_BeatSeated[0]) {
+			snprintf(job.body, sizeof(job.body), "{\"seated\":%s}", s_BeatSeated);
+		} else {
+			snprintf(job.body, sizeof(job.body), "{}");
+		}
 		lastbeat = lobbyNowMs();
 		SDL_UnlockMutex(s_Lock);
 
 		lobbyRunJob(&job);
 	}
+}
+
+static void lobbyQueue(s32 kind, const char *path, const char *body);
+
+// under s_Lock: the main menu's chat is wanted and its next poll is due
+static s32 lobbyMainChatDue(u64 now)
+{
+	return s_Session[0] != '\0' && s_MainChatAvail >= 0 && now < s_MainChatWantUntil
+		&& now - s_MainChatLastPoll >= LOBBY_MAINCHAT_POLL_MS;
+}
+
+/**
+ * The main menu's chat: the lines after the last version read, kept as the
+ * Game Lobby keeps its room's (the last NETLOBBY_MAXCHAT). A lobby without
+ * it (404, before API 4) is not asked again until the page opens anew; a
+ * session the lobby no longer knows (a restart) is signed in again once.
+ */
+static void lobbyMainChatPoll(void)
+{
+	char path[64];
+	char err[128];
+	char *reply = NULL;
+	struct jspan obj;
+	struct jspan arr;
+	struct jspan el;
+	s32 objok = 0;
+	s32 status;
+	s32 i;
+
+	SDL_LockMutex(s_Lock);
+	s_MainChatLastPoll = lobbyNowMs();
+	snprintf(path, sizeof(path), "/chat?since=%d", s_MainChatSince);
+	SDL_UnlockMutex(s_Lock);
+
+	status = lobbyRequest(path, NULL, AUTH_SESSION, 10, &reply, &obj, &objok, err, sizeof(err));
+
+	SDL_LockMutex(s_Lock);
+
+	if (status == 200 && objok) {
+		s_MainChatAvail = 1;
+		s_MainChatSigning = 0;
+
+		if (jsonGet(obj, "chat", &arr)) {
+			for (i = 0; jsonAt(arr, i, &el); i++) {
+				if (s_MainChatN == NETLOBBY_MAXCHAT) {
+					memmove(s_MainChat, s_MainChat + 1, sizeof(s_MainChat[0]) * (NETLOBBY_MAXCHAT - 1));
+					s_MainChatN--;
+				}
+
+				jsonGetStr(el, "user", s_MainChat[s_MainChatN].user, sizeof(s_MainChat[0].user));
+				jsonGetStr(el, "text", s_MainChat[s_MainChatN].text, sizeof(s_MainChat[0].text));
+				s_MainChat[s_MainChatN].system = jsonGetInt(el, "system", 0) != 0;
+				s_MainChatN++;
+			}
+		}
+
+		s_MainChatSince = jsonGetInt(obj, "version", s_MainChatSince);
+	} else if (status == 404) {
+		s_MainChatAvail = -1;
+	} else if (status == 401 && !s_MainChatSigning) {
+		s_MainChatSigning = 1;
+		s_Session[0] = '\0';
+		SDL_UnlockMutex(s_Lock);
+		free(reply);
+		lobbyQueue(JOB_SIGNIN, "", NULL);
+		return;
+	}
+
+	SDL_UnlockMutex(s_Lock);
+	free(reply);
 }
 
 static int lobbyPollThread(void *arg)
@@ -1338,8 +1483,8 @@ static int lobbyPollThread(void *arg)
 
 		SDL_LockMutex(s_Lock);
 
-		while (!s_Quit && !s_InRoomShared) {
-			SDL_CondWaitTimeout(s_Wake, s_Lock, 1000);
+		while (!s_Quit && !s_InRoomShared && !lobbyMainChatDue(lobbyNowMs())) {
+			SDL_CondWaitTimeout(s_Wake, s_Lock, 500);
 		}
 
 		if (s_Quit) {
@@ -1347,6 +1492,13 @@ static int lobbyPollThread(void *arg)
 			SDL_CondBroadcast(s_Wake);
 			SDL_UnlockMutex(s_Lock);
 			return 0;
+		}
+
+		// no room: the main menu's chat, while the Briefing Room is up
+		if (!s_InRoomShared) {
+			SDL_UnlockMutex(s_Lock);
+			lobbyMainChatPoll();
+			continue;
 		}
 
 		if (epoch != s_Epoch) {
@@ -1389,6 +1541,14 @@ static int lobbyPollThread(void *arg)
 
 								jsonGetStr(el, "user", old[n].user, sizeof(old[n].user));
 								jsonGetStr(el, "text", old[n].text, sizeof(old[n].text));
+								old[n].system = jsonGetInt(el, "system", 0) != 0;
+
+								// said after this player came in: for the match's chat
+								if (old[n].system) {
+									snprintf(s_PendNotice[s_PendNoticeSeq % LOBBY_MAXNOTICES], sizeof(s_PendNotice[0]), "%s", old[n].text);
+									s_PendNoticeSeq++;
+								}
+
 								n++;
 							}
 						}
@@ -1410,6 +1570,7 @@ static int lobbyPollThread(void *arg)
 							for (i = total > NETLOBBY_MAXCHAT ? total - NETLOBBY_MAXCHAT : 0; jsonAt(arr, i, &el); i++) {
 								jsonGetStr(el, "user", st->chat[st->nchat].user, sizeof(st->chat[0].user));
 								jsonGetStr(el, "text", st->chat[st->nchat].text, sizeof(st->chat[0].text));
+								st->chat[st->nchat].system = jsonGetInt(el, "system", 0) != 0;
 								st->nchat++;
 							}
 						}
@@ -1660,9 +1821,326 @@ void netLobbyClearMessage(void)
 	s_MainMessage[0] = '\0';
 }
 
+void netLobbySetMessage(const char *text)
+{
+	snprintf(s_MainMessage, sizeof(s_MainMessage), "%s", text ? text : "");
+}
+
+/**
+ * A counter-op room (netcoop.c) launches with somebody on each side: a
+ * player (the host or a member, not watching) on team 0, the agents, and
+ * one on team 1, the counter-ops
+ */
+s32 netLobbySidesOk(void)
+{
+	s32 agents = 0;
+	s32 antis = 0;
+	s32 i;
+
+	if (!s_InRoom || !s_Room.valid) {
+		return 0;
+	}
+
+	for (i = 0; i < s_Room.nmembers; i++) {
+		const struct netlobbymember *m = &s_Room.members[i];
+
+		if (m->spectator) {
+			continue;
+		}
+
+		if ((m->team & 7) == 1) {
+			antis++;
+		} else {
+			agents++;
+		}
+	}
+
+	return agents > 0 && antis > 0;
+}
+
 void netLobbyRefresh(void)
 {
 	lobbyQueue(JOB_LIST, "", NULL);
+}
+
+/**
+ * The main menu's chat (the Briefing Room's window, pdlobbyd's GET and POST
+ * /chat). The page says it is up every frame; the poll thread asks every
+ * two seconds while it is, and while no room is.
+ */
+void netLobbyMainChatWant(void)
+{
+#ifdef PD_GHOST_NET
+	u64 now;
+
+	if (!netLobbyAvailable()) {
+		return;
+	}
+
+	lobbyStartThreads();
+	now = lobbyNowMs();
+
+	SDL_LockMutex(s_Lock);
+
+	// opened anew: at once, and a lobby that had none asked again
+	if (now >= s_MainChatWantUntil) {
+		s_MainChatLastPoll = 0;
+
+		if (s_MainChatAvail < 0) {
+			s_MainChatAvail = 0;
+		}
+
+		SDL_CondBroadcast(s_Wake);
+	}
+
+	s_MainChatWantUntil = now + LOBBY_MAINCHAT_WANT_MS;
+	SDL_UnlockMutex(s_Lock);
+#endif
+}
+
+// 1 the lobby has the chat, -1 it has none (an older pdlobbyd), 0 not heard yet
+s32 netLobbyMainChatAvailable(void)
+{
+#ifdef PD_GHOST_NET
+	s32 avail = 0;
+
+	if (s_Lock) {
+		SDL_LockMutex(s_Lock);
+		avail = s_MainChatAvail;
+		SDL_UnlockMutex(s_Lock);
+	}
+
+	return avail;
+#else
+	return -1;
+#endif
+}
+
+// Its lines, oldest first, up to max: how many
+s32 netLobbyMainChatLines(struct netlobbychat *out, s32 max)
+{
+#ifdef PD_GHOST_NET
+	s32 n = 0;
+
+	if (s_Lock) {
+		SDL_LockMutex(s_Lock);
+		n = s_MainChatN < max ? s_MainChatN : max;
+		memcpy(out, s_MainChat + (s_MainChatN - n), sizeof(out[0]) * n);
+		SDL_UnlockMutex(s_Lock);
+	}
+
+	return n;
+#else
+	return 0;
+#endif
+}
+
+void netLobbyMainChatSay(const char *text)
+{
+	char body[NETLOBBY_MAXCHATTEXT * 6 + 32];
+	char esc[NETLOBBY_MAXCHATTEXT * 6 + 2];
+
+	if (!text || !text[0]) {
+		return;
+	}
+
+	ghostnetJsonEscape(text, esc, sizeof(esc));
+	snprintf(body, sizeof(body), "{\"text\":\"%s\"}", esc);
+	lobbyQueue(JOB_MAINSAY, "chat", body);
+}
+
+/*
+ * Players online (pdlobbyd API 7, GET /players): who is signed in to the
+ * lobby now and where, for the Briefing Room's Players Online page
+ * (netlobbymenu.c). Asked on the action thread as the page opens and every
+ * 5 s while it is up, as the session (signed in again on a 401); a lobby
+ * without it (404, before API 7) is not asked again until the page opens
+ * anew.
+ */
+#ifdef PD_GHOST_NET
+// under s_Lock
+static struct netlobbyplayer s_Players[NETLOBBY_MAXPLAYERS]; // by name, as the lobby sorts them
+static s32 s_PlayersN = 0;
+static s32 s_PlayersTotal = 0;        // the lobby's count (a reply lists the first 200)
+static s32 s_PlayersAvail = 0;        // 1 a list came, -1 the lobby has none (404), 0 not heard yet
+static char s_PlayersError[200] = ""; // why the last ask failed ("" it did not)
+static s32 s_PlayersQueued = 0;       // a JOB_PLAYERS queued or running
+static u64 s_PlayersAskedAt = 0;      // lobbyNowMs() it was queued (0: ask at once)
+static u64 s_PlayersWantUntil = 0;    // the page is up until then
+static s32 s_PlayersLogged = -1;      // the count last logged
+
+static void lobbyPlayersFetch(void)
+{
+	char err[128];
+	char msg[200];
+	char *reply = NULL;
+	struct jspan obj;
+	struct jspan arr;
+	struct jspan el;
+	s32 objok = 0;
+	s32 status;
+	s32 logged = -1;
+	s32 i;
+
+	status = lobbySessionRequest("/players", NULL, &reply, &obj, &objok, err, sizeof(err));
+	msg[0] = '\0';
+
+	if (status != 200 && status != 404 && status != -1) {
+		lobbyReplyError(status, reply, obj, objok, err, msg, sizeof(msg));
+	}
+
+	SDL_LockMutex(s_Lock);
+
+	if (status == 200 && objok && jsonGet(obj, "players", &arr)) {
+		s32 n = 0;
+		s32 total;
+
+		for (i = 0; n < NETLOBBY_MAXPLAYERS && jsonAt(arr, i, &el); i++) {
+			struct netlobbyplayer *p = &s_Players[n];
+			char where[12];
+
+			memset(p, 0, sizeof(*p));
+
+			if (!jsonGetStr(el, "user", p->user, sizeof(p->user)) || !p->user[0]) {
+				continue;
+			}
+
+			jsonGetStr(el, "where", where, sizeof(where));
+			p->where = strcmp(where, "match") == 0 ? NETLOBBY_WHERE_MATCH
+				: strcmp(where, "room") == 0 ? NETLOBBY_WHERE_ROOM : NETLOBBY_WHERE_MENU;
+			jsonGetStr(el, "room", p->room, sizeof(p->room));
+			p->host = jsonGetInt(el, "host", 0) != 0;
+			p->spectator = jsonGetInt(el, "spectator", 0) != 0;
+			n++;
+		}
+
+		total = (s32)jsonGetInt(obj, "count", n);
+		s_PlayersN = n;
+		s_PlayersTotal = total < n ? n : total;
+		s_PlayersAvail = 1;
+		s_PlayersError[0] = '\0';
+
+		if (s_PlayersTotal != s_PlayersLogged) {
+			s_PlayersLogged = s_PlayersTotal;
+			logged = s_PlayersTotal;
+		}
+	} else if (status == 404) {
+		// a lobby from before API 7
+		s_PlayersAvail = -1;
+	} else if (status == -1) {
+		// the sign-in failed, and said why
+		snprintf(s_PlayersError, sizeof(s_PlayersError), "%s", s_Message);
+	} else {
+		snprintf(s_PlayersError, sizeof(s_PlayersError), "%s", msg[0] ? msg : "The lobby did not answer.");
+	}
+
+	s_PlayersQueued = 0;
+	SDL_UnlockMutex(s_Lock);
+
+	if (logged >= 0) {
+		sysLogPrintf(LOG_NOTE, "lobby: %d player%s online", logged, logged == 1 ? "" : "s");
+	} else if (status == 404) {
+		sysLogPrintf(LOG_NOTE, "lobby: this lobby has no players list (404: before API 7)");
+	} else if (status != 200) {
+		sysLogPrintf(LOG_WARNING, "lobby: players online not read (%d): %s", status, msg[0] ? msg : "sign-in failed");
+	}
+
+	free(reply);
+}
+#endif
+
+void netLobbyPlayersWant(void)
+{
+#ifdef PD_GHOST_NET
+	u64 now;
+	s32 ask = 0;
+
+	if (!netLobbyAvailable()) {
+		return;
+	}
+
+	lobbyStartThreads();
+	now = lobbyNowMs();
+
+	SDL_LockMutex(s_Lock);
+
+	// opened anew: a fresh list at once (the last may be minutes old), and
+	// a lobby that had none asked again
+	if (now >= s_PlayersWantUntil) {
+		s_PlayersAskedAt = 0;
+		s_PlayersAvail = 0;
+		s_PlayersN = 0;
+		s_PlayersTotal = 0;
+		s_PlayersError[0] = '\0';
+		s_PlayersLogged = -1;
+	}
+
+	s_PlayersWantUntil = now + LOBBY_PLAYERS_WANT_MS;
+
+	// one at a time (one the full queue dropped is given up after 30 s)
+	if ((!s_PlayersQueued || now - s_PlayersAskedAt > 30000) && s_PlayersAvail >= 0
+			&& (s_PlayersAskedAt == 0 || now - s_PlayersAskedAt >= LOBBY_PLAYERS_POLL_MS)) {
+		s_PlayersQueued = 1;
+		s_PlayersAskedAt = now;
+		ask = 1;
+	}
+
+	SDL_UnlockMutex(s_Lock);
+
+	if (ask) {
+		lobbyQueue(JOB_PLAYERS, "players", NULL);
+	}
+#endif
+}
+
+s32 netLobbyPlayersState(void)
+{
+#ifdef PD_GHOST_NET
+	s32 state = 0;
+
+	if (s_Lock) {
+		SDL_LockMutex(s_Lock);
+		state = s_PlayersAvail;
+		SDL_UnlockMutex(s_Lock);
+	}
+
+	return state;
+#else
+	return -1;
+#endif
+}
+
+s32 netLobbyPlayersGet(struct netlobbyplayer *out, s32 max, s32 *total, char *err, s32 errsize)
+{
+	s32 n = 0;
+
+	if (total) {
+		*total = 0;
+	}
+
+	if (err && errsize > 0) {
+		err[0] = '\0';
+	}
+
+#ifdef PD_GHOST_NET
+	if (s_Lock) {
+		SDL_LockMutex(s_Lock);
+		n = s_PlayersN < max ? s_PlayersN : max;
+		memcpy(out, s_Players, sizeof(out[0]) * n);
+
+		if (total) {
+			*total = s_PlayersTotal;
+		}
+
+		if (err && errsize > 0) {
+			snprintf(err, errsize, "%s", s_PlayersError);
+		}
+
+		SDL_UnlockMutex(s_Lock);
+	}
+#endif
+
+	return n;
 }
 
 /**
@@ -1779,7 +2257,7 @@ static s32 lobbySettingsJson(char *out, s32 size, s32 withcompat)
 	char eweap[40 * 6];
 	char emod[(NETLOBBY_MAXMOD + 1) * 6];
 	char ege[16 * 6];
-	char coop[64] = "";
+	char extra[64] = ""; // the rules beyond the limits: a co-op room's radar and friendly fire, a match's teams
 	struct netcontentneed need;
 	// a co-op room's mission has none (the Combat Simulator setup's are not its)
 	const s32 sims = g_NetCoopSetup.on ? 0 : mpGetNumSimSlotsOn();
@@ -1797,7 +2275,15 @@ static s32 lobbySettingsJson(char *out, s32 size, s32 withcompat)
 		// difficulty as the mode, "mission:N" as the key
 		char mode[40];
 
-		netCoopModeName(g_NetCoopSetup.difficulty, mode, sizeof(mode));
+		netCoopModeName(g_NetCoopSetup.game, g_NetCoopSetup.difficulty, mode, sizeof(mode));
+
+		// a counter-op mission (protocol 32): "Counter-Op Agent"
+		if (g_NetCoopSetup.anti && !g_NetCoopSetup.campaign && strncmp(mode, "Co-op ", 6) == 0) {
+			char diff[40];
+
+			snprintf(diff, sizeof(diff), "%s", mode + 6);
+			snprintf(mode, sizeof(mode), "Counter-Op %s", diff);
+		}
 		lobbyCleanName(netCoopMissionNameOf(g_NetCoopSetup.game, g_NetCoopSetup.stageindex), stage, 33);
 		lobbyCleanName(mode, scenario, 33);
 		// "mission:NN" Perfect Dark's, "mission:ge:NN" a conversion's; a
@@ -1814,12 +2300,18 @@ static s32 lobbySettingsJson(char *out, s32 size, s32 withcompat)
 
 		// what the Game Lobby's summary says of a co-op room in place of
 		// the limits and the simulants
-		snprintf(coop, sizeof(coop), ",\"radar\":%d,\"friendly_fire\":%d", g_NetCoopSetup.radar ? 1 : 0,
-				g_NetCoopSetup.friendlyfire ? 1 : 0);
+		snprintf(extra, sizeof(extra), ",\"radar\":%d,\"friendly_fire\":%d%s", g_NetCoopSetup.radar ? 1 : 0,
+				g_NetCoopSetup.friendlyfire ? 1 : 0,
+				g_NetCoopSetup.anti && !g_NetCoopSetup.campaign ? ",\"counterop\":1" : "");
 	} else {
 		lobbyCleanName(mpMenuTextArenaName(NULL), stage, 33);
 		lobbyCleanName(mpMenuTextScenarioShortName(NULL), scenario, 33);
 		lobbyStageKey(key, sizeof(key));
+
+		// a team match: the Game Lobby's roster groups and colours its
+		// players by team (Capture the Case turns teams on at its start)
+		snprintf(extra, sizeof(extra), ",\"teams\":%d",
+				(g_MpSetup.options & MPOPTION_TEAMSENABLED) || g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE ? 1 : 0);
 	}
 
 	// a GoldenEye conversion's set marked as the dropdown marks it, where the
@@ -1839,7 +2331,32 @@ static s32 lobbySettingsJson(char *out, s32 size, s32 withcompat)
 			g_MpSetup.timelimit >= 60 ? 0 : g_MpSetup.timelimit + 1,
 			g_MpSetup.scorelimit >= 100 ? 0 : g_MpSetup.scorelimit + 1,
 			g_MpSetup.teamscorelimit >= 400 ? 0 : g_MpSetup.teamscorelimit + 1,
-			eweap, coop, withcompat ? "," : "");
+			eweap, extra, withcompat ? "," : "");
+}
+
+/**
+ * Create Room's and Room Settings' preview (netlobbymenu.c): the room's
+ * summary and rules as this machine's setup now makes them, read back from
+ * the JSON the create and a settings change send (lobbySettingsJson), so
+ * the preview says what the Briefing Room and the Game Lobby will. The
+ * name, host and counts are the caller's to fill.
+ */
+void netLobbyPreviewRoom(struct netlobbyroom *out)
+{
+	static char frag[4096];
+	static char json[8320];
+	struct jspan o;
+	s32 len;
+
+	lobbySettingsJson(frag, sizeof(frag), 0);
+	len = snprintf(json, sizeof(json), "{\"room\":{%s},%s}", frag, frag);
+
+	if (len <= 0 || len >= (s32)sizeof(json) || !jsonParse(json, len, &o)) {
+		memset(out, 0, sizeof(*out));
+		return;
+	}
+
+	lobbyReadState(o, out);
 }
 
 static s32 lobbyCompatJson(char *out, s32 size)
@@ -1996,6 +2513,29 @@ s32 netLobbyMyReady(void)
 	return m ? m->ready : 0;
 }
 
+/**
+ * A room member's team by account (a join in progress's side in a
+ * counter-op room, netcoop.c): -1 not in the room, or watching
+ */
+s32 netLobbyMemberTeam(const char *user)
+{
+	s32 i;
+
+	if (!s_InRoom || !user) {
+		return -1;
+	}
+
+	for (i = 0; i < s_Room.nmembers; i++) {
+		const struct netlobbymember *m = &s_Room.members[i];
+
+		if (strcasecmp(m->user, user) == 0) {
+			return m->spectator ? -1 : m->team;
+		}
+	}
+
+	return -1;
+}
+
 s32 netLobbyMyTeam(void)
 {
 	const struct netlobbymember *m = lobbyMe();
@@ -2015,6 +2555,19 @@ static void lobbyAction(const char *what, const char *body)
 void netLobbySetReady(s32 ready)
 {
 	lobbyAction("ready", ready ? "{\"ready\":true}" : "{\"ready\":false}");
+}
+
+/**
+ * A room with no teams: watching or playing. A host cannot watch its own
+ * room (the lobby refuses it: the room's host plays).
+ */
+void netLobbySetSpectator(s32 on)
+{
+	if (on && !s_MainIsHost) {
+		lobbyAction("team", "{\"spectator\":true}");
+	} else if (!on) {
+		lobbyAction("team", "{\"team\":0,\"spectator\":false}");
+	}
 }
 
 void netLobbyCycleTeam(void)
@@ -2368,6 +2921,34 @@ const char *netLobbyLaunchEndedText(void)
 }
 
 /**
+ * A member that left the room's running match (End Game) keeps its room seat
+ * and is offered back in (F3 20261012-020922): the Game Lobby's "Back Into
+ * the Match" connects to the same launch again, a join in progress into
+ * the open seat, with the ticket its state poll keeps fresh
+ */
+s32 netLobbyCanRejoin(void)
+{
+	return netLobbyLaunchEnded() && s_LaunchEndedLeft;
+}
+
+void netLobbyRejoin(void)
+{
+	if (!netLobbyCanRejoin()) {
+		return;
+	}
+
+	sysLogPrintf(LOG_NOTE, "lobby: back into room %s's match in progress", s_Room.sum.id);
+	s_LaunchEndedAt = 0;
+	s_LaunchEndedLeft = 0;
+	s_LaunchRetries = 0;
+	s_LaunchRetryAt = 0;
+	s_RejoinPending = 1;
+	s_MainMessage[0] = '\0';
+	// the connect waits for a fresh ticket: the one it came in on is spent
+	lobbyQueue(JOB_ACTION, "ticket", "{}");
+}
+
+/**
  * A launched campaign room between missions (netcoop.c): the host is in its
  * own menus and a member connected to it waits for its next mission, which
  * "waiting for the players" and "connecting" did not say
@@ -2594,6 +3175,7 @@ static void lobbyClientTick(void)
 
 		s_LaunchRetries = 0;
 		s_LaunchEndedAt = 0;
+		s_RejoinPending = 0;
 	}
 
 	// a session that ended (refused, left the match, the host gone) closes,
@@ -2653,13 +3235,14 @@ static void lobbyClientTick(void)
 			g_NetNoticePending = 0;
 
 			if (netSessionLastRefuse() == NETREFUSE_LEFT) {
-				snprintf(s_MainMessage, sizeof(s_MainMessage), "%s", "You left the game. Leave the room and join it again to play on.");
+				snprintf(s_MainMessage, sizeof(s_MainMessage), "%s", "You left the match. Pick Back Into the Match to play on.");
 			} else if (netSessionNoticeText()[0]) {
 				snprintf(s_MainMessage, sizeof(s_MainMessage), "%s", netSessionNoticeText());
 			}
 
 			if (s_Room.launched && s_Room.launchat == s_LaunchHandled) {
 				s_LaunchEndedAt = s_Room.launchat;
+				s_LaunchEndedLeft = netSessionLastRefuse() == NETREFUSE_LEFT;
 				snprintf(s_LaunchEndedText, sizeof(s_LaunchEndedText), "%s", s_MainMessage[0] ? s_MainMessage : "The connection to the host ended.");
 				s_LaunchRetryAt = 0;
 				s_LaunchRetries = 0;
@@ -3118,9 +3701,20 @@ void netLobbyTick(void)
 	char udpid[17] = "";
 	char udpkey[65] = "";
 	char roomid[9] = "";
+	char notices[LOBBY_MAXNOTICES][NETLOBBY_MAXCHATTEXT + 1];
+	s32 nnotices = 0;
 
 	if (s_Lock) {
 		SDL_LockMutex(s_Lock);
+
+		// a hosting room's session accounts, once a second, for the beat
+		if (lobbyNowMs() - s_BeatSeatedAt >= 1000) {
+			s_BeatSeatedAt = lobbyNowMs();
+
+			if (!s_IsHost || netSessionHostAccountsJson(s_BeatSeated, sizeof(s_BeatSeated)) < 0) {
+				s_BeatSeated[0] = '\0';
+			}
+		}
 
 		if (s_PendUdpSeq != s_SeenUdpSeq) {
 			s_SeenUdpSeq = s_PendUdpSeq;
@@ -3130,6 +3724,16 @@ void netLobbyTick(void)
 		if (s_MessageSeq != s_SeenMessageSeq) {
 			s_SeenMessageSeq = s_MessageSeq;
 			snprintf(s_MainMessage, sizeof(s_MainMessage), "%s", s_Message);
+		}
+
+		// the lobby's notices, the oldest kept first
+		if (s_PendNoticeSeq - s_SeenNoticeSeq > LOBBY_MAXNOTICES) {
+			s_SeenNoticeSeq = s_PendNoticeSeq - LOBBY_MAXNOTICES;
+		}
+
+		while (s_SeenNoticeSeq != s_PendNoticeSeq) {
+			snprintf(notices[nnotices++], sizeof(notices[0]), "%s", s_PendNotice[s_SeenNoticeSeq % LOBBY_MAXNOTICES]);
+			s_SeenNoticeSeq++;
 		}
 
 		if (s_PendRoomsSeq != s_SeenRoomsSeq) {
@@ -3200,6 +3804,18 @@ void netLobbyTick(void)
 			snprintf(s_PendTicketMain, sizeof(s_PendTicketMain), "%s", s_PendTicket);
 		}
 
+		if (s_PendTicketSeq != s_SeenTicketSeq) {
+			s_SeenTicketSeq = s_PendTicketSeq;
+			snprintf(s_PendTicketMain, sizeof(s_PendTicketMain), "%s", s_PendTicket);
+
+			// Back Into the Match: connect with it now
+			if (s_RejoinPending) {
+				s_RejoinPending = 0;
+				s_LaunchHandled = 0;
+				s_CandNext = 0;
+			}
+		}
+
 		// the offset as of the last reply: our clock runs it on between
 		// replies (and on, should the lobby stop answering)
 		if (s_PendTime) {
@@ -3207,6 +3823,14 @@ void netLobbyTick(void)
 		}
 
 		SDL_UnlockMutex(s_Lock);
+	}
+
+	{
+		s32 i;
+
+		for (i = 0; i < nnotices; i++) {
+			netHudServerNotice(notices[i]);
+		}
 	}
 
 	if (entered > 0) {
@@ -3408,6 +4032,10 @@ void netLobbyShutdown(void)
  *   --net-lobby-solo               host: LAUNCH with nobody else in the room
  *   --net-lobby-keep-endscreen     an end screen stays up (the script closes it otherwise)
  *   --net-lobby-rules K=V,...      host: the room's Room Rules set so (they start at stock)
+ *   --net-lobby-teams              host: the room's match is a team match
+ *   --net-lobby-anti               host, with --net-lobby-coop: a counter-op mission
+ *   --net-lobby-side N             join: its room team (a counter-op room's side, 1 the
+ *                                  counter-ops) set before it says READY
  *   --net-lobby-menus              host: the room made from the Perfect Menu's Online
  *                                  Game, its Game Lobby up, as a player makes one
  *
@@ -3453,6 +4081,7 @@ void netLobbyArgs(void)
 		s_ScriptMigrateFrame = sysArgGetInt("--net-lobby-migrate", 0);
 		s_ScriptSkipLadder = sysArgCheck("--net-test-skip-ladder");
 		s_ScriptNoEcho = sysArgCheck("--net-test-no-echo");
+		s_ScriptChatAtLaunch = sysArgCheck("--net-test-chat-at-launch");
 
 		if (sysArgGetString("--net-lobby-room")) {
 			s_ScriptRoom = sysArgGetString("--net-lobby-room");
@@ -3470,6 +4099,31 @@ static void lobbyScriptStep(s32 step, const char *what)
 	s_ScriptStep = step;
 	s_ScriptAt = lobbyNowMs();
 	sysLogPrintf(LOG_NOTE, "lobby script: %s", what);
+}
+
+/**
+ * --net-lobby-side N: this member's room team (a counter-op room's side,
+ * 1 the counter-ops) before it readies or, the host, launches: asked every
+ * three seconds until the room says so. 1 while it waits.
+ */
+static s32 lobbyScriptAwaitSide(const char *who, u64 now)
+{
+	static u64 s_SideAskedAt = 0;
+	const s32 side = sysArgGetInt("--net-lobby-side", -1);
+	char body[48];
+
+	if (side < 0 || side > 7 || netLobbyMyTeam() == side) {
+		return 0;
+	}
+
+	if (s_SideAskedAt == 0 || now - s_SideAskedAt > 3000) {
+		snprintf(body, sizeof(body), "{\"team\":%d,\"spectator\":false}", side);
+		lobbyAction("team", body);
+		s_SideAskedAt = now;
+		sysLogPrintf(LOG_NOTE, "lobby script: %s: asking for team %d", who, side);
+	}
+
+	return 1;
 }
 
 static s32 lobbyScriptBackInRoom(void)
@@ -3603,6 +4257,12 @@ static void lobbyScriptTick(void)
 
 				g_MpSetup.stagenum = sysArgGetInt("--net-test-stage", 0x32);
 
+				// --net-lobby-teams: a team match (the Game Lobby's roster
+				// grouped and coloured by team)
+				if (sysArgCheck("--net-lobby-teams")) {
+					g_MpSetup.options |= MPOPTION_TEAMSENABLED;
+				}
+
 				// --net-test-ge N: GoldenEye's Combat Simulator, scenario N;
 				// --net-test-map NAME: a Stage Loader map by its name (a
 				// GoldenEye arena), as the direct host's harness takes them
@@ -3630,6 +4290,8 @@ static void lobbyScriptTick(void)
 				// --net-lobby-coop INDEX: the room is a co-op mission (netcoop.c)
 				if (sysArgGetInt("--net-lobby-coop", -1) >= 0) {
 					g_NetCoopSetup.on = 1;
+					// --net-lobby-anti: a counter-op mission (protocol 32)
+					g_NetCoopSetup.anti = sysArgCheck("--net-lobby-anti");
 					g_NetCoopSetup.stageindex = sysArgGetInt("--net-lobby-coop", 0);
 					g_NetCoopSetup.difficulty = sysArgGetInt("--net-test-difficulty", DIFF_A);
 					// --net-test-coop-game TAG: a conversion's set (protocol 14)
@@ -3674,6 +4336,12 @@ static void lobbyScriptTick(void)
 					netLobbyMenuPushRoom();
 					s_ScriptShotStep = 1;
 					s_ScriptShotAt = now;
+				}
+
+				// --net-lobby-side N: the host's own side first (a counter-op
+				// room's host on the counter-ops' side, 1)
+				if (lobbyScriptAwaitSide("host", now)) {
+					break;
 				}
 
 				{
@@ -3885,6 +4553,11 @@ static void lobbyScriptTick(void)
 			// up), so the launch never waits on it
 			if (s_InRoom && s_Room.valid && !s_Room.launched
 					&& (netRdvLadder() == NETRDV_LADDER_DONE || netRdvLadder() == NETRDV_LADDER_FAILED || now - s_ScriptAt > 20000)) {
+				// --net-lobby-side N: this member's room team first
+				if (lobbyScriptAwaitSide("join", now)) {
+					break;
+				}
+
 				if (netRdvLadder() == NETRDV_LADDER_DONE) {
 					snprintf(text, sizeof(text), "join: path to the host is %s, %d ms; READY", netRdvPathName(netRdvPath()), netRdvPing());
 				} else {
@@ -3904,6 +4577,13 @@ static void lobbyScriptTick(void)
 				s_ScriptEpoch = s_Room.sum.hostepoch;
 				s_ScriptHosting = 0;
 				lobbyScriptStep(4, "join: in the room's match in progress");
+			} else if (!netLobbyBusy() && !s_InRoom && now - s_ScriptAt > 3000 && sysArgCheck("--net-lobby-join-retry")
+					&& strstr(s_MainMessage, "full")) {
+				// --net-lobby-join-retry: a full room is asked again, as a
+				// player does, until a seat comes free
+				sysLogPrintf(LOG_NOTE, "lobby script: join: %s; trying again", s_MainMessage);
+				s_MainMessage[0] = '\0';
+				lobbyScriptStep(1, "join: list the rooms again");
 			} else if (!netLobbyBusy() && !s_InRoom && now - s_ScriptAt > 3000) {
 				sysLogPrintf(LOG_ERROR, "lobby script: could not join: %s", s_MainMessage);
 				fflush(stdout);
@@ -3935,6 +4615,15 @@ static void lobbyScriptTick(void)
 				s_ScriptShotStep = 2;
 			}
 
+			// --net-test-chat-at-launch: the Game Lobby's Chat open (typing)
+			// when the next match launches under it, as a player who
+			// clicked Chat and was still in it (F3 20261012-021339)
+			if (s_ScriptChatAtLaunch == 1 && s_ScriptPlayed > 0 && !netSessionMatchLoading() && g_MenuData.root != MENUROOT_MPENDSCREEN
+					&& g_StageNum == STAGE_CITRAINING) {
+				s_ScriptChatAtLaunch = 2;
+				sysLogPrintf(LOG_NOTE, "lobby script: join: the Game Lobby's Chat open, typing %d", netLobbyMenuPushChat());
+			}
+
 			if (netSessionMatchLoading()) {
 				s_ScriptEpoch = s_Room.sum.hostepoch;
 				s_ScriptHosting = s_MainIsHost;
@@ -3960,6 +4649,25 @@ static void lobbyScriptTick(void)
 				break;
 			}
 
+			// --net-lobby-quit-frame on a joiner: it quits the game mid-match
+			// the way a player does (the lobby told on the way out, LEAVE sent)
+			if (!s_ScriptHosting && netSessionMatchActive() && !netSessionBarrierHeld()
+					&& sysArgGetInt("--net-lobby-quit-frame", 0) > 0 && g_Vars.lvframenum >= sysArgGetInt("--net-lobby-quit-frame", 0)) {
+				sysLogPrintf(LOG_NOTE, "lobby script: join: frame %d, level time %d; quitting the game", g_Vars.lvframenum, lvGetStageTime60());
+				fflush(stdout);
+				exit(0);
+			}
+
+			// --net-lobby-crash-frame on a joiner: its game gone as a crash is
+			// (no LEAVE, nothing to the lobby): the host holds its seat, then
+			// the lobby frees it on the host's word (pdlobbyd api 6)
+			if (!s_ScriptHosting && netSessionMatchActive() && !netSessionBarrierHeld()
+					&& sysArgGetInt("--net-lobby-crash-frame", 0) > 0 && g_Vars.lvframenum >= sysArgGetInt("--net-lobby-crash-frame", 0)) {
+				sysLogPrintf(LOG_NOTE, "lobby script: join: frame %d, level time %d; gone as a crash is", g_Vars.lvframenum, lvGetStageTime60());
+				fflush(stdout);
+				_Exit(9);
+			}
+
 			if (netSessionMatchActive() && s_ScriptLeaveFrame > 0 && g_Vars.lvframenum >= s_ScriptLeaveFrame) {
 				snprintf(text, sizeof(text), "join: frame %d; End Game", g_Vars.lvframenum);
 				lobbyScriptStep(5, text);
@@ -3969,6 +4677,16 @@ static void lobbyScriptTick(void)
 			}
 			break;
 		case 5:
+			// --net-lobby-rejoin: out of the running match by End Game, the
+			// Game Lobby's Back Into the Match a moment later
+			if (sysArgCheck("--net-lobby-rejoin") && netLobbyCanRejoin() && now - s_ScriptAt > 4000) {
+				sysLogPrintf(LOG_NOTE, "lobby script: join: in the room, the match running (%s); Back Into the Match", netLobbyLaunchEndedText());
+				s_ScriptLeaveFrame = 0;
+				netLobbyRejoin();
+				lobbyScriptStep(10, "join: going back into the match");
+				break;
+			}
+
 			if (lobbyScriptBackInRoom() && now - s_ScriptAt > 1000) {
 				s_ScriptPlayed++;
 				sysLogPrintf(LOG_NOTE, "lobby script: client back in room %s after match %d (version %d, %d members, state %s, session %s)",
@@ -4035,6 +4753,16 @@ static void lobbyScriptTick(void)
 				snprintf(text, sizeof(text), "join: back in room %s after the carried-on match (host %s, %d members, state %s)",
 						s_Room.sum.id, s_Room.sum.host, s_Room.nmembers, s_Room.sum.state);
 				lobbyScriptStep(6, text);
+			}
+			break;
+		case 10:
+			// Back Into the Match: connected to the launch again, a join in progress
+			if (netSessionMatchLoading()) {
+				lobbyScriptStep(4, "join: back in the room's match in progress");
+			} else if (now - s_ScriptAt > 60000) {
+				sysLogPrintf(LOG_ERROR, "lobby script: Back Into the Match did not take this machine in: %s", s_MainMessage);
+				fflush(stdout);
+				exit(6);
 			}
 			break;
 		}

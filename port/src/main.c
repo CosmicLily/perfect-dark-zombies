@@ -186,8 +186,10 @@ static void cleanup(void)
  *
  * 1 (2026-09-14, at the user's request): Level Reflections follow movement,
  * Reflection Style is Level Metal, the title logo is Statue & Metal.
+ * 2 (2026-10-12, the owner): Net.LagCompMaxMs 200 -> 300 where it was still
+ * the old default (F3 20261012-123437: a 220 ms link had every shot capped).
  */
-#define SETTINGS_REVISION 1
+#define SETTINGS_REVISION 2
 
 static s32 g_SettingsRevision = 0;
 
@@ -197,6 +199,10 @@ static void mainApplySettingsRevision(void)
 		roomSheenSetStockFollow(1);
 		xblaMeshSetReflectStyle(XBLAMESH_REFLECT_METAL);
 		xblaMeshSetLogoMaterial(1);
+	}
+
+	if (g_SettingsRevision < 2) {
+		netLagCompRaiseOldDefault();
 	}
 
 	g_SettingsRevision = SETTINGS_REVISION;
@@ -545,7 +551,10 @@ PD_CONSTRUCTOR static void gameConfigInit(void)
 	configRegisterInt("Mod.BlackLevel", &g_ModOptions.blacklevel, MODBLACK_OFF, MODBLACK_MAX);
 	configRegisterInt("Mod.MissionRespawn", &g_ModOptions.missionrespawn, 0, 1);
 	configRegisterInt("Mod.SkipDeathScreen", &g_ModOptions.skipdeathscreen, 0, 1);
+	// online only: whether a match allows third person (a Room Rule, netrules.c)
+	configRegisterInt("Mod.NetThirdPerson", &g_ModNetThirdPerson, 0, 1);
 	configRegisterInt("Mod.SitInChairs", &g_ModOptions.sitinchairs, 0, 1);
+	configRegisterInt("Mod.KillFeed", &g_ModOptions.killfeed, -1, 1); // -1 on online only, 0 off, 1 on (killfeed.c)
 	configRegisterInt("Mod.QuickWeaponSwap", &g_ModOptions.quickweaponswap, 0, 1);
 	configRegisterInt("Mod.MissionLives", &g_ModOptions.missionlives, MODLIVES_UNLIMITED, MODLIVES_MAX);
 	configRegisterInt("Mod.SpectateStart", &g_ModSpectateStart, 0, 1);

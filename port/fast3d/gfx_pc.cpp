@@ -311,6 +311,13 @@ static struct RDP {
     bool rect_depth_on;
     float rect_depth;
 
+    // G_SETRECTSCALE_EXT: rectangles drawn this many times their size about
+    // a point (U10.2), their texels spread over the smaller one
+    bool rect_scale_on;
+    float rect_scale;
+    float rect_scale_x;
+    float rect_scale_y;
+
     // G_SETDEPTHBIAS_EXT: triangles pushed away from the eye by this many of
     // the depth buffer's smallest steps
     int16_t depth_bias;
@@ -2523,6 +2530,17 @@ static inline __attribute__((always_inline)) void gfx_sp_load_vertex(struct Load
         float y = pos[1];
         const float z = pos[2];
         const float w = pos[3];
+
+        // G_SETRECTSCALE_EXT on a menu's own shapes too (a focused row's
+        // line, a dropdown's background), about the same point the
+        // rectangles are scaled about, in the view's clip space
+        if (rdp.rect_scale_on) {
+            const float ox = rdp.rect_scale_x / (4.0f * HALF_SCREEN_WIDTH) - 1.0f;
+            const float oy = -(rdp.rect_scale_y / (4.0f * HALF_SCREEN_HEIGHT)) + 1.0f;
+
+            x = ox * w + (x - ox * w) * rdp.rect_scale;
+            y = oy * w + (y - oy * w) * rdp.rect_scale;
+        }
 
         x = gfx_adjust_x_for_aspect_ratio(x, w);
 
@@ -6940,7 +6958,13 @@ static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_as
         const float ratio = gfx_current_native_aspect / gfx_current_dimensions.aspect_ratio;
         const float midx = gfx_current_dimensions.width * 0.5f;
         area->x = midx + (area->x - midx) * ratio;
-        area->x += rsp.aspect_ofs * gfx_current_dimensions.width * 0.5f;
+        // The side alignment's offset as gfx_adjust_x_for_aspect_ratio()
+        // gives it to what is drawn: (ofs + x) * ratio, so ofs is scaled
+        // too. Unscaled, a scissor set under G_ASPECT_LEFT_EXT or RIGHT_EXT
+        // stood 1/12 of half the screen off what it was meant to hold at 16:9
+        // (18 menu units), cutting into the side a dialog held there started
+        // at (the Game Lobby's buttons, netlobbymenu.c).
+        area->x += rsp.aspect_ofs * ratio * gfx_current_dimensions.width * 0.5f;
         area->width *= ratio;
     }
 
@@ -7031,6 +7055,18 @@ static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32
     float y = lry / 4.0f;
     float width = (lrx - ulx) / 4.0f;
     float height = (lry - uly) / 4.0f;
+
+    // G_SETRECTSCALE_EXT on a scissor set while it is on too: what it clips
+    // (a dropdown's list, laid out at full size) is drawn scaled
+    if (rdp.rect_scale_on) {
+        const float ox = rdp.rect_scale_x / 4.0f;
+        const float oy = rdp.rect_scale_y / 4.0f;
+
+        x = ox + (x - ox) * rdp.rect_scale;
+        y = oy + (y - oy) * rdp.rect_scale;
+        width *= rdp.rect_scale;
+        height *= rdp.rect_scale;
+    }
 
     rdp.scissor.x = x;
     rdp.scissor.y = y;
@@ -7319,6 +7355,13 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     float ulyf = uly;
     float lrxf = lrx;
     float lryf = lry;
+
+    if (rdp.rect_scale_on) {
+        ulxf = rdp.rect_scale_x + (ulxf - rdp.rect_scale_x) * rdp.rect_scale;
+        lrxf = rdp.rect_scale_x + (lrxf - rdp.rect_scale_x) * rdp.rect_scale;
+        ulyf = rdp.rect_scale_y + (ulyf - rdp.rect_scale_y) * rdp.rect_scale;
+        lryf = rdp.rect_scale_y + (lryf - rdp.rect_scale_y) * rdp.rect_scale;
+    }
 
     ulxf = ulxf / (4.0f * HALF_SCREEN_WIDTH) - 1.0f;
     ulyf = -(ulyf / (4.0f * HALF_SCREEN_HEIGHT)) + 1.0f;
@@ -7736,9 +7779,10 @@ static void gfx_taa_resolve(void) {
     const double aspect[16] = { k, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, k * o, 0, 0, 1 };
 
     const bool valid = h.valid && h.frame + 1 == num_dls && h.width == fw && h.height == fh;
-    float params[GFX_POST_TAA_PARAMS] = {};
+    // uTaa, then uParams: the depth test's two lines (gfx_post.cpp)
+    float params[GFX_POST_TAA_PARAMS + 4] = {};
 
-    double cur[16], prev[16], inv[16], r[16];
+    double cur[16], prev[16], inv[16], r[16], invprev[16];
     gfx_taa_mul(taa_mtx, aspect, cur);
     gfx_taa_mul(h.mtx, aspect, prev);
 
@@ -7764,6 +7808,27 @@ static void gfx_taa_resolve(void) {
             params[0 + i] = (float)((X * tvw * 0.5 + W * (tvx + tvw * 0.5)) / fw);
             params[4 + i] = (float)((Y * tvh * 0.5 + W * (tvy + tvh * 0.5)) / fh);
             params[8 + i] = (float)W;
+        }
+
+        // The depth test: (u, v, depth, 1) through in and a frame's inverse
+        // is the world point times h, and h is a line in depth alone (the
+        // projection is a perspective, the rest affine), h = a * depth + b;
+        // the point's clip w in that frame - its distance - is 1 / h. So
+        // this frame's line gives last frame's distance of the pixel's own
+        // point (uTaa's w / h), last frame's the distance of what last
+        // frame drew where the history is read (1 / h). A third person
+        // body turning with the camera, or the background it uncovers,
+        // had a history of the other surface, and the clip let it through
+        // where the textures are busy: a red smear off Joanna's lab coat
+        // under the HD packs (F3 20261011-020133)
+        if (gfx_taa_invert(prev, invprev)) {
+            double hc[16], hp[16];
+            gfx_taa_mul(in, inv, hc);
+            gfx_taa_mul(in, invprev, hp);
+            params[GFX_POST_TAA_PARAMS + 0] = (float)hc[11];
+            params[GFX_POST_TAA_PARAMS + 1] = (float)hc[15];
+            params[GFX_POST_TAA_PARAMS + 2] = (float)hp[11];
+            params[GFX_POST_TAA_PARAMS + 3] = (float)hp[15];
         }
     }
 
@@ -7988,18 +8053,44 @@ struct GfxDlDepth {
 static const Gfx *gfx_dl_lists[GFX_DL_TRACK];
 static const Gfx *gfx_dl_calls[GFX_DL_TRACK];
 
+extern "C" void gfxDescribeAddress(const void *ptr, char *buf, int32_t size);
+
+static int gfx_unknown_opcodes;
+
+/**
+ * A list that runs into something that is not GBI. Ended there rather than the
+ * game stopped: the rest of the frame draws, and the first of a session is
+ * saved as a report (like the dropped vertex load above). 20261011-203505 (a
+ * v3.14.0 menu after Dump All Assets, texture pack toggles and the XBLA
+ * switch) was a depth 2 list called from the frame's own at +80, ending 256
+ * commands in after a run of texture loads, in memory that held floats - the
+ * same w0 shape as the two Carrington Institute reports above - and the report
+ * could not say whose list it was. It now names where the list and its caller
+ * are: a room's display lists, the frame's buffers, or neither.
+ */
 static void gfx_unknown_opcode(const Gfx *cmd, const Gfx *list, uint32_t opcode) {
-    char text[2048];
+    char text[3072];
+    char where[192];
     int len;
 
+    gfx_unknown_opcodes++;
+
+    // the first few of a session: after that it is the same list every frame
+    if (gfx_unknown_opcodes > 4) {
+        return;
+    }
+
+    gfxDescribeAddress(list, where, sizeof(where));
+
     len = snprintf(text, sizeof(text),
-            "Unknown GBI opcode 0x%02x at %p, %lld into list %p at depth %d%s.\n"
-            "w0 %016llx w1 %016llx\nsegments 4 %p 5 %p 6 %p 14 %p 15 %p\nbefore it:",
+            "Unknown GBI opcode 0x%02x at %p, %lld into list %p at depth %d%s; the list was ended there "
+            "(not a crash; the frame drew on).\n"
+            "w0 %016llx w1 %016llx\nsegments 4 %p 5 %p 6 %p 14 %p 15 %p\nthe list is in %s\nbefore it:",
             opcode, (const void *)cmd, (long long)(cmd - list), (const void *)list, gfx_dl_depth,
             gfx_dl_depth == 1 ? " (the frame's own)" : "",
             (unsigned long long)cmd->words.w0, (unsigned long long)cmd->words.w1,
             (void *)segmentPointers[4], (void *)segmentPointers[5], (void *)segmentPointers[6],
-            (void *)segmentPointers[14], (void *)segmentPointers[15]);
+            (void *)segmentPointers[14], (void *)segmentPointers[15], where);
 
     for (int k = 6; k >= 1 && len > 0 && len < (int)sizeof(text); k--) {
         if (cmd - k >= list) {
@@ -8011,12 +8102,17 @@ static void gfx_unknown_opcode(const Gfx *cmd, const Gfx *list, uint32_t opcode)
     for (int d = 0; d < gfx_dl_depth - 1 && d < GFX_DL_TRACK && len > 0 && len < (int)sizeof(text); d++) {
         const Gfx *call = gfx_dl_calls[d];
 
-        len += snprintf(text + len, sizeof(text) - len, "\ndepth %d: list %p called it at %p (+%lld)",
+        gfxDescribeAddress(gfx_dl_lists[d], where, sizeof(where));
+        len += snprintf(text + len, sizeof(text) - len, "\ndepth %d: list %p called it at %p (+%lld), in %s",
                 d + 1, (const void *)gfx_dl_lists[d], (const void *)call,
-                call && gfx_dl_lists[d] ? (long long)(call - gfx_dl_lists[d]) : -1LL);
+                call && gfx_dl_lists[d] ? (long long)(call - gfx_dl_lists[d]) : -1LL, where);
     }
 
-    sysFatalError("%s", text);
+    sysLogPrintf(LOG_ERROR, "%s", text);
+
+    if (gfx_unknown_opcodes == 1) {
+        crashReportSave(text);
+    }
 }
 
 uintptr_t clearMtx;
@@ -8239,6 +8335,12 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETDEPTHBIAS_EXT:
                 rdp.depth_bias = (int16_t)(int32_t)cmd->words.w1;
                 break;
+            case G_SETRECTSCALE_EXT:
+                rdp.rect_scale = (int32_t)(uint32_t)cmd->words.w1 / 65536.0f;
+                rdp.rect_scale_on = rdp.rect_scale > 0.0f && rdp.rect_scale != 1.0f;
+                rdp.rect_scale_x = (float)((int32_t)(cmd->words.w0 << 8) >> 20);
+                rdp.rect_scale_y = (float)((int32_t)(cmd->words.w0 << 20) >> 20);
+                break;
             case G_SETTILEOFFSET_EXT:
                 // A fraction of a texel past the tile's corner, until its size
                 // is set again: a picture moved by less than a quarter texel
@@ -8418,8 +8520,9 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_RDPTILESYNC:
                 break;
             default:
+                // not GBI: what follows is not either, so the list ends here
                 gfx_unknown_opcode(cmd, gfx_dl_depth <= GFX_DL_TRACK ? gfx_dl_lists[gfx_dl_depth - 1] : dListStart, opcode);
-                break;
+                return;
         }
         ++cmd;
     }
@@ -8690,6 +8793,7 @@ extern "C" void gfx_run(Gfx* commands) {
                                         (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
     gfx_rapi->clear_framebuffer(true, false);
     rdp.viewport_or_scissor_changed = true;
+    rdp.rect_scale_on = false;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
     gfx_mark_state_dirty();

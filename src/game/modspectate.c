@@ -162,6 +162,14 @@ void modSpectateSetOn(bool on)
 		return;
 	}
 
+	// Nor online (the owner, pass 37): a playing seat flying through the
+	// walls scouts everyone else. A room's watchers have their own camera
+	// (netspec.c), which is not this. The clock test is offline, in
+	// netplay's loop (netclocktest.sh's --spectate runs).
+	if (on && g_NetMode != NETMODE_NONE && !g_NetClockTest) {
+		return;
+	}
+
 	g_ModSpectating[g_Vars.currentplayernum] = on;
 
 	// The spectator wears a different model from the player, so whichever body

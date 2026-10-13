@@ -830,6 +830,9 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 	bool walkdrop = false;
 	RoomNum walkrooms[8];
 	struct coord offladder = {0, 0, 0};
+	s32 climbed = 0;
+	f32 climbground = 0.0f;
+	s32 climbroom = -1;
 #endif
 
 	// NTSC beta reads g_Vars lvupdate properties throughout this function,
@@ -1071,6 +1074,31 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 					&& !(chr->actiontype == ACT_SKJUMP && chr->act_skjump.state == SKJUMPSTATE_AIRBORNE)) {
 				walked = chrWalkBotMove(chr, arg2, &manground, walkrooms, &walkdrop);
 			}
+
+			// A guard on a converted level walks GoldenEye's tile graph up
+			// any link, the ones the conversion raised a climb wall on too,
+			// and is stood on the floor across (geStanChrClimb())
+			if (geRoomActive() && prop->type == PROPTYPE_CHR && chr->aibot == NULL
+					&& !chr->onladder && race != RACE_EYESPY
+					&& (chr->chrflags & (CHRCFLAG_HAS_SPECIAL_DEATH_ANIMATION | CHRCFLAG_GE_LOCKY)) == 0) {
+				const s32 invalidmove = chr->invalidmove;
+				const s32 lastmoveok60 = chr->lastmoveok60;
+
+				geStanSetChrClimb(true);
+				chrCalculatePushPos(chr, arg2, spfc, true);
+				geStanSetChrClimb(false);
+
+				climbed = geStanChrClimb(&prop->pos, chr->ground, arg2, &climbground, &climbroom);
+
+				if (climbed < 0) {
+					arg2->x = prop->pos.x;
+					arg2->z = prop->pos.z;
+					roomsCopy(prop->rooms, spfc);
+					chr->invalidmove = invalidmove ? invalidmove : 1;
+					chr->lastmoveok60 = lastmoveok60;
+					climbed = 0;
+				}
+			} else
 #endif
 
 			chrCalculatePushPos(chr, arg2, spfc, true);
@@ -1213,6 +1241,15 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 							if (tileroom > 0 && tileroom < g_Vars.roomcount) {
 								chr->floorroom = tileroom;
 							}
+						}
+					}
+
+					// and up across a climb, onto the floor the walk went to
+					if (climbed > 0 && !inlift && climbground > ground) {
+						ground = climbground;
+
+						if (climbroom > 0 && climbroom < g_Vars.roomcount) {
+							chr->floorroom = climbroom;
 						}
 					}
 #endif
@@ -1645,6 +1682,7 @@ void chrInit(struct prop *prop, u8 *ailist)
 	chr->gesneezed = 0;
 	chr->coopturn = 0;
 	chr->coopretarget60 = 0;
+	chr->coopagentseen = 0;
 #endif
 	chr->aishootingatmelist = -1;
 	chr->aidarkroomlist = -1;
@@ -1700,6 +1738,14 @@ void chrInit(struct prop *prop, u8 *ailist)
 
 	if (g_Vars.currentplayer->prop == NULL) {
 		chr->target = -2;
+#ifndef PLATFORM_N64
+	} else if (g_CoopAntiMask && coopIsAnti(g_Vars.currentplayer)) {
+		// online counter-op: a chr made in a counter-op's pass (the host's
+		// own player may be one, and the stage's guards are made in its)
+		// targets the player it watches, p1p2, an agent: its first target
+		// had been the counter-op, which its lists then saw and went for
+		chr->target = -1;
+#endif
 	} else {
 		chr->target = g_Vars.currentplayer->prop - g_Vars.props;
 	}
@@ -3287,6 +3333,24 @@ s32 chrTick(struct prop *prop)
 		chr->hidden2 |= CHRH2FLAG_PASTLEVELFOG;
 	}
 
+	// ...and so is one drawn only because the fog is off on a converted level
+	// and in view, in a room the portal walk did not reach (objDrawnPastPortals())
+	if (needsupdate && objDrawnPastPortals()) {
+		bool walked = false;
+
+		for (s32 i = 0; prop->rooms[i] != -1; i++) {
+			if (xblaStageDrawsEveryRoom() ? bgRoomIsPortalVisible(prop->rooms[i])
+					: (g_Rooms[prop->rooms[i]].flags & ROOMFLAG_ONSCREEN) != 0) {
+				walked = true;
+				break;
+			}
+		}
+
+		if (!walked) {
+			chr->hidden2 |= CHRH2FLAG_PASTLEVELFOG;
+		}
+	}
+
 	if (needsupdate && !modIsFogDisabled() && xblaStageDrawsEveryRoom()
 			&& (!envIsPosInFogMaxDistance(&prop->pos, modelGetEffectiveScale(model))
 				|| !posIsInObjFadeDistanceOwn(&prop->pos, modelGetEffectiveScale(model))
@@ -3337,9 +3401,8 @@ s32 chrTick(struct prop *prop)
 #endif
 		chr->chrflags |= CHRCFLAG_EVERONSCREEN;
 
-		if (g_Vars.antiplayernum >= 0 && g_Vars.currentplayer == g_Vars.bond) {
-			chr->hidden |= CHRHFLAG_ONBONDSSCREEN;
-		}
+		// (past one agent, any agent's screen: coop.c)
+		coopNoteChrOnScreen(chr, true);
 
 		if (cheatIsActive(CHEAT_DKMODE)
 #ifndef PLATFORM_N64
@@ -3665,9 +3728,7 @@ s32 chrTick(struct prop *prop)
 		// Offscreen
 		prop->flags &= ~PROPFLAG_ONTHISSCREENTHISTICK;
 
-		if (g_Vars.antiplayernum >= 0 && g_Vars.currentplayer == g_Vars.bond) {
-			chr->hidden &= ~CHRHFLAG_ONBONDSSCREEN;
-		}
+		coopNoteChrOnScreen(chr, false);
 
 		child = prop->child;
 
@@ -5836,8 +5897,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 				g_Vars.currentplayer->prop, hit->hitpart, hit->prop, hit->bboxnode,
 				hit->model, hit->hitthing.unk28 / 2, sp90);
 
-		if (g_Vars.antiplayernum >= 0
-				&& g_Vars.currentplayer == g_Vars.anti
+		if (coopIsAnti(g_Vars.currentplayer)
 				&& (chr->hidden & CHRHFLAG_ANTINONINTERACTABLE)) {
 			return;
 		}
@@ -5875,7 +5935,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 				}
 
 				// Create decal depending on the weapon's surface type
-				if (hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= NUM_TEXTURES) {
+				if (hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= g_NumListTextures) {
 					surfacetype = SURFACETYPE_DEFAULT;
 				} else {
 					surfacetype = g_Textures[hit->hitthing.texturenum].surfacetype;
@@ -5915,7 +5975,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 				s32 index;
 
 				// Create decal depending on the hat's surface type
-				if (hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= NUM_TEXTURES) {
+				if (hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= g_NumListTextures) {
 					type = g_SurfaceTypes[0];
 				} else {
 					type = g_SurfaceTypes[g_Textures[hit->hitthing.texturenum].surfacetype];
@@ -5929,7 +5989,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 						&shotdata->gunpos3d,
 						0,
 						0,
-						geImpactTexnum(hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= NUM_TEXTURES
+						geImpactTexnum(hit->hitthing.texturenum < 0 || hit->hitthing.texturenum >= g_NumListTextures
 								? SURFACETYPE_DEFAULT : g_Textures[hit->hitthing.texturenum].surfacetype,
 								type->wallhittexes[index]),
 						1,
@@ -6256,7 +6316,8 @@ bool chrCalculateAutoAim(struct prop *prop, struct coord *arg1, f32 *arg2, f32 *
 			&& (chr->chrflags & CHRCFLAG_NOAUTOAIM) == 0
 			&& ((chr->hidden & CHRHFLAG_CLOAKED) == 0 || USINGDEVICE(DEVICE_IRSCANNER))
 			&& !(prop->type == PROPTYPE_PLAYER && g_Vars.players[playermgrGetPlayerNumByProp(prop)]->isdead)
-			&& !coopIsPlayerProp(prop)) {
+			// (online counter-op: the other side's players are fair game)
+			&& !coopIsTeammateProp(prop)) {
 		struct model *model = chr->model;
 		Mtxf *mtx1;
 		Mtxf *mtx2;

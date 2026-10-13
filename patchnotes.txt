@@ -31,6 +31,124 @@
 # CMake reads the newest number when it configures, and configures again by
 # itself when this file changes, so an ordinary rebuild picks up an entry.
 
+notes 63 2026-10-13
+Online: a Counter-Op Mission room whose host plays on the counter-ops' side no longer ends the moment it starts and crashes the host (thanks dab)
+Offices (Oofjay's mod): the CamSpy flies low enough to get through the vents, as it does on the cartridge (thanks savantique)
+Mods: a level sounds the alarm siren its mod chose, so Suburb in the Offices mod sounds Chicago's
+Mods: your imported console mods are imported again once at the next start, a few seconds, so the fixes above apply to them
+
+notes 62 2026-10-12
+Online: the Briefing Room's right-hand window is titled Room Info and only shows a room while one is highlighted (thanks ElmoBear and dab)
+Online: the room count is in the room list's title, "Rooms (3)", so a long name no longer cuts it off (thanks Shockwave S08 and dab)
+Online: press Select or L2 (P on the keyboard) in the Briefing Room to see who is online and where they are (thanks dab)
+Online: Main Menu Chat and the Game Lobby chat use the whole width of their window (thanks Shockwave S08)
+Online: the chat no longer stops showing new messages, and what you type, after a long chat session (thanks Shockwave S08)
+Online: scroll back through the chat with the right stick, PgUp/PgDn or the mouse wheel (thanks dab)
+Online: each sender's name in the chat has its own colour (thanks dab)
+Online: choosing Chat in the Game Lobby opens the full-length chat line, as T or Space do, and the controller keyboard's text box is wider (thanks dab)
+Online: Player Setup and Team Control show your account name instead of "Player 1" (thanks dab)
+Online: you have your own online player profile (character, controls and options), kept between sessions, with Copy From Offline Player in the online Player Setup (thanks dab)
+Online: Create Room's Create and Back are centred, and the page fits on a Steam Deck's screen (thanks Shockwave S08)
+Online: the co-op and counter-op Mission list scrolls and shows every mission, in all four campaigns (thanks Shockwave S08)
+Online: GoldenEye and Goldfinger 64 rooms say Agent / Secret Agent / 00 Agent, and Tomorrow Never Dies 64 rooms Easy / Normal / Hard (thanks Shockwave S08)
+Online: the Game Lobby shows a ticked box beside each ready player and an empty one for the rest (thanks dab)
+Online: play over long links no longer rubber-bands you after network hiccups (thanks dab)
+Online: walking along a table or a crate no longer jerks you back, so the armour on Bunker 1's table picks up cleanly (thanks dab)
+GoldenEye maps: a Perfect Dark shield sounds like a shield and says so when picked up; GoldenEye's body armour keeps its own sound and words (thanks dab)
+Online: free-for-alls no longer end early when several players' kills add up to the team score limit
+Online co-op: night vision, X-ray and the IR scanner stay on while your menu is open (thanks ElmoBear)
+Combat Simulator: the Arena list has a tab for each game (Perfect Dark, GoldenEye, GE-X, Goldfinger 64, TND64, Mods), switched with the shoulder buttons, Left/Right or the mouse; online rooms' Arena list too (thanks dab)
+Combat Simulator: a free-for-all with more than eight simulants no longer ends early when the extra simulants' kills add up to the team score limit
+Leaving the online pages, or the Combat Simulator after a match, no longer leaves the Combat Simulator's swirl behind the Perfect Menu (thanks dab)
+GoldenEye Bunker and Bunker 2, HD look: the sky no longer shows rings of blue triangles over the clouds (thanks dab)
+GoldenEye: guards climb the steps the conversion had walled off for them, as on the cartridge - Aztec's Jaws follows you up the grated stair instead of waiting at its foot
+GoldenEye Bunker: guards no longer spot you through a shut glass door from the floor above it, as on the cartridge
+GoldenEye Facility, HD look: the scientist wears the XBLA release's own Dr. Rakhmanov face again, or the Community Edition's detailed Dr. Doak face when it is installed
+Fixed a rare crash, or sounds cutting out, in a big firefight with many different sounds playing at once
+Online: lag compensation reaches back 300 ms instead of 200, so shots over long links (Europe to America) count as the shooter saw them (thanks dab)
+Guards that walk in mid-level (Guards Alerted, the Randomizer, reinforcements) no longer sometimes get a random limit on how far up or down they can see you, on any stage after the first of a session
+Online: players joining a room from elsewhere are no longer taken for players on the host's own network, which could leave their join hanging (thanks dab)
+
+notes 61 2026-10-12
+Online: new Counter-Op Mission rooms, for Perfect Dark's, GoldenEye's, Goldfinger 64's and Tomorrow Never Dies 64's missions: everyone picks a side in the Game Lobby with Change Side (thanks dab)
+Counter-Op Mission: the agents play the mission together as in co-op, while each counter-op takes over one of the mission's guards - its body, gun and health - and A, Z or START puts them in the next guard after a death (thanks dab)
+Counter-Op Mission: with Guards Alerted! on, its extra guards are bodies the counter-ops can take too (thanks dab)
+Counter-operative with Guards Alerted!: the extra guards no longer go after the counter-operative
+
+notes 60 2026-10-12
+Automatic guns (yours, guards' and simulants') no longer go quiet in a firefight: their ricochets no longer crowd out the gunfire (thanks dblaney1)
+Randomizer: an arena's music plays as soon as you land, without pausing first (thanks Odeyseis and savantique)
+Recording: the ffmpeg download works again on Windows; the old download link had been taken down (thanks Odeyseis)
+Extended Options > Audio > Mute When Unfocused: the game goes quiet while another window has the focus (thanks Dyldan)
+A mod with a damaged sound bank no longer crashes the game at startup; it plays with the original sounds instead
+Fixed a rare crash when GoldenEye's death music started in a big match
+All in One Mod: its Combat Simulator arenas show their real names, and the ones that dropped you out of the level (dataDyne Central, Air Base, Crash Site and others) now start you on the floor (thanks Brandon)
+A rare "Unknown GBI opcode" graphics error no longer closes the game
+Above 60 FPS at rates such as 73, the shotgun's recoil and the sniper rifle's reload no longer make Joanna's arm twitch; HUD messages and escalators move evenly too (thanks savantique)
+Mission Respawn: dying with nothing under you brings you back where you last stood, instead of over and over at the bottom of the level (thanks ElmoBear)
+Combat Simulator: turning a PerfectSim's or DarkSim's Accuracy and Reaction down now makes it aim worse and fire later (thanks Odeyseis and FroexiaSim)
+TAA: characters moving with the camera no longer leave a fading trail, most visible with HD texture packs (thanks Odeyseis)
+Online: fixed a crash at the start of a co-op mission (seen on GoldenEye's Bunker)
+Online: Bond holds his starting gun in GoldenEye's opening swirl again (thanks dab)
+Online: the Room Preview shows the number of simulants instead of ".." (thanks Shockwave S08)
+Online: Name Entry and the Game Lobby have Player Setup, to pick your character and controls (Reverse Pitch for an inverted look) (thanks dark reyn)
+Online: players standing on top of GoldenEye's tank ride along as it drives and turns, and can climb onto a tank that is already moving (thanks dab)
+Goldfinger 64 Cartel: no more getting stuck in a silo doorway walking out of the silo (thanks Odeyseis)
+Goldfinger 64 Alps: rockets explode, dead guards drop their guns, and Bond sits inside the Aston Martin as on the cartridge
+GoldenEye and Goldfinger 64: the camera gadget zooms in and out while aiming, as on the cartridge (thanks Dyldan)
+With Disable Fog on, GoldenEye, Goldfinger 64 and TND64 levels draw everything in view, so trees and cars on Grounds no longer pop in (thanks Odeyseis)
+GoldenEye multiplayer: the Level page opens on its first page (thanks Shockwave S08)
+GoldenEye multiplayer: PAUSED and press start in GoldenEye's own words and font, and Report a Problem (F3) opens while you are dead (thanks Shockwave S08)
+GoldenEye multiplayer: no more asking to save a player profile after a match (thanks Shockwave S08)
+GoldenEye multiplayer: the SCORES page counts kills (thanks Shockwave S08)
+GoldenEye Temple with the XBLA look: no streaked panel by the sliding stone, and the doors are lit on every side (thanks Shockwave S08)
+Randomizer: no more landing in a room you cannot walk out of (Carrington's firing range) or inside furniture such as the Institute's sofa (thanks Odeyseis)
+Randomizer: Statue Park's gates unlock with the room, so you can leave once the objective is done (thanks Odeyseis)
+Randomizer: Skedars come after you instead of standing where they appeared (thanks Odeyseis)
+Randomizer: you no longer lose your weapons when a dark room moves your landing (thanks Odeyseis)
+Fixed a crash when a GoldenEye gun ran dry in a Perfect Dark level
+Folder screens: letters no longer turn into other letters after switching between the GoldenEye and Goldfinger 64 folders (thanks Dyldan)
+GoldenEye Egyptian: with Infinite Ammo you can take the golden bullets from the Golden Gun's case while the gun reloads, as on the cartridge (thanks Casey)
+GoldenEye missions: guards take GoldenEye's own routes; on Archives the outdoor guards come through the left door (thanks Casey)
+Online: F3 (Report a Problem) on the online pages opens there, instead of popping up later in the next match (thanks dab)
+Online: a match that starts while you are typing in the Game Lobby's Chat no longer leaves your keyboard unable to move you (thanks savantique)
+Online: Team Control works for guests too: in a team Combat Simulator match a guest can order the simulants on their team (Follow, Attack, Defend, Hold and the rest) and they obey (thanks dab)
+Online co-op: fixed a crash for the host when a player came back by Mission Respawn on some Goldfinger 64 missions; a player coming back on a GoldenEye mission now gets the mission's starting kit, as on Perfect Dark's
+Online: your own Reverse Pitch and aim options stay yours for the whole match instead of switching to the host's player's (thanks dark reyn and savantique)
+Online: Skip Death Screen and Third Person are Room Rules set by the host (Third Person off by default, one camera for everyone), and the Spectator free camera is off for players in an online match (thanks dab)
+Online rooms: if a player's game crashes mid-match their seat opens for someone new after the hold, and a player who uses End Game can pick Back Into the Match to rejoin it (thanks dab)
+Online: a thrown Laptop Gun is now seen by everyone - flying, deployed and firing as a sentry (thanks ElmoBear)
+Online: the RC-P120's cloak no longer goes out of step for clients (thanks dab)
+Online: the CamSpy works again: it launches from the Akimbo Triggers radial menu, and guests can launch and fly theirs properly (thanks ElmoBear)
+New kill feed: the last few kills show at the top right of every Combat Simulator and GoldenEye match as Killer [Weapon] Victim, in team colours; on by default online, and for offline matches in Extended Options > Dab's Mod > Display > Kill Feed (thanks dab)
+Online: account and room names that are slurs or obscene are refused, and the lobby chat stars such words out (thanks dab)
+
+notes 59 2026-10-11
+Online: the Main Menu Chat shows only what players say; a message about a join or the lobby shows along the bottom of the Briefing Room instead (thanks dab)
+
+notes 58 2026-10-11
+Online: Space and T now open the Main Menu Chat's line in the Briefing Room, so you can type in it (thanks dab)
+Online: messages from the server show in the match's chat as "Server: ..." in gold, and in the lobby chats; when the lobby server restarts for an update it tells the rooms first (thanks dab)
+
+notes 57 2026-10-11
+Online: new online pages laid out across the whole screen: Name Entry first, then the Briefing Room with the open rooms as cards, the selected room's details and a chat, and the Game Lobby as four windows (thanks dab)
+Online: the online pages carry Perfect Dark's title screen logo in their header (thanks dab)
+Online: Main Menu Chat in the Briefing Room: talk with everyone else looking for a game, press Space or T to type (thanks dab)
+Online: the Game Lobby lists the players in one list, in their team's colour and grouped by team in team games, spectators below (thanks dab)
+Online: smaller text on the online pages and in the chat during a match, so more fits; Extended Options > Advanced > Online Text Size changes it (thanks dab)
+Online: Create Room fits on one page, its dropdowns open next to the setting they change, and the mouse picks a row anywhere along it (thanks dab)
+Online: with the XBLA look, no more blue bar down the screen on the Briefing Room, and no eye piece in the header (thanks dab)
+
+notes 56 2026-10-11
+Online: a guest's rockets, grenades, mines and Phoenix shots now hurt other players where the guest saw them when the blast went off, not where the host had them a moment later (thanks dab)
+Online: explosions and hits no longer arrive late when a packet is lost, and a lost shot or spark no longer holds up anything behind it
+Online: broken glass, crumpled objects, N-bomb storms and gas stay in step for everyone, and a player who joins late sees them as they are
+Online: windowed doors' broken panes and shot-out camera lenses (Perfect Dark's and GoldenEye's) show for every player
+Online: bullet holes and scorch marks show for every player as they are made, and a player who joins late sees the ones already there
+Online: in a match, windows that grow back grow back for every player, not just the host
+Online: a guest sends about 70 to 85 percent less to the host (its controls go as small changes), which helps on slow or busy connections
+Online play needs everyone on this update (protocol 30)
+
 notes 55 2026-10-11
 Online co-op: objectives done by any player count for everyone (collecting, gadgets, consoles, reaching exits), and every guest gets the mission's gear, not just the host and the first guest (thanks dab)
 Online GoldenEye co-op: after a death and a new life (Mission Respawn), reaching Bunker's exit ends the mission again (thanks dab)

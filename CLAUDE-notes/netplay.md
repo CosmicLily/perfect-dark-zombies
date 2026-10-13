@@ -36,6 +36,23 @@
   seats that kept a room played alone on black for ever, the dead watching
   the others with Mission Respawn off (`netspec.c`'s cameras), the last
   death's GoldenEye replay before the end (`gedeathcam.c`).
+- **Counter-op online (protocol 32, 2026-10-12)** — the section of that
+  name: a room's Counter-Op Mission, each player's side its room team; the
+  game's one `g_Vars.anti` widened to a mask (`coop.c`), the agents online
+  co-op as before; the host takes each guard (its own random sequence and
+  `g_RngSeed` put back: the load's takeover had split the stage hash's rng),
+  the clients follow by the mission block (body, radius, the setup chrs
+  taken, by chrnum); which converted guard may be taken; Guards Alerted!'s
+  guards as bodies too; `netantitest.sh`; a lobby host counter-op's launch
+  ended the match on the old stage's last frame and crashed (2026-10-13).
+- **A long link's walk (F3 pass 38, 2026-10-12, no wire change)** — the
+  section "F3 pass 38": the host walks a client's player by its commands
+  alone (a dry tick waits, a fold walks each folded command first:
+  `netPlayersHostWalk`), a setup object keeps its own place on a client
+  (the wire's eighth of a unit had moved a table's collision), the link
+  simulator's stalls (`--net-sim ...,EVERY,STALL`, netpredicttest's
+  `relay`), no team score limit online with teams off; doors a client opens
+  are still a round trip late (a plan there).
 - **Content follows the host** — the section of that name (`netcontent.c`,
   protocols 13 and 14): a client plays the host's overlay mod, Stage Loader
   maps, conversions and ROM hack mode from its own copies (the content
@@ -119,6 +136,43 @@
   session, a hostile peer or an odd moment breaks; what a client's death
   and a name from the wire did on every machine, why the host's pause is
   not one, and the rest of that batch.
+- **State and events apart (protocol 29, 2026-10-11)** — the section of
+  that name (`networld.c`): EQOA DRDP's split; broken glass, storms and the
+  gas in a world block in SNAP, crumpling and a door's pane in records, the
+  events in three classes on channels of their own (shots unreliable).
+- **The Game Lobby's windows (2026-10-11, no wire change)** — the section
+  of that name: the owner's mock-up as four windows in two columns, the
+  buttons the only real dialog, the rest drawn around it; each column held
+  to its side of a widescreen display; then Online Game, the Briefing Room,
+  Create Room and Room Settings the same way (`s_LobbyPages`). The menu's
+  frame is 320x220, wider than 4:3 (a side alignment moves a side *in* at
+  4:3), fast3d's scissor under a side alignment was off, a placed dialog
+  taller than its rows scrolled them to its foot, the Mods window
+  (`netContentLobbyRows`), and the roster: one list, grouped and coloured
+  by team in a team match (the room's `teams` rule). The Main Menu Chat
+  (pdlobbyd API 4), whose keys release 57 never read (`netHudFrame()`'s
+  offline return), and the server's notices (API 5: "Server: ..." in the
+  match's chat, said on a loopback port and before every restart).
+- **Players Online (pdlobbyd API 7, 2026-10-12, no wire change)** — the
+  section of that name: Select, L2 or the players key on the Briefing Room
+  opens a page of everyone signed in to the lobby and where (the Briefing
+  Room, a room's Game Lobby, a match); `GET /players`, presence by a
+  session's last request (60 s), a dedicated host left out, no address;
+  the footer's hints drawn smaller when longer than the screen leaves;
+  `netplayersonlinetest.sh`.
+- **F3 pass 38: the online pages** — the section of that name: the Room
+  Info window following the list's own cursor, "Rooms (N)", the chat
+  wrapped at its drawn width, scrolled (right stick, PgUp/PgDn, the wheel)
+  and its senders coloured, a dropdown in a scaled row cut by the 320x220
+  units of its laid-out frame (`g_TextMaxX`), Create Room fitting its
+  column, a conversion's own difficulty names (LtitleE 19-21), the roster's
+  checkboxes.
+- **F3 pass 38: the online menus (2026-10-12)** — the section of that
+  name: the Main Menu Chat dead after a long session (the 64 wrapped lines),
+  the Game Lobby's Chat row opening the line, the online profile
+  (`netprofile.c`: player 1 while the online pages are up, kept in pd.ini
+  [Net], the account's name, Copy From Offline Player), the cone's still
+  taken before the menus are drawn.
 - **Joining from anywhere, tried live (2026-10-08)** — the section of that
   name: six headless joiners in the user's own GoldenEye campaign room on
   the deployed lobby; the hole punch and the VPS relay both working
@@ -401,8 +455,10 @@ the one still statistical):
   mode before the client's. Session 5's pass was build-share/, which had
   the zip.
 
-replaytest's `randrun` case flips between two hashes on the base binary too
-(pre-existing); rerun `CASES=randrun` alone before looking for a regression.
+replaytest's `randrun` case flipped between two hashes on the base binary too
+(pre-existing): a walk-in guard's uninitialised yvisang held a pointer byte
+from the stage's first load; fixed in chrmgrConfigure() (F3 pass 38,
+performance.md "randrun parting from itself").
 
 **The Windows lobby client under wine.** `netlobbywinetest.sh` stages
 `build-win/pd.x86_64.exe` in `build/netlobbywine-out/win/` with
@@ -2015,6 +2071,36 @@ we make this easier for players abroad, so anyone can play anyone".
   sent to the joiner), its gdb probe breaking in `netHudRenderFeed` with
   `var8009dfc0` set and taking the host's screenshot.
 
+- **"Not launching me into in progress game" (F3 20261012-020922, dab).**
+  Not a join fault: room 88ccd714 (MaxPlayers 4) had four players in its
+  match 4, so pdlobbyd's join said 409 full twice (it counts room members,
+  `humans()`, and nobody left that match: four chrs to its end in
+  savantique's log). A seat came free only when a player left the room
+  after match 4; dab joined the reopened room (no "launched; connecting"
+  line, status "waiting for the host to launch") and played match 5 in
+  slot 2 when the host launched it ~4 min later. A member who joins a
+  launched room with a free seat is taken into the running match: gate
+  netlobbytest `seat` (a room of three, a newcomer refused while full, a
+  player quitting at frame 900, the newcomer in again and into the match
+  in that seat; `--net-lobby-quit-frame` now works on a joiner too). Two
+  gaps it showed, fixed the same night (owner: "fix both"): (1) a member
+  whose game died mid-match held its room seat to the match's end (pdlobbyd
+  reaps nobody while a room is launched), so newcomers heard "full" with a
+  seat open. Now the host's heartbeat carries `seated`, the accounts its
+  session has (`netSessionHostAccountsJson`: connected clients, players or
+  spectators, and seats held for a drop), and pdlobbyd (api 6, README
+  "Seats in a running match") removes a member it does not name whose game
+  has stopped polling for 30 s - after the host's 30 s hold, so a crash
+  still comes back to its seat within the hold. (2) A member who used End
+  Game kept its room seat but was never connected to that launch again
+  ("Leave the room and join it again"). Now the Game Lobby offers "Back
+  Into the Match" (`netLobbyRejoin`): it asks the lobby for a fresh ticket
+  (the "ticket" action; the launch's ticket was spent, "ticket used
+  already") and connects again as a join in progress. It keeps its room
+  seat meanwhile (it still polls, so it is never reaped). Gates:
+  netlobbytest `crash` and `endgame`; test_pdlobbyd `SeatedTests`. No wire
+  change (protocol 31 as it was).
+
 - **A refusal said in the room (2026-10-09, F3 20261009-070735).** A guest
   without the host's mod (PerfectBear) joined a launched Perfect Dark
   campaign room, left at once [nomod], and its Game Lobby said "Launched:
@@ -2832,3 +2918,1138 @@ in their own sections' notes.
   compensated; only hitscan is, `netlagcomp.c`), and a Phoenix round's
   blast is lag-compensated in place but hurts chrs where they are now.
   A projectile "nudge" (Unlagged's) would be a design change.
+
+- **A guest's blasts where it saw the chrs** (owner's decision 2026-10-11,
+  feat/net-blast-lagcomp, `netLagCompBlast*` in netlagcomp.c). The time
+  error above is the shooter's view lag L (round trip + queue, capped at
+  Net.LagCompMaxMs, plus interpolation: netLcViewFor, ~17 ticks at 150 ms):
+  it aimed at the target as it was L ticks before the host launched the
+  round. Rewinding the chrs by L when the round goes off gives the offline
+  answer (offline the round lands at t0+F on target(t0+F); online the host
+  lands it at Tf+F with t0 = Tf-L), so chosen over a spawn nudge, which
+  only makes up the one-way latency, not the interpolation. How: an
+  explosion made by `propExplode` of a weapon prop (rockets, grenades, the
+  Devastator's, mines, the Slayer's, GoldenEye/hack launcher rounds) or a
+  Phoenix round, owned by a remote player (`explosionCreate` ->
+  `netLagCompBlastNote`), keeps L for its life; `explosionInflictDamage`
+  reads each chr's place from the pose ring (`netLagCompBlastPos`) for the
+  distance, the bbox and the knockback's direction, never moving the chr
+  (its death, drops and knockback land on it as it is), and
+  `netLagCompBlastProps` adds chrs that were in reach but are out of the
+  blast's rooms now. A chr counts where it is or where the guest saw it,
+  whichever is nearer the blast: a round that struck the body itself on
+  the host keeps its damage (a pure rewind moved a struck target away from its own blast), at the
+  cost of a little extra favour to the shooter. The guest's own player is
+  never rewound; world, doors and props are as they are; the host's own
+  rounds and offline play are untouched (replay identical). Net.LagCompBlasts
+  (1) turns it off alone. --net-lagcomp-log adds E (each explosion, place,
+  L), P (each other player where it is and where the guest saw it) and B
+  (first-frame damage) lines; netlagcomptest `blast` measures it (rockets at a target
+  strafing two seconds each way, 150 ms: over the rockets that went off
+  with it moving on, the blast 320 from where the guest saw it and 375 from
+  where the host had it, first-frame damage dealt 5.98 a rocket against 3.49
+  without the rewind and 6.38 where the guest saw it; every blast pushes the
+  invincible target, so the numbers drift run to run, the gate is relative). Not
+  covered: the round's flight. Its collision with a chr is the host's
+  (projectileFindCollidingProp tests the chr's model in the host's world),
+  so a rocket that on the guest's screen flew into the target's body but
+  passes where the host has nobody goes on and goes off where it lands;
+  the rewind then helps only as far as that is near. Lag-compensating the
+  flight would mean rebuilding chr matrices per projectile step. Favours
+  the shooter: a target that moved on can be hurt by a blast that on its own
+  screen went off behind it.
+
+## State and events apart (protocol 29, 2026-10-11)
+
+EverQuest Online Adventures' DRDP (`~/claude-eqoa/entity-channels.md`,
+`claude-notes/drdp-decompiled.md` "State Channel XOR Delta") keeps two
+kinds of traffic: **state channels**, each a latest-value-wins buffer
+XOR-delta'd against what the other side acked and never resent, and a
+reliable stream for true one-shot **events** only. Our snapshots had been
+the first kind since phase 4 (netdelta.c, per-entity bases since 23), but
+the reliable, ordered EVENTS stream carried some state as well, and one lost
+packet held up everything behind it (seen at 25 ticks at 150 ms / 2%).
+
+**The audit** (every reliable message):
+
+| What | Kind | A joiner needs | Now (29) |
+|---|---|---|---|
+| FIRESLOT, PLAYERSHOT | one-shot (flash, tracer, sound) | nothing | EVSHOT, unreliable |
+| SPARKS, CHOKE | one-shot | nothing | EVSHOT, unreliable |
+| EXPLOSION | short-lived state (a burn of 40-180 ticks); its scorch a lasting mark | one still burning; the scorches | SURE copies in EVSHOT; catch-up; MARKS |
+| CHRDAMAGE | one-shot feedback (flinch, shield, the red flash); health is in the local block | nothing | SURE copies in EVSHOT |
+| a camera's lens shot out | **state**, never sent before | it | OBJ byte 0 bit 0x80 |
+| bullet holes, scorches, splats on the bg | lasting cosmetic state | the host's set | MARKS once (bulk) |
+| DEFORM | **state** (crumpled; a match's prop regenerates whole) | every object's crumpling | OBJ byte 23 / DOOR byte 5 |
+| GLASS | **state** (a pane out; a match's comes back) | every pane broken | world block bit (event past 1760) |
+| NBOMB | **state** with a life (~6 s storm) | a storm going, how old | world block storm slot |
+| GAS | **state** (the fog stays for the match) | the gas and its fade | world block |
+| DEATH | mixed: kill-table state + the moment | the table (SCORES catch-up) | EVENTS, reliable ordered |
+| SCORES | state (the whole table, on a change or to a joiner) | itself | EVENTS |
+| HUDMSG, PICKUPSFX | one-shot, must arrive | nothing | EVENTS |
+| a windowed door's pane | **state**, never sent before | it | DOOR byte 4 bit 4 |
+| doors, lifts, regen pickups, objectives, alarm, timer | state | already records / the mission block | unchanged |
+| CHAT, SLOTCFG, ROSTER, session flow, CONTENT_* | one-shot or rare | - | unchanged (PLAYERS, CMD, CMDACK, SNAP were unreliable already) |
+
+**What changed.**
+- `networld.c`'s **world block**: 320 bytes after the scenario block in
+  every SNAP (glass bits in setup-command order, four storm slots, the gas),
+  delta'd against the baseline's like the scenario block but applied by
+  `netWorldClientUpTo` as soon as the render clock reaches its tick - never
+  gated on evseq. The host rebuilds the glass bits from its own objects every
+  tick (`netWorldGlassGone`), so a match's regenerated pane clears its bit.
+  A change seen as it happens (the bit clear in the last block applied, at
+  most 30 ticks old) plays as the host's did (glassDestroy's shards, the
+  storm's sound); one from before (a joiner's first block, a pane this
+  machine's own regeneration put back early) goes in quietly. A storm more
+  than 30 ticks old starts at the host's age; the gas fade too.
+- **Crumpling in the record**: the host counts objDeform calls per prop
+  (`netEntsHostNoteDeform`, saturating at 15, with the last level) and zeroes
+  the count once the object draws its own vertices again
+  (`netWorldObjDeformed`: a DL's rwdata vertices back to the rodata's, which
+  is what regeneration's modelFreeVertices does). The client calls objDeform
+  until its count matches, and modelFreeVertices when the host's goes to 0.
+- **Three event classes** (`netevents.c` `netEvClassOf`), each a message
+  type on its own ENet channel (five channels now): EVENTS on
+  NET_CHAN_RELIABLE (the only class evseq counts, so the scenario block
+  waits on deaths and scores alone), EVFX reliable on NET_CHAN_EVFX, EVSHOT
+  unreliable unsequenced on NET_CHAN_EVSHOT in datagram-sized messages. The
+  client's queue stays in tick order across classes (an event is put back
+  behind any of a later tick that came first; the hudmsg text buffers stay
+  with their slots, their contents swapped).
+- Why shots may be lost: dozens a second, each seen once; a lost one is a
+  shot without its tracer that the next shot covers, where a resent one came
+  150+ ms late and held up every event behind it. Explosions and hits are
+  rare and seen by all (a missing boom is noticed), so they stay reliable,
+  but in an order of their own. Deaths, scores and hudmsgs must arrive and
+  in order.
+- **Measuring**: `netcrowd.sh` STAGE= WRECK= CENSUS=; `--net-test-wreck`
+  breaks half the glass and windowed doors, crumples six objects and starts
+  a storm (the first also the gas, where the stage has its sky);
+  `--net-test-census` logs "world census" on every machine; clients log
+  "events lag by type" and "world client". Results are in the results file
+  of the pass (`~/wt/f3-1010c/results-netstate.txt`).
+
+**Traps met.** A setup glass regenerates in a match (objFree with
+canregen keeps the prop; `OBJH2FLAG_DESTROYED` clears), and is freed for
+good in a mission - so "broken" is read from the object every tick, not
+latched from glassDestroy. Clients had disagreed with the host about a
+match's glass before this (their own regeneration timers). gasReleaseFromPos
+on a stage without a second sky crashes in envApplyTransitionFrac: the test
+wreck checks `g_EnvTransitionFrom/To` as the client always did.
+
+**Measured** (netcrowd.sh at --net-sim 2,75, Grid/G5 with 24 sims and
+Defection co-op, a third client joining ~1500 ticks in; wrecks at 600, 1450,
+2400): every shot-class event's worst lag fell from ~24 ticks to under 3,
+deaths' from ~24 to 5-9; explosions and hits keep their own reliable
+channel and still meet a resend now and then (max ~24). A late joiner had
+none of the glass, crumpling or storms from before it came (co-op: 0/42
+panes, 0/12 objects at 1650; Grid 0/12 objects); now it matches the host
+(42/42, 12/12, the storm part way). Clients in a match also disagreed with
+the host on its regenerating glass before (they never regenerate it, the
+record only hid it); the block now puts a pane back. Bytes to a client
+about the same (-1% to +3%, inside run-to-run noise).
+
+**Explosions, hits, lenses and marks (the owner's follow-up, 2026-10-11).**
+- An explosion or a hit on the reliable EVFX channel still waited ~24
+  ticks behind a lost packet. Now each is recorded once in a ring
+  (`s_Sure`, netevents.c) and goes unreliably in the EVSHOT messages of
+  ticks +0, +2, +5 (an explosion) or +0, +3 (a hit), wrapped in a SURE
+  event (serial, ticks back); the client keeps the first copy
+  (`s_SeenSure`), queued at its own tick. Three lost copies in a row at 2%
+  is 8 in a million. A joiner's first EVENTS carries the explosions still
+  within their burn (duration + 7 flares); one applied more than 6 ticks
+  late is put in at the host's age (`x->age`), past explosionTick's bang
+  at age 0. The host records explosions even with nobody connected yet.
+  Hits are sent twice, not three times: rockets make a hit per victim per
+  tick of the blast (90 000 in a three-minute Grid match), and their bytes
+  are the cost.
+- A camera's lens (CCTV, PD's and GoldenEye's - the ROM model keeps the
+  lens toggle MODELPART_CCTV_0003 under the HD mesh): OBJ byte 0 bit 0x80
+  from the toggle's visibility; the client hides it (cctvHandleLensShot's
+  glass when it saw the camera whole before). The camera's watching and
+  its damage are the host's: a client runs no cctvTick.
+- MARKS: wallhit.c's `wallhitNetList` gives the settled bg marks oldest
+  first (none on a prop or a chr, none fading or spreading), 90 bytes each,
+  to a joiner once on the bulk channel beside its first EVENTS;
+  `wallhitNetAdd` puts each in this machine's pool as wallhitCreate would
+  (its room's cap still holds). Live play is as before: each machine makes
+  the marks of what it sees, so two machines' marks drift apart later
+  anyway (a client from the start had 31 where the host had 65).
+
+Measured (same netcrowd runs, plus Grid with rockets and grenades,
+MPWEAPONS=23,22,9,9,23,22, and GoldenEye's Bunker in co-op for its
+cameras and windowed doors): explosion max lag 13.9 -> 1.0 ticks (rockets),
+hits 25.9 -> 2.7, deaths ~5 (their own reliable channel, a resend now and
+then still ~24); a joiner sees the gas barrel set off 40 ticks before it
+came still burning (put in part way, every run); Bunker's lenses 0/4 ->
+4/4 and windowed panes 0/14 -> 14/14 on every client; MARKS: the joiner
+gets every bg mark the host has (19-65, 1.7-5.9 KB once; G5's census 150
+ticks later identical, count and summed places). Bytes: about even, +7-10%
+in the rocket match (its player hits twice; 97 000 hits).
+
+The netpuppettest "alarm" check read the last "net: local block" line,
+which the item log of the local block (protocol 28) now ends with: it reads
+the line with the deaths.
+
+**Left.** Clients never draw other players' and sims' bullet holes in live
+play (they make marks only for what their own machine fires and for
+explosions' scorches): a client from the start had 22 marks where the host
+had 51. MARKS fixes a joiner's start only. An object out of a client's scope gets its crumpling only when it
+comes into scope (invisible meanwhile);
+explosions' scorches and bullet holes are not sent to a joiner; a CCTV
+lens shot out is not replicated at all (as the windowed door pane was not);
+CHAT and SLOTCFG share NET_CHAN_RELIABLE with the GAME events.
+
+## Everything by delta (protocol 30, 2026-10-11)
+
+The owner, after protocol 29: "everything uses deltas to update". Three
+things still went as full copies over and over:
+
+- **The marks on the walls and floors.** Clients never drew other players'
+  or sims' bullet holes (only their own and explosions' scorches; 29's MARKS
+  gave a joiner the host's set once). Now they are state: the marks block at
+  the end of SNAP holds one u16 serial per slot of the host's wall-hit pool
+  (the bg mark in it, 0 none), delta'd against the client's acked snapshot
+  like the other blocks, and up to `NETMARK_PERSNAP` (3) records of 74
+  bytes a snapshot for marks the client lacks, oldest first
+  (`netsnap.c`, `networld.c`). A slot the host empties (its pool letting the
+  oldest go, a fade) empties on the client for nothing; a slot refilled
+  before its record went sends only the newest mark, so a burst of shots
+  costs at most the pool, never the history, and never more than ~230
+  bytes a snapshot. A joiner's keyframe is the whole pool, caught up over its
+  first ~2 seconds of snapshots, which replaced MARKS (27). A client makes
+  no bg mark itself (`wallhitCreateWith20Args`' gate,
+  `netWorldClientOwnMark`) except its own player's bullet holes, drawn at
+  once and kept in a FIFO; the host's record carries who made it (the pass
+  player), and when one of the client's own comes, its oldest own mark gives
+  way. Final colours are this machine's lighting of the host's base colours,
+  as wallhitCreate lights them. Blood on the bg (splats carry their chr) is
+  left out.
+- **CMD.** Every unacked command (25 bytes) went whole each tick, up to 16:
+  at 192 ms ~13 copies, 14-20 KB/s upstream per client on the online night
+  (ElmoBear's F3 20261010-040255), 2-2.5x what the host sent. Now each
+  command is packed to 32 bytes (`netcmd.c`; viewtick as the command's tick
+  less it, steady while the render delay is) and XOR-delta'd with zero-run
+  RLE: the first against the newest command the host acked (the CMD names it;
+  the host keeps every command it took by tick per view, and drops a CMD
+  whose base it has not got; the client keyframes if its base has not moved
+  for 30 ticks), each after it against the one before. Every unacked command
+  is still in every packet. Quake 3's field masks were measured beside it
+  (the client logs both: "commands codec").
+- **CMDACK** is 9 bytes for 14 (the match's low byte, the ack as a distance
+  from the host tick); **PLAYERS** no longer goes whole every second: the
+  pings ride the world block (352 bytes now, at 320), PLAYERS goes only when
+  the spectators change (once a second for five, unreliable) and at a match's
+  start and at the barrier.
+
+Measured (netcrowd, 3 clients, the third joining at ~1500; census of the
+bg marks host vs client at 900/1650/2400/3300): marks before were a
+client's own (c1 22 of the host's 62 in co-op); now equal, often to the
+placement checksum, within the few in flight (rocket match: c1's equal at all
+four ticks); a joiner has the host's within ~5 s. Upstream per client
+(host received in 60 s): 60 ms RTT 473 -> 141 KB, 120 ms 793 -> 156 KB,
+192 ms 1120 -> 175 KB (-84%); the commands 1.3-2.5 bytes each as deltas,
+field masks 2.2-2.6, whole 25: XOR-delta it is. Downstream +1-6% (the
+marks block), co-op -3%.
+
+Trap: `netcontenttest` reads the *last* "net: world client" line, so a new
+line of a module's own needs its own name ("net: marks client").
+
+Left as they are, rare or one-shot: CONNECT/ACCEPT/REFUSE, RULES and
+STAGE_LOAD (once a match), LOADED, GO, MATCH_END, LEAVE, LOBBY, SLOTCFG (on
+a change), ROSTER (on GO and a seat changing hands), RESUME, CHAT,
+CONTENT_* (a served download), the events (one-shots), the SCORES table (a
+joiner's catch-up and a cleared seat).
+
+## The Game Lobby's windows (2026-10-11, no wire change)
+
+The owner's mock-up (`~/perfect-dark/lobby.webp`): four windows in two
+columns. On the left **Game Lobby** (the room's name and count in the Md
+font, its settings, the roster in Team 1 / Team 2 / Spectators columns with
+ready marks and each member's ping) over **Mods**; on the right **Lobby
+Chat** (the room's chat, the status line at its foot, the line being typed
+under that) over an untitled box of buttons (Ready / Change Team / Chat /
+Kick... / Settings... / Back to Campaign / Leave Lobby). The owner asked for
+it to be mindful of 4:3 and to use a widescreen display's width.
+
+**The other online pages (same day, the owner: "lets do similar to the
+other online screens").** Each page is one entry of `s_LobbyPages` at the
+end of netlobbymenu.c: its dialog, the side (column) it is in, where it goes
+and the windows around it. Online Game: Rooms Open on the left (the room
+list asked for every 10 s while the page is up, two lines a room), the
+account over the buttons on the right. The Briefing Room: the dialog (its
+buttons and the room list, a line a room, sized to the column every tick:
+`briefingListFit`) is the left column; on the right the Room Info window
+(the room under the cursor: its arena, mode, counts, password, state and
+its mods with where this machine stands; with Create Room or Refresh List
+under it, what that card does - F3 pass 38 below) and a Lobby status window
+sized to its text. Create Room and Room
+Settings: the setup's rows on the left (they scroll), on the right a
+preview of the room as the lobby will list it - `netLobbyPreviewRoom()`
+reads back the very JSON the create or a settings change sends - and a
+status window. The small popups (passwords, names, Kick, the chat
+keyboard, Quick Message) stay PD's centred dialogs.
+
+**After WWE SmackDown! vs. Raw (same day).** The owner pointed at that
+game's online mode (its video at 31:37 and 32:28: "no gamespy logo, just the
+nice layouts", and "we can even have the PD logo in the header"). Every page
+now has a header bar across the screen - Perfect Dark's logo over its left
+end, the page's name, what the page is about on the right (the account; the
+room's name and count) - and the buttons' hints along the foot
+(`lobbyChrome`, the page's `title`, `info` and `hints` in `s_LobbyPages`).
+The logo is the boot screen's, drawn from the ROM ("The header's logo"
+below): the XBLA release's (xblaui.c) would have shown only for a player
+with that package, and the port's icon compiled in, tried in between, is
+art shipped in the binary, which the project does not do. The bar is one piece drawn with no side held (`G_ASPECT_MODE_EXT` cleared:
+the 320 units stretch across the window, which a gradient does not mind);
+two halves held to the sides met in a visible seam. Online Game opens on
+Name Entry (the reference's name screen): the account's name in a box that
+opens the account page, Next on to the Briefing Room, signing in first.
+The Briefing Room is the main page: the rooms as cards (state, a mode
+badge, name, host, count, ping) with Create Room and Refresh List as the
+last two cards (the reference's Create Game), the list asked for every
+10 s. After a match the stack is Name Entry, Briefing Room, Game Lobby
+(`netLobbyMenuPushRoomAfterMatch`, `netLobbyMenuFrame`), so Leave lands on
+the rooms. The windows' own titles no longer repeat the header's
+("Rooms", "Room Setup", "Room").
+
+**Text size (same day).** The owner: "letter glyphs are large". The windows'
+text is drawn at Net.LobbyTextScale percent of the fonts' own size (75 by
+default; text-rendering.md "Text smaller than its glyphs"), every row height
+in netlobbymenu.c is `lobbyRow()` of the font's, and the cards are as tall as
+their three smaller lines; the header and footer are drawn full size
+(`lobbyChrome()` sets `s_LobbyFullSize`). The header's right side cuts the
+room's name rather than its count when both do not fit. Then (the owner:
+"the dropdown menus need to be adjusted and create game screen") the pages'
+stock rows too: `netLobbyMenuItemPct()` names the online pages' own dialogs
+(not the Briefing Room's cards or Name Entry's box, drawn here and sized
+already, nor the stock pages pushed over them), `menuCalculateItemSize()`
+scales their rows' sizes, and `dialogRender()` lays each such row out in a
+box as much bigger as it is drawn smaller and draws it scaled from its
+corner, highlight and dropdown list included - Create Room now fits its
+window with Create in it. Two bugs of windows wider than their columns went
+with it: a dropdown's list opened by the column's width, mid-row over the
+labels (the overlay pass now takes the width the rows were drawn with), and
+the pointer did not take a row's right half (`dialogChangeItemFocusWithMouse()`
+the same). The in-match chat feed (nethud.c) is drawn at the same size,
+laid out as much bigger, never past the 320 units.
+
+**The header's logo (same day).** "PD / Online" over the port's icon gave
+way to the boot screen's own logo, the owner's choice, drawn from the ROM
+("we can't ship assets"): `lobbyLogo()` draws title.c's two models (FILE_PNLOGO
+the emblem, FILE_PPDTWO the words), each loaded into memory of its own the
+way menuRenderModel() loads a file, and drawn by hand. What it took, each
+learned from a wrong picture:
+- The title's end is the morph's second toggle's shape drawn as it stands
+  (part 0001 on, 0000 off; the first toggle's lists, Nintendo's cube, are
+  given empty lists besides).
+- The lists blend the morph's two textures by the primitive colour's alpha
+  (combine (TEXEL1-TEXEL0)*PRIM_ALPHA+TEXEL0, then *SHADE): the title sets it
+  per model, and for the second toggle's lists at the end it is 256 less the
+  cap - 16 for the emblem, 1 for the words. Left to the menu's, an open
+  dropdown's colour made the emblem Nintendo's green and blue.
+- Lit (`G_LIGHTING`): the lists' colours are normals, and the menu models'
+  setup list clears lighting; the title's front light (ambient white) and the
+  words' light where the title's comes to rest, its LookAt (a camera on z).
+- Sized from the title's camera (46 degrees at 4000, emblem 0.35, words 1000
+  nearer at 0.308 and grown 5%): the words' projected scale is 1.23 times the
+  emblem's, the emblem 4580 model units tall; the depth cleared between them
+  (`gDPClearDepthEXT`).
+- **Not through menuRenderModel().** It sets the view (g_ViBackData) to its
+  rectangle and makes its projection the camera's (`vi0000af00()`), and the
+  eye piece - drawn first the next frame, placed through the camera's screen
+  mapping - came up small in the logo's box, or not at all once the view was
+  put back exactly; building the player's projection again instead rewrote
+  the player's viewport, and in the XBLA look the eye piece's mesh came up as
+  a blue bar down the screen and the pointer was mapped through it (F3
+  20261011-203600). The logo sets its own viewport (`s_LogoViewport`, by
+  g_ViBackIndex) and projection in the display list, then the player's
+  viewport and the menus' 2D projection (`func0f0d479c()`) after, and writes
+  none of the view's, the camera's or the menus' state.
+- In the XBLA look the release has a mesh for the emblem's file (4J's cube,
+  drawn on the second toggle): `xblaMeshSetBypass()` round the load and the
+  draw, as the title keeps it off its own logo.
+- Drawn with the centre held (a model's vertices take a side's offset as a
+  share of the viewport), its rectangle moved into the centre's frame by hand
+  for the viewport; the scissor set with no side held, in the stretched
+  frame (one set with the centre held is clamped at 0 and cut the logo's left
+  off in the 16:9 pillar). 28 units tall ("lets shrink the logo a bit").
+
+**Main Menu Chat (same day).** The owner: "the small bottom right window
+that says Lobby, let's make that a Main Menu Chat. You can make it a bit
+taller". pdlobbyd API 4 has one chat for everyone signed in (`GET /chat?since=`
+and `POST /chat`, README "Main menu chat"); the Briefing Room's right column
+is the room's details over it, about half each, the page's status the chat's
+last line (`lobbyChatLines()`, shared with the Game Lobby's room chat). The
+page says it is up every frame (`netLobbyMainChatWant()`), and the poll
+thread, idle outside a room, asks every 2 s while it is; Space or the chat
+key open the line (nethud.c CHAT_MAIN, `netHudMainChatFrame()`), Enter sends
+(`netLobbyMainChatSay()`, a queued job). A 404 (an older lobby) says so in
+the window; a 401 (the lobby restarted) signs in again once.
+
+**The keys never opened it in release 57** (the owner: "T doesn't type in the
+main menu chat"). `netHudFrame()` returns at its top when there is no match
+and no lobby room ("offline: nothing to read"), and the Briefing Room is
+exactly that, so the keys were never read there; the window's lines and a
+test that said a line through `netLobbyMainChatSay()` from gdb all looked
+right. The early return now leaves the main menu's chat alone. A chat a key
+opens is checked with a key: on Xvfb (`SDL_VIDEODRIVER=x11`, xdotool
+keydown/keyup on the window, then `xdotool type` and Return), and the line
+read back from the lobby.
+
+**The chat is players' lines alone (the owner, same day: "only show actual
+player chat, not the Rooms: 0 etc.").** The page's message (a refused join,
+the lobby out of reach, a room closed under the player, the restart's 410)
+moved to the footer, in the hints' place in the notices' gold until the
+cursor moves (which clears it, as it cleared the status line), drawn at the
+windows' text size in pieces (`lobbyTextLong()`, text-rendering.md: a line
+longer than the 320 units at full size needs them). "Rooms: N. Pick one to
+join" went (the list's title counts the rooms, "Rooms (3)", since F3 pass
+38; the cards say Can't join), and so did the empty chat's placeholders.
+
+**The server's notices (pdlobbyd API 5, same day).** The owner asked for an
+in-game "Server: Restarting Server for Update, apologies for the
+inconvenience!" at a restart; the lobby had no way to say anything, and a game
+in a match shows only the match's own chat (a room's lobby chat goes to the
+log, nethud.c "the room's chat as it comes, for the log"). Now `POST /notice`
+on the lobby's loopback-only notice port (README "Server notices") puts a line
+in every room's chat and the main menu's with `"system": true`, and a SIGTERM
+says `shutdown_notice` to the rooms and waits 2 s before they close. The game
+queues a room's system lines from the poll thread (only those after the first
+reply: the first carries history) and the main thread hands them to
+`netHudServerNotice()` (`netLobbyTick()` runs in a match too, from
+`netPump()`): "Server: ..." in COL_NOTICE, twice a line's life, the feed's
+expired lines skipped rather than ending the walk (a server line outlives the
+players' lines after it). `lobbyChatLines()` draws system lines whole in the
+same gold. netlobbytest.sh says one mid-match and checks both games logged
+`net: server notice:` once. Old games see a room's notice as a chat line from
+"Server" in the Game Lobby only.
+
+**The roster (the owner, same day: "instead of team 1, team 2 columns
+just make the player names the same color as the team they are on and only
+in team based modes", "and group the same color teams together").** One
+list of the players, down as many columns as the rows need (three at most);
+in a team match grouped team by team, each name in its team's colour (the
+radar's `g_TeamColours`, lightened as the name tags over a player's head
+are, darker while not ready) under a header of the teams in their colours
+("Red 6  Yellow 4"); the spectators on a line of their own. A guest knows
+the room plays as teams from the room's `teams` rule, which the host now
+sends with its settings (the Teams option, or Capture the Case, which turns
+teams on at its start; pdlobbyd passes any rule key through, so no server
+change; an older host sends none: no teams). With no teams Change Team
+means nothing the roster shows, so its row is Spectate or Play
+(`netLobbySetSpectator`), and hidden for the host, which cannot watch its
+own room.
+
+**How it is built.** The buttons are the only real dialog,
+`g_NetRoomMenuDialog`, now `MENUDIALOGFLAG_DISABLETITLEBAR`, so the pad,
+the keys and the mouse work it as any page. menu.c asks netlobbymenu.c three
+things of every dialog: `netLobbyMenuPlaceDialog` (from
+`dialogCalculatePosition`, every tick: the box at the foot of the right
+column, as tall as its rows, which come and go with host and campaign),
+`netLobbyMenuDialogAlign` (the side `menuRenderDialog` holds it to) and
+`netLobbyMenuRenderPanels` (after the dialog: the other three windows). The
+windows are drawn with the dialog's own chrome calls (`menugfxRenderGradient`,
+`menugfxDrawShimmer`, `menugfxRenderDialogBackground`, its MIXCOLOUR colours
+and text blends), so they open, fade, dim and change colour with it; they
+are never focused. A dialog pushed over the room (Kick, Settings, the chat
+keyboard) takes the screen alone, the windows going with the room's dialog
+as the old page went, and they grow back open with it when it closes.
+
+**Widescreen.** The left column is drawn under `G_ASPECT_LEFT_EXT`, the
+right column and the dialog under `G_ASPECT_RIGHT_EXT` (both with
+`G_ASPECT_WIDE_EXT`, as Ghost Trials' plaques), each column the wider by
+the screen beside the frame, so the windows reach the window's sides at any
+aspect. `menuProcessInput` moves the mouse's x by the same offset
+(`netLobbyMenuDialogAlignOffset`) for a dialog held to a side.
+
+Traps met:
+
+- **The menu's frame is 320x220, not 4:3.** `videoGetNativeWidth/Height`
+  are 320x220 (aspect 1.45): under `G_ASPECT_CENTER_EXT` a 4:3 window shows
+  only x 13-307 of it (its sides are off the screen), and on a 16:9 window
+  the pillar either side is 35.6 units, not the 53 a 4:3 frame would leave.
+  So at 4:3 a side alignment moves a side *in* by 13 units: the "pillar" is
+  negative. Ghost Trials' plaque offset clamps it to 0, which a plaque does
+  not notice and a layout does (the first build's columns overlapped by 13
+  units at 4:3). `lobbyPillar()` keeps the sign; LEFT-held x 0 is the
+  screen's left edge and RIGHT-held x 320 its right edge at every aspect.
+- **fast3d's scissor under a side alignment stood off what it held.**
+  `gfx_adjust_viewport_or_scissor` added the alignment's offset unscaled,
+  where `gfx_adjust_x_for_aspect_ratio` scales it by native/window for
+  everything drawn: at 16:9 a scissor set under LEFT or RIGHT stood 1/12 of
+  half the screen (18 units) to the side of its content, cutting the left of
+  the right-held dialog. Scaled now; only scissors set under LEFT or RIGHT
+  change (Ghost Trials' plaques and side-aligned cutscene subtitles set
+  theirs whole-view, so they never showed it).
+- **Switching sides takes setting the side, not only clearing the other.**
+  The left column's turn clears RIGHT from CENTER; the right column's then
+  cleared LEFT and left neither, which is centred, and the chat window came
+  out 13 units off the buttons under it. Clear CENTER, set side | WIDE.
+- **Text stops at x 320 of the space it is drawn in** (`text0f15568c` drops
+  a glyph past `viGetWidth()`, and texture rectangles cannot go negative), so
+  each column's coordinates stay in 0-320 of its own side's space: past
+  about 3:1 the columns stop growing (`total` capped at 480) and the gap
+  between them takes the rest.
+- **The chat history.** `NETLOBBY_MAXCHAT` was 6 (the old page showed 3); it
+  is 24 now, pdlobbyd keeps 50. `textWrapN` measures a little narrower than
+  `textMeasure`: wrapped to the window's width, a full line lost its last
+  letter to the dots, so the wrap is 8 units narrower than the fit.
+- **Names before pings.** The roster's font is HandelGothicSm while every
+  name fits whole in its column and every row fits, else Xs; a ping that
+  would cut a name that is whole without it is left out
+  (`rosterCellTag`); a narrow column (under 110 units) has the ping
+  without the path tag. The Game Lobby's settings go two columns (one
+  column of seven left a full twelve-player room no rows at 4:3), the long
+  values (arena, mode, weapons, host) on the left; the preview and Room
+  windows, which have the lines, go one column where two would cut a value.
+- **A dialog taller than its rows had them at its foot.** dialogTick's
+  scroll clamp (`dstscroll` at least `height - contentheight`) is positive
+  when a dialog is taller than its content, which no stock dialog is; a page
+  placed as a whole column (Room Settings) drew its rows from the bottom up.
+  Held at 0 for the placed pages (`netLobbyMenuDialogAlign`), stock dialogs
+  untouched.
+
+**The Mods window** is `netContentLobbyRows()` (netcontent.c): a row each
+for the conversion or ROM hack the room is in (the room's `ge`), the host's
+Perfect Dark mod (`mod`) and the mod its Stage Loader map is from (the
+`stage_key` rule's `map:NAME`, looked up among this machine's maps; the
+map's name alone when it has none), plus any transfer under way that no
+row names. A row says In use (the overlay mod this machine plays with now,
+which a `--moddir` mod is although the installed list leaves it out),
+Installed, Converted, Received (served into memory earlier), From the host
+(the launch brings it: `netContentFollow`), or Downloading/Sending n% from
+`s_Fetch` and `s_Serve`. Rows left over say `<empty>`, as the mock-up has
+them.
+
+**Looking at it.** Not a gate: a local pdlobbyd with its per-address limits
+raised (`login_window` is 10 sign-ins per 5 minutes per address, which a
+dozen fake members from 127.0.0.1 exceed; `max_rooms_per_ip` 4 and
+`create_window` stop more than four filler rooms, whose heartbeats then
+stop and the rest time out), the host with
+`--net-lobby-script host --net-lobby-shots --net-lobby-size 12
+--net-lobby-wait 11` (its Game Lobby up and never launching), members
+joined, teamed, readied, given paths and pings and chatting over the HTTP
+API, `[Video] DefaultWidth/DefaultHeight` in the save's pd.ini for the
+aspect, and `gdb -p <game> -batch -ex "call (void)screenshotRequest()"` -
+the game's PID, not `timeout`'s. A dialog over the room the same way:
+break on `netLobbyTick` and `call menuPushDialog(&g_NetKickMenuDialog)`.
+Outside a room `netLobbyTick` and `netPump` are not called: break on
+`menuProcessInput`, then `call (int)netLobbyMenuHandlerOnlineMain(6, 0, 0)`
+(MENUOP_SET: Online Game as the Perfect Menu's row opens it) and push the
+Briefing Room or Create Room. `--net-lobby-teams` makes a scripted host's
+room a team match.
+`netlobbyuitest.sh` still shoots both sides' Game Lobby at 640x480.
+
+
+## Players Online (pdlobbyd API 7, 2026-10-12, no wire change)
+
+F3 20261012-115245 (the owner: "need a button to show players online in
+the main menu, ie select or L2"). On the Briefing Room, Select or L2 on the
+menu's pad or the players key (Net.PlayersKey, P: the match's players
+panel's key) opens PLAYERS ONLINE and closes it again; B or Esc goes back.
+It is a page in the windows' style (an entry of `s_LobbyPages`, centred: the
+header, one dialog, the hints), a line a player: the name (this player's
+own in gold), then where - Briefing Room, "In room: NAME" (its Game Lobby),
+"In a match: NAME", "Watching: NAME" (a spectator of a running match) - and
+over the list how many are where. Nothing offline: only the Briefing Room
+opens it.
+
+- **The buttons are the controller's own**, read as menu.c reads its
+  shoulder buttons (`VK_JOY1_BEGIN + 4`, SDL's BACK: Select, View, Share;
+  `VK_JOY1_LTRIG`; the menu player's pad), not through the N64 binds: in
+  the PC pad layout BACK is the Third Person bind and LT is R (aim), in the
+  N64 layout LT is nothing; on the online pages neither does anything else.
+  The key is a letter while the chat line or a keyboard is being typed
+  into (`netHudChatOpen`, `inputIsTextInputActive`, `g_MenuKeyboardPlayer`).
+  The press is edge-detected here, not with `inputKeyJustPressed` (whose
+  state is per key for every caller), and a look after a gap only notes
+  what is down: a button held on the way to the page does not count.
+- **The list is pdlobbyd's `GET /players`** (README "Players online"):
+  every room's members and every other account whose session asked the
+  lobby anything in the last 60 s - which the Briefing Room's main menu chat
+  poll (every 2 s) keeps fresh - once each, by name; a dedicated host is a
+  server and left out; never an address, token or ping. The game asks on
+  the action thread (JOB_PLAYERS through `lobbySessionRequest`, so a 401
+  signs in again) as the page opens and every 5 s while it is up
+  (`netLobbyPlayersWant()`, the main chat's want pattern: opened anew asks at
+  once and forgets the last list). An older lobby answers 404: the page
+  says the lobby server has no list yet, and it is not asked again until the
+  page opens anew. The log has "lobby: N players online" when the count
+  changes, not every poll.
+- **Four hints are longer than the screen.** The footer is drawn at the
+  fonts' full size, where "A / Enter: Join  Select / P: Players  Space or T:
+  Chat  B / Esc: Back" is about 390 units against the 300 the 320-unit frame
+  leaves (less at 4:3, where the frame's edges are off the screen). A footer
+  longer than its line is now drawn at the scale that fits, in pieces
+  (`lobbyTextLong`, which reaches past the 320 units); a footer that fits is
+  drawn as before.
+- **Testing it**: `tools/ci/netplayersonlinetest.sh` (under the net lock): a
+  local pdlobbyd with accounts put in each place over its HTTP API, one game
+  offscreen with `--net-test-players-online` under a join script whose room
+  never comes (which keeps `netPump` ticking the lobby, and
+  `netLobbyMenuFrame` the test with it): the Briefing Room over the boot's
+  menus, the players key held through `inputTestHoldKey` (the real key
+  path), the rows logged and the page shot, the key again closing it; then
+  the same against OLD's pdlobbyd (API 6): "no players list yet". SIZE=
+  picks the window. The pad's buttons are not exercised headless: every net
+  test's SDL hints ignore the box's controllers.
+
+## F3 pass 37 (2026-10-11, no wire change, protocol stays 30)
+
+- **A view drawn before its gun's first tick (crash 20261011-070303,
+  GoldenEye Bunker co-op).** `player->visionmode` was never set at
+  allocation before the JPN version (`playermgrAllocatePlayer`), and the
+  stage pool is not cleared, so it held the last stage's bytes until
+  `bgunTick` wrote it. Offline nothing draws first; a host draws a client
+  seat's view before that seat's first command reaches it (the stage
+  barrier), and a leftover 1 drew it in x-ray, whose `epcol_*` (equally
+  stale, measured 243/248/142 on a host) index `chrRender`'s `colour[4]`:
+  the write broke `propsRender`'s saved registers and it walked off the
+  stack at prop.c:568. Both are set at allocation on PC now.
+- **Every body is built on the level's first frame online** (the others
+  see it), before GoldenEye's opening: `playerTickChrBody` gave it the
+  hands' gun (none yet) and `gecinemaEnter`'s put-away emptied it anyway,
+  so Bond met the swirl unarmed (F3 20261011-065958). The swirl's tick
+  gives the own player's body the mission's starting gun when its hand is
+  empty (offline the body is built in the swirl holding it: a no-op).
+- The online pages' settings measure a pair as drawn (label and value
+  apart): measured whole, a short value lost a unit and drew as ".."
+  ("Simulants: ..", F3 20261011-214715). Name Entry and the Game Lobby
+  have a Player Setup row (the Combat Simulator's, player 1's: character,
+  Control's Reverse Pitch), which is what `netWriteSlotCfg` sends.
+
+## F3 pass 38: the online pages (2026-10-12, no wire change)
+
+- **Room Info follows the cursor.** The Briefing Room's right window showed
+  the top room with Create Room or Refresh List highlighted (034534): it
+  kept the last room's index from `MENUOP_LISTITEMFOCUS`, which is not
+  called as the page opens, and fell back to the first room. It reads the
+  list's own `list.index` from the menu's blocks every frame now
+  (`briefingFocusIndex()`, as `listClamp()` finds the row) and says what
+  the card does when it is not a room. Its title is "Room Info"; the list's
+  title is a function, "Rooms (N)" (a dialog title that is a function is
+  `menuResolveText()`'s, so the dialog loses `MENUDIALOGFLAG_LITERAL_TEXT`
+  and translates "Rooms" itself), and the header's right is the account
+  alone (a long name cut "3 rooms" to "3 roo..").
+- **Wrap at the drawn width.** The chat windows wrapped with `textWrapN` at
+  the window's width in the font's own measure while drawing the text at
+  Net.LobbyTextScale: the lines stopped at three quarters of the window.
+  `lobbyWrapWidth()`, as the paragraphs had it.
+- **A dropdown in a scaled row is cut by the 320x220 units of its laid-out
+  frame**, not the screen's (104020: the co-op Mission list stopped at Mr.
+  Blonde's Revenge, Down walked into invisible rows). `menuitemListRender()`
+  clamps its scissor to the buffer and `text0f15568c()` drops a glyph past
+  `viGetWidth()`/`viGetHeight()`, both in the frame the row is laid out in
+  before G_SETRECTSCALE_EXT scales it about the row; the list was 20 lines
+  tall on paper, so it never scrolled. dialogRender's overlay pass holds the
+  dialog's top and foot it gives the list inside 0-218 of that frame (the
+  list fits and scrolls, its view the lines that show), and lets x run past
+  320 (`g_TextMaxX`, game_1531a0.c, 960 around a scaled row and its
+  overlay; the list's scissor the same in menuitem.c): a row's right-hand
+  value at a small Online Text Size or on an ultrawide window ("Com" for
+  Combat Simulator at 50%) had lost its letters the same way.
+- **Create Room fits its column at the default 75%** with Create and Back
+  centred in the small font (no rule over them): Room Rules had made the
+  rows 13 units taller than the column, and the big font's Create is drawn
+  45 units in from the left, never centred (`menuitemSelectableRender()`).
+  At 85% and over the page scrolls, as it always did.
+- **A set's own difficulty names** (103630): `netCoopDifficultyNameOf()`
+  reads a conversion's menu/LtitleE slots 19-21 (gexfront.c's
+  TITLE_DIFF_FIRST; GoldenEye and Goldfinger 64: Agent, Secret Agent, 00
+  Agent; TND64: Easy, Normal, Hard) from the folder its missions are in;
+  the Difficulty row and the room's mode ("Co-op Secret Agent", "Counter-Op
+  00 Agent") use them, so the preview, the Briefing Room and the Game
+  Lobby say them. Old hosts still send PD's names: the mode is the host's
+  string.
+- **The roster's ready mark is the menus' checkbox** (`rosterBox()`:
+  `menugfxDrawCheckbox()`, the red fill ticked, the cyan edge empty).
+- **Chat history scrolls (owner-approved, 115320/115403)**: the right stick
+  (menuProcessInput merges both sticks for navigation; on the Briefing Room
+  and the Game Lobby, `netLobbyMenuChatScrolls()`, the right one is the
+  chat's alone), PgUp/PgDn (`inputKeyPressedThisFrame` on SDL's scancodes
+  75 and 78) and the wheel over the chat window
+  (`netLobbyMenuChatWheel()`, the window as last drawn, in the right
+  column's space: the pointer moved by the dialog's side offset and back by
+  the right side's). Scrolled up, the last line is "Newer below" and the
+  window holds its lines as new ones come; opening the line to type goes
+  back to the newest. The wrapped history is kept whole (256 lines, the
+  oldest let go): the old 64 dropped the *newest* lines once a narrow
+  window wrapped 24 messages to more.
+- **Sender colours (owner-approved, 120642)**: each name a colour of its
+  own from an FNV hash of the name, case folded, into eight that read on
+  the windows and stay apart from the messages' cyan and the server's gold;
+  this player's own name white. The in-match HUD chat (nethud.c) is drawn
+  apart and keeps its colours.
+
+## Riding on a tank (protocol 31, 2026-10-12)
+
+F3 20261011-065750 (the owner: "player should stay on tank while tank
+moves"). Online one player drives GoldenEye's tank and the others can stand
+on its hull; nothing moved them with it. Now (getank.c "Riding on top"):
+
+- **The carry.** `geTankRideCarry()` at the top of `bmoveTick` (before a
+  client's `netPredictMoveBegin`, so its prediction ring notes the carry as
+  the tick's "ext" move and a replay repeats it): a player on a tank it does
+  not drive (`geTankRidden`: `player->tank` a healthy tank, `bondonground` >
+  0, walking, alive) is moved by the hull's step and turn since its last
+  tick, in the hull's axes; not through a wall (scraped off instead). Its
+  view keeps its heading. Online only, ticks only, never in a replay.
+- **Climbing on a driven tank.** A driven tank's collision is off
+  (`geTankTick`), and bondwalk.c names a walked-into tank only when it is
+  not MOUNTED, so a moving tank could not be climbed: online `geTankBoard`
+  names one whose hull the player is over (the stage's tanks are listed at
+  `geTankCreate`).
+- **Host and client agree on the hull, not in the world.** A client rides
+  the tank as it sees it (the host's a render delay ago), the host its own
+  now: the local-player block's tank part grows to 48 bytes (NETLP_SIZE 736)
+  with `ride` and the rider's place in the hull's axes, taken against the
+  tank pose its last carry used (`g_TankRide`, not where the tank stands at
+  the snapshot: the driver may tick after the rider). The client puts that
+  place on its own tank as it was at that command (`ridepose` in the ring,
+  live ticks only) before comparing and replaying. Measured at 180 ms: 1
+  correction over a 1100-tick drive with two full turns (before the
+  carry-pose fix, a correction every few ticks: a tick's lag).
+- **A client driving** sees the other players a render delay late and its
+  own tank now: a player puppet over the host's tank (its record at the
+  render clock) is put on the tank as driven here
+  (`geTankRideMapPuppet`, counted "tank riders put on this machine's tank").
+- Gate: netcooptest `tankride` (Runway, `--net-test-tankride T[,2]`: mode 1
+  the host drives and a client rides, mode 2 the client's script climbs in
+  and drives with C-up/C-left/C-right and the host rides). Guards and sims
+  never climb the hull; nothing else GoldenEye or Perfect Dark moves can be
+  stood on but lifts, which carry already.
+
+### A keyboard dialog left up at a launch (F3 20261012-021339, pass 37)
+
+- **Typing outlived its dialog.** A menu keyboard (the Game Lobby's Chat,
+  Player Setup's name, any MENUITEMTYPE_KEYBOARD) turns typing on
+  (`g_MenuKeyboardPlayer`, `inputStartTextInput`) and off only as it closes
+  itself (OK, Cancel, Esc). A launch under it - the host's countdown ran
+  out while the joiner was in Chat - loads the stage, and `menuReset`
+  wipes every dialog without it: typing stayed on all match, so
+  `inputReadController` read only the mouse and pads (`inputBindPressedNotKeys`):
+  no walking with WASD or the arrows, mouse firing and looking fine, the
+  host's and client's prediction in agreement on a player standing still.
+  `menuReset` now stops a menu keyboard's typing (logged "menu: a keyboard
+  was up ... typing stopped"); the netHud chat line stops itself already.
+- Gate: netlobbytest `rematch`: the joiner opens the Game Lobby's Chat
+  before match 2 launches (`--net-test-chat-at-launch`) and holds W through
+  the real key path in each match (`--net-test-hold-key W,60,240`,
+  input.c `inputTestHoldKey`); it must walk in both.
+
+## Team Control online (protocol 31, 2026-10-12)
+
+The owner: "team control isn't enabled for online combat sim". In a team
+Combat Simulator match the active menu's sim pages (hold A; one page per sim
+on the player's team, `aibuddynums`) give orders through `botcmdApply`:
+Follow, Attack (its Pick Target dialog), Protect, Defend, Hold, Normal and
+the scenario's own. The host's own menu always worked on its real sims. A
+client's menu ran on its own copies of the sims, puppets that never think,
+so its orders did nothing; the only path to the host was its pad replayed
+into the host's `amTick`, which never carried Attack (the Pick Target
+dialog is a menu: the client's pad goes neutral meanwhile, and a replayed
+Attack would have pushed that dialog for a remote seat on the host).
+
+Now (`netplayers.c` "Team Control online"): the client's menu still applies
+the order to its own copy (that is what its menu shows as the sim's
+command), and `netPlayersClientOrder()` queues it for its next command
+(NETCMD_ORDER: u8 sim by bot config slot or 0xff all, u8 AIBOTCMD_*, u8
+Attack's target, a playernum or 0x80 + a bot slot; one order a command,
+resent with it until acked; a fold keeps the later). The host gives it in
+that player's pass (`netPlayersHostApplyChoices`, `g_Vars.currentplayer`
+the remote player, so Follow/Defend/Hold take its prop and place as its own
+menu would) after checking teams are on, the scenario's menu
+(`g_AmBotCommands`) has the command, the player is alive and the sim is on
+its team (by `g_MpAllChrConfigPtrs` teams, not the possibly stale
+`aibuddynums`). `amApply` on a host ignores a remote seat's replayed menu.
+A free-for-all has no sim pages (no buddies), and the host refuses an order
+there anyway. Packed commands grew from 32 to 36 bytes. Gate:
+`tools/ci/netteamtest.sh` (`--net-test-order`, `--net-test-order-check`).
+
+### A client's own options mid-match (pass 37, F3 20261011-225920 + 20261012-021339)
+
+- **[0] is not the client's own in a match.** netRulesPut puts every slot's
+  human over g_PlayerConfigsArray (name, character, options), so a
+  client's [0] holds the host's slot-0 player. netWriteSlotCfg read [0], and
+  netSessionClientCfgTick's twice-a-second compare saw it "change" at the
+  first tick: the host was sent its own player's options (Reverse Pitch, aim
+  options) for the client's seat and played it by them, while the client
+  predicted by its own (RULES carried its lobby SLOTCFG back into its seat).
+  Measured: 86.56% of blocks matched, 242 corrections a minute with the
+  pitch reversed one way on one side. netOwnPlayerConfig (netsession.c) now
+  sends the seat's config in a match (what its pause menu edits too),
+  a spectator's saved own (netRulesOwnPlayer), else [0]. Wire unchanged.
+- Gate: netpredicttest `pitch` (--net-test-forward-pitch: host 1, client 0;
+  each seat's value logged at tick 600).
+
+### Host rules for the death screen, third person and the free camera (pass 37, the owner)
+
+- **Skip Death Screen is a Room Rule** (NETKEY_SYNC, was a player's own):
+  it decides when a dead player can press START back in, and machines with
+  it set differently disagreed about a death online. Room Rules row "Skip
+  Death Screen"; stock off.
+- **Third person is the room's.** `Mod.NetThirdPerson` (Room Rule "Third
+  Person", stock 0 = Perfect Dark's first person; read online only,
+  `modIsThirdPersonAllowed`): V does nothing and a request left over is
+  dropped (`playerWantsThirdPerson`) in a room without it. The camera's six
+  keys (ThirdPersonDistance, Clearance, Sideways, Forward, Height, Tether)
+  are SYNC too, with no rows, so a room plays them at stock: one camera for
+  every seat (a direct `--host` plays the host's pd.ini values). The tilt
+  keys stay a player's own (view only).
+- **No free camera for a playing seat online** (`modSpectateSetOn` refuses
+  while `g_NetMode` is set; the key, Spectator Start Game, --spectate). A
+  room's watchers keep netspec.c's camera.
+- Still a player's own: CodAiming, CodAimLock, AkimboTriggers,
+  QuickWeaponSwap - read inside playerTick (the host swaps the client's in,
+  netPlayersOwnBegin) or through `netSlotOwnS32`, so the host simulates the
+  seat by the client's value, as the client predicts it.
+- Gates: netpredicttest `skipdeath` (host 1, client 0, `--net-test-kill`,
+  `--net-test-deathlog`), `views` / `views3p` (`--net-test-viewlog`).
+
+## A thrown Laptop Gun online (protocol 31, 2026-10-12)
+
+F3 20261012-014545 (ElmoBear, a client in a Combat Simulator match: "i dont
+see my laptop gun throwing"). The throw itself went to the host as any fire
+does, and the host deployed the sentry (`laptopDeploy`, a slot of
+`g_ThrownLaptops`): it flew, stood, shot and blew up there. But the sentry is
+an *autogun* made at run time, so the snapshots described it as a DYNOBJ
+(kind 6), and `netPupDyn` made no DYNOBJ ("debris and the like"): on every
+client - the thrower's own and the others' - nothing left the hand, nothing
+stood, only its hits' sparks and damage (the host's events) and its
+explosion came through. Now:
+
+- **Made on the client.** A DYNOBJ whose objtype is OBJTYPE_AUTOGUN is made
+  by `laptopMakeNetClient()` (propobj.c) into a free slot of
+  `g_ThrownLaptops` (a client never deploys into its own: the host makes
+  projectiles), as `laptopDeploy` builds one; posed by its record like any
+  dynamic object, in flight and standing, and freed when its id leaves.
+- **Aimed and firing as the host's.** An autogun's OBJ record carries bytes
+  20-22 now (`NETAUTOGUN_FIRING`, the turn in 256ths, the elevation in half
+  degrees, signed; netsnap.h/netproto.h), for any autogun - a mission's
+  turrets too, which on a client had stood at their setup aim and never
+  flashed. `netPuppetObjTick` runs `autogunTickNetClient()`: the barrel's
+  spin, the flashes, the gun's sound and a tracer every fourth shot to the
+  first wall or door along the aim, at `autogunTickShoot`'s rate; what the
+  rounds hit is the host's (events).
+- **Out of the thrower's hand at once.** `bgunCreateThrownProjectile` on a
+  client still returns before making anything, but a gun thrown to deploy
+  (WEAPONFLAG3_DEPLOYS) is let go there (`bgunFreeWeapon`, as the host
+  does), not a round trip later when the host's inventory says so: the
+  third-person body stopped holding the laptop it had just thrown.
+- Gate: netpuppettest `laptop` (2 sims, the client's player invincible: it
+  is given the Laptop Gun and fires with the alt mode button, L, held - the
+  second function; the host's kind-6 autogun must be made on the client
+  and posed within 4 units, p95, where the host had it, and when the host's
+  sentry fired - "autogun records firing" in its snap summary - the client
+  must have drawn shots: "thrown laptops made", "autogun shots drawn" in
+  its puppets summary). In a script, B held does not change a Laptop Gun's
+  function on PC (CONTROLMODE_PC reads the alt mode button, L_TRIG, and the
+  laptop's second function is a temporary one while it is held).
+
+## The RC-P120's cloak on a client (protocol 31, 2026-10-12)
+
+The owner: "the rcp120 cloak is desynced for clients but not host". A
+client's switch (the alt mode button on PC, or the second function's fire)
+reached the host with the command and switched the host's copy, but:
+
+- **A client's own player never cloaked.** In a match a player's body is
+  ticked (`chrTick`, and in it `chrUpdateCloak`) only in another player's
+  pass (`playerTickThirdPerson`'s "every other player" branch); offline,
+  or on the host, some other pass always runs. A client runs only its own
+  pass, so seen through its own eyes its chr never got CHRHFLAG_CLOAKED:
+  no cloak look, and the RC-P120's drain (which needs the chr cloaked) never
+  ran there - the magazine stood full until the host's stopped moving
+  (`NET_LPSTABLE`). `playerTickThirdPerson` now calls `chrUpdateCloak` for
+  a client's own player when that branch did not tick the body (as it does
+  for a lone player offline). The Cloaking Device shared the same gap.
+- **Nothing carried the switch back.** `devicesactive` was in no block, so
+  what the host decided alone - the cloak off when the magazine runs dry,
+  and anything else that clears it - never reached the client: it went on
+  believing the cloak on, and its next press switched the host's on and its
+  own off, inverted from then on. The local-player block's byte 202 carries
+  the cloaks on (`NETLPDEV_*`); the client takes the host's word once the
+  host has played the command that last switched one here (the switch shows
+  at once; an older block would switch it back for a round trip). "cloaks
+  set" in the local block summary counts the host's word put over this
+  machine's (0 in the gate: with the drain in step the two agree).
+- Gate: netpuppettest `cloak` (two clients, no sims): the first client
+  switches on, off, on until the magazine runs dry, on again; every 30 ticks
+  (`--net-test-trace`, whose player lines now end in `devices` and
+  `cloaked`) its switch, its own cloak and magazine, and the second client's
+  puppet of it must be the host's.
+
+## The CamSpy online (F3 20261012-022730, no wire change)
+
+The CamSpy goes out when its device bit is set (`currentPlayerSetDeviceActive`,
+from the radial menu's `amApply` or the pause inventory) and `playerTick`'s
+`eyespyTryLaunch` finds a clear line from the player to 100 units ahead. Three
+faults, one per seat:
+
+- **The host under Akimbo Triggers**: the radial key opens the left hand's
+  menu (`amOpenForHand`), and its `amApply` branch took guns only, so the
+  CamSpy (and goggles, cloak) it listed did nothing; offline too. It switches
+  a device now as the right hand's does.
+- **A guest's launch**: another machine's player is posed on a client, never
+  ticked, so its collision cylinder (`periminfo`) stayed where its last own
+  tick left it - the co-op spawn spot all players start stacked on. The
+  launch's `cdExamLos08` from beside it hit that player ("Not enough room to
+  launch"). `netPupChr` moves a posed player's cylinder with the pose.
+- **A guest's flight**: the host's copy of a guest's CamSpy is an ordinary
+  chr, sent as a dynamic body (`NETDESC_BODY`), so the guest saw its own
+  CamSpy twice and its local one bumped into the late copy and drifted off
+  the host's path. `netHostSendSnap` leaves a client's own CamSpy out of its
+  snapshots, as it does the client's own player. Another player's CamSpy still
+  comes as a body (the guest's own hidden copy of it stays at its pad).
+
+`netcooptest.sh camspy` drives both radial menus with `--net-test-input`
+(a script line's first match wins: lines must not overlap) and reads both
+machines through gdb. In CONTROLMODE_PC the CamSpy flies forward on the right
+stick (`rsy`); the left stick's `sy` lifts it.
+
+## The kill feed online (protocol 31, 2026-10-12)
+
+`killfeed.c` lists every kill of a match ("Killer [Weapon] Victim") on every machine. A client sees all of them
+because it already replays every death the host counts: DEATH (E6, reliable and ordered) is sent to everyone and
+applied through `mpstatsRecordDeath()`, where the feed's line is made on every machine alike. DEATH had no weapon,
+and a client cannot work it out (its `chrDamage()` returns at once), so DEATH ends in a u8 weapon now, from
+`killfeedDeathWeapon()` on the host: the weapon of the victim's latest hit, noted in `chrDamage()` (an
+explosion's from what made it, a projectile named by its launcher, a GoldenEye gun by itself); 0xfe an explosion
+nothing named, 0xff none. The client hands it to the replay through `killfeedSetWireWeapon()`. Tested in
+`neteventtest.sh` (`--killfeed-log` on both machines: the client's list equals the host's, sims' kills among it).
+
+## Counter-op online (protocol 32, 2026-10-12)
+
+The user: "lets add counter-ops to online play for PD, GE, etc.", then mid-build "also counter-ops should
+work with Guards Alerted! so players on the counter-ops side can use the additional guard bodies". Picks
+(asked): each player picks a side in the Game Lobby (any split up to twelve, one of each to launch); a
+room's Game "Counter-Op Mission" beside Co-op Mission (not campaign rooms); stock lives (a counter-op's death
+is a press away from the next guard, for as long as there are guards; the agents keep online co-op's Mission
+Respawn rules and lives).
+
+- **Many counter-ops in a game of one.** Perfect Dark's counter-op is one player, `g_Vars.anti`
+  (`antiplayernum`), against bond, and its code asks "is this g_Vars.anti". Online a mask of player
+  numbers (`g_CoopAntiMask`, coop.c) says who the counter-ops are; `coopIsAntiNum()`/`coopIsAnti()`/
+  `coopIsAntiProp()`/`coopIsAgentProp()` give the game's own answer whenever the mask is empty, which it
+  always is offline (the replay gate, and the same with `EXTRA="-play2 -anti"`, identical to the build
+  before). The agents are online co-op as it was - `coopplayernum >= 0`, so the mission block, the dead
+  watching, Mission Respawn and the guards' turns among the players all stay on - with bond the first
+  agent's seat (the host may be a counter-op: bond is then a client's) and `g_Vars.coop` a second agent, or
+  the first other seat when there is one agent (a counter-op's: `coopTwoRules()` keeps coop.c off the game's
+  "the other player is coop" answers while counter-ops play). Each place that branched "coop, else anti"
+  asks per player now: the team (`playerReset`), the spawn (agents stacked, counter-ops into guards), the
+  damage rules (friendly fire by side, `coopSameSide()`; the anti branch's "bond" any agent; "anti shooting
+  other enemies is lethal" the guards only, not another counter-op), the sight's colour, the end screens
+  (`endscreenPushAnti` for a counter-op's machine, its outcome the agents' undone, `coopAgentsDead()` etc.),
+  who a guard watches (`coopPlayerTargetable()` never a counter-op), GoldenEye's "any player is Bond"
+  checks (agents only), and the end: `coopAllDead()` is the agents', any agent's pass may end the mission
+  (bond may have left - an open seat's fall never finishes), and a room whose agents have all left is the
+  counter-ops' (`netCoopAgentsGone()`).
+- **The host takes the guard; clients follow.** `playerAntiTakeGuard()` (the game's choice, moved out of
+  `playerSpawn` unchanged) runs on the host only: near the nearest living agent, off every agent's screen
+  and aim where it can (`CHRHFLAG_ONBONDSSCREEN` is any agent's view, `chr->coopagentseen`). Trap met: the
+  first guards are taken in the stage's load, and both the choice and the body built draw from
+  `rngRandom()` - the client, taking no guard, was refused "The stage loaded differently here: its rng".
+  The choice draws from a sequence of its own online (`coopAntiRandom()`) and `g_RngSeed` is put back
+  after the takeover. The mission block (74 bytes more) carries the sides, each counter-op's guard
+  count, radius, body and head; a client rebuilds a player's body when it changes
+  (`netPupRebuildPlayerBody`, as `playerSpawnAnti` builds the host's: `chrRemove` + `playerTickChrBody`)
+  and, for its own player, takes the next local block outright (the build sets the prop on the ground).
+  Its guns, health and place come in the local block as any respawn's.
+- **The guard taken goes from every client.** A setup chr's copy on a client is the client's own, mapped
+  by its setup command, and when its records stop it stands where it was (only puppets the client made
+  are freed when their id leaves). The block's bitset of setup chrs taken (by **chrnum** below 256, the
+  setup's own numbers, the same everywhere) takes the client's copy out as `playerSpawnAnti` takes the
+  host's; a join in progress too. Trap met: keyed first by setup command, nothing was recorded for the
+  load's takeovers - the entity table is built after the load, so `netEntsSetupCmdOf()` said -1. A chr
+  spawned at run time (5000 up: Guards Alerted!, reinforcements) is a client's own puppet and goes with
+  its records.
+- **Which converted guard.** A conversion never sets `CHRHFLAG_BASICGUARD` (and the flag changes AI, so
+  it is not set). `coopConvertedGuard()`: not the players' side or non-combatant, not a civilian
+  (GoldenEye's civilian bit is `CHRCFLAG_KILLCOUNTABLE`), invincible, hidden or unplayable (now or by its
+  own list's `set_self_chrflag`, as the load's takeover runs before any list), holding something that
+  shoots, a guard's body (on GoldenEye's own conversion its character number 0-4, 17-21 or 37-40; on a
+  hack a body without its own head), and no list of the stage names its chrnum (a list asking "is chr N
+  dead" passes on a chr that is gone: a named one would fire its death scripts). Census across nine of
+  GoldenEye's missions: Ourumov, Trevelyan, Natalya, Valentin, Xenia, Boris, Jaws, scientists and the
+  guards the lists name never eligible. Statue has none at the start (its guards come later): a
+  counter-op whose spawn found no guard is looked for one each second on the host
+  (`playerAntiRetryTick()`), standing as its own character until then.
+- **Guards Alerted!** Its guards (`modAlarmIsGuard()`) are hostable, armed; a wave a counter-op thins
+  the mod fills. `modAlarmNearestPlayer()` skips counter-ops: a new guard watches the nearest player
+  (`p1p2`, `modAlarmArm()`), and one made watching a counter-op hunted it (offline counter-op too).
+- **Respawn.** A dead counter-op's A, Z or START (`0xb000`) on the host is its new life (a dead player's
+  START is let through), no Mission Respawn, none of the agents' lives spent, no watching; a client's own
+  respawn is the host's (lv.c). The suicide pill works as offline.
+- **The lobby.** A counter-op room's sides are its two teams (pdlobbyd unchanged: team 0-7 per member, a
+  newcomer on the smaller team): the room's rule `counterop` 1, the roster grouped "Agents"/"Counter-Ops"
+  (any team but 1 an agent's), **Change Side** (agent, counter-op, watching), Launch refused without one
+  of each (`netLobbySidesOk()`). The launch puts each member's team on its slot, and H1
+  (`netCoopHostSides`) makes the mask from the seats a member holds; a join in progress plays its room
+  team's side (`netCoopHostLateSide`); host migration restarts the mission as counter-op. `--host`
+  sessions: `--net-test-anti SLOTMASK`; the lobby script: `--net-lobby-anti`, `--net-lobby-side N`.
+- **Gate:** `tools/ci/netantitest.sh` (in netallgates): pair3 (Defection, host and a client agents, a
+  client counter-op: sides, the load's takeover and every client's copy out, the guard alike on three
+  machines, no guard after the counter-op, the respawn's second guard, the agents' win its "failed",
+  prediction), ga (Guards Alerted!: the mod's guards taken, none after the counter-op), ge (Dam: a plain
+  guard's body), hostanti (the host a counter-op, bond the client's seat), lobby (a room with a local
+  pdlobbyd), lobbyhost (below).
+- **The launch's frame on the old stage (crash 2026-10-13, a lobby host on the counter-ops' side, two
+  agents, GoldenEye's Runway).** `netCoopHostStart()` sets the sides, the mask and the player numbers,
+  then asks for the stage - which changes at the end of the frame, and the room's start comes from the
+  Game Lobby page's tick, inside it: the Institute the room launched from ticks once more with the
+  match's sides set. Its one player is the host's, `MPINDEX_SOLO` (12, past `g_Menus[]`) and, the host
+  a counter-op, in the mask - so `netCoopAgentsGone()` (two seconds into the stage, and the player had
+  walked the Institute for five before opening the online pages) found no agent: "no agent is left ...
+  (tick 0)", MATCH_END to the loading clients, and `endscreenPushAnti()` for that player wrote
+  `g_Menus[12]` - `g_MissionConfig` and on - and the dialog's text crashed in `textRenderProjected()`.
+  Read off the live process: the CI (0x26) the stage, Runway (0x5e) still in `g_MainChangeToStageNum`,
+  `g_Vars.players[1..11]` NULL. Fixed: `netCoopAgentsGone()` judges only while
+  `netSessionMatchActive()` (the match's own stage loaded); the online end loop in pdmain.c skips a
+  player whose mpindex has no menus (warns). Not GoldenEye's: any lobby room with the host a
+  counter-op. The other gates never met it: hostanti's host starts at boot (under the two seconds) and
+  lobby's host is an agent; a lobby host's Institute is paused under its menus unless walked first.
+  `lobbyhost` in netantitest: the host under gdb, at `menuStop()` once the stage change is pending,
+  sets the Institute's frame count to 300 and asks `netCoopAgentsGone()` there (it was 1 unfixed, and
+  `mainEndStage()` follows as the old tick did); the lobby script's `--net-lobby-side` now works for
+  the host too (`lobbyScriptAwaitSide()`), and `--profile 0` with a copy of this machine's eeprom puts
+  the host past Choose Your Reality as a player is.
+- **Left as stock:** the radar shows the players to each other when the room's Radar is on (Perfect
+  Dark's counter-op radar); the kill feed names a counter-op's kills; a counter-op waiting for a guard
+  is visible as its own character.
+
+## F3 pass 38: the online menus (2026-10-12, no wire change, protocol stays 32)
+
+- **Chat that went quiet for good (F3 20261012-041856)** was the chat windows' wrapped lines: a buffer of
+  64 (`LOBBY_MAXCHATLINES`) filled oldest first that took no more, so once a chat's history (the Main Menu
+  Chat keeps its last 24 lines, pdlobbyd 50) wrapped past 64 lines - a few long lines in the Briefing
+  Room's narrow window - nothing newer was shown, the player's own lines and the "Say:" being typed
+  included, until a restart emptied the client's copy. Fixed with the chat drawing's rewrite in
+  fix/f3-1012-netlobby (9dad1533a: 256 lines, the oldest dropped; "F3 pass 38: the online pages"). Nothing else limits it: pdlobbyd's 6
+  lines per 10 s per account is a "Slow down." in the footer and clears. Reproduce: post long lines to
+  `POST /chat` from other accounts on a local pdlobbyd, then type in the Briefing Room.
+- **The Game Lobby's Chat row** opens the same line Space and T do for a keyboard or mouse press
+  (`netHudLobbyChatOpen()`, nethud.c): a whole chat line, any character. It had pushed the on-screen
+  keyboard, 17 letters of `INPUT_TEXT_OSK` (no commas) in a half-width field (F3 20261012-123906, "small
+  amount of space to type"); a pad's press still gets that keyboard, its field now full width. T and
+  Space themselves were checked working in the Game Lobby before and after a match (a joiner by xdotool
+  on Xvfb); the report's own log has lines with commas sent from the Game Lobby, which only the line takes.
+- **The online profile (netprofile.c; the owner, F3 20261012-115801, with 121828/122036).** Online a seat
+  plays by player 1's config (`netWriteSlotCfg`: character, Control Style, the option bits), which nothing
+  kept between sessions unless a player file was loaded. While the online pages are up - Name Entry's OPEN
+  to its CLOSE; a campaign host's menus without Name Entry are held by the room, and `netLobbyMenuFrame`
+  lets go once no room, no session and no Name Entry hold it - player 1 is the online profile: pd.ini
+  `[Net] PlayerProfile/PlayerBody/PlayerHead/PlayerControlMode/PlayerOptions` over the offline player's
+  config, its name the lobby account's (Player Setup's Name row, Team Control, any list of the setup's
+  players), its fileguid zeroed (an online match's end never saves into the offline player's file). The
+  offline player comes back whole as Name Entry closes. The first time it is the offline player's copy;
+  Name Entry's and the Game Lobby's Player Setup... open `g_NetPlayerSetupMenuDialog`: the name (read only,
+  with a hint), Character, Control, Player Options and **Copy From Offline Player**. A match keeps it:
+  `menuStop()` closes no dialog, the net rules put back what they took. Lobby scripts that skip Name Entry
+  (`--net-lobby-script` without `--net-lobby-menus`) never enter it.
+- **The cone's still (F3 20261012-124052).** The Combat Simulator's root pushed with no background (the
+  menus after a match, the online pages' way back included) asked `menuSetBackground(MENUBG_CONEALPHA)`
+  for a still of the level. The cone is drawn on that very frame (`menuRenderBackgroundLayer2()` for the
+  next background), and `schedConsiderScreenshot()` copies the presented frame (the front buffer): the
+  still held the cone and the online pages' windows, and the Perfect Menu backed out to later blurred
+  them - the "tie-dye". Seen under Vulkan (`gfx_vk_copy_framebuffer` reads the window image shown last);
+  Xvfb's GL front buffer did not show it. The cone's still is taken in the frame's list before the menus
+  now (`menugfxCreateBlurInList()`, as Mods: Camera's is), not while GoldenEye's front hides the level.
+  Offline the same after a Combat Simulator match backed out to the Perfect Menu.
+- **Not reproduced:** the Character page's preview walking right with each pick (F3 20261012-114159):
+  centred online and offline, GL and Vulkan, with the XBLA release and GoldenEye's characters. Valentin's
+  head low on Pelagic II's body (114356) is the head fit, not the menu: `headfitOffsetAcross()` seats a
+  Bean head by `xblaMeshBeanSeatAt(HEADFIT_RIM_HIGH)`, the 0.75 point of its underside ring sorted by
+  height, and CgeheadValentinZ's ring has five of sixteen hits at +152..+162 (the rest -56..-38): the
+  0.75 point is a stray (153), offset -186 on body 128.
+
+## F3 pass 38 (2026-10-12, no wire change, protocol stays 32)
+
+The owner as a client of a European host over the VPS relay (219 ms; GoldenEye Arenas' Bunker 1, Combat,
+one simulant): F3 20261012-123035 "lagging with the EU player" (prediction 94.39%, 77 corrections, up to
+305 units), -123231/-123411 the body armour on a table "acting weird to pick up", -123611 a shield and
+body armour in one match, -123523 the shield sounding like body armour, -123437 "is lag comp working for
+sims?".
+
+- **The host walks a client's player by its commands alone** (`netPlayersHostWalk()`, called first in
+  `bmoveTick`). The host plays one command a tick. Where a command had not come (a dry tick) it walked
+  the player on by the last command's sticks - a step the client never took - and the commands that
+  then came together were folded into one tick: the buttons ORed, the mouse summed, one step for many.
+  On a link with stalls (a relay's; the puppets' `held past 100 ms` is their sign the other way) each
+  stall was a correction for the guess and another for the fold - the log's pairs (313 then 85, 128
+  then 150). Now a dry tick's walk waits: `bmoveTick` runs as on a frame drawn between ticks, at a level
+  clock of zero with the walk's state put back after (`netPredictWalkHold()`, the present pass's way),
+  so the input is still read (the gun's trigger as held, nothing pressed) and the player stays put. The
+  commands folded into a tick are walked first, oldest first, each as a sample of its own
+  (`joyNetInjectSample`, the prediction replay's way, under `g_NetReplaying` so nothing but the walk
+  happens), the tick's own last by its own sticks and mouse; commands declared lost walk first as the
+  dry ticks once walked them (the last command's sticks, no mouse). Only for a steady walk (the
+  prediction's replayable one: walk mode, alive, no tank ride) and a run that presses and lets go of
+  nothing after its first command (a press at the first is the tick's own, as the fold has it; not
+  after lost commands, where it would be met twice) - anything else holds and folds as before. Others
+  see a lagging player pause and catch up rather than run on. Measured at 220 ms with a 300 ms stall
+  about every 3 s each way (open ground, the prediction script): 97.72% -> 99.65% matched, 27 -> 4
+  corrections (one is the match start's); with steady 0-25 ms jitter both walks were 99.9% (the queue's
+  1.5 commands cover it). The trace's slot line counts "the walk waited N ticks, walked M folded
+  commands first".
+- **A setup object keeps its own place on a client.** A record carries a place in eighths of a unit
+  (`putPos`), and the first record moved every setup object onto it (`netPupObj`): up to a sixteenth off
+  the host's, its collision with it. Bunker 1's armour table stood 0.05 nearer the player on the
+  client: pushing along its edge the client's walk stopped at the corner where the host's slid on, a
+  correction every two ticks for as long as the player pushed (12 in three seconds with no lag at all).
+  A record whose place and turn are the object's own as the wire carries them (`netPosWire()`,
+  `netRotSameOnWire()`) now leaves it where this machine's setup put it (12 corrections -> the two the
+  test's own teleport made). netpuppettest checks every setup object the host never moved stands at
+  the host's place to the trace's print (the base build: 34 of 35 on Skedar, 2 of 6 on Area 52 off by
+  up to 0.048). An object the host moved is still the wire's place.
+- **The link simulator's stalls**: `--net-sim DROP,DELAY,JITTER,KBPS,EVERY,STALL` holds what comes in
+  for STALL ms about every EVERY ms (three quarters to five quarters of it) and lets it through
+  together; datagrams due together go in arrival order (`seq`: the swap-remove had shuffled a burst,
+  and a later packet first makes the host skip commands as lost). netpredicttest's `relay` case: 220
+  ms, a 300 ms stall about every 3 s.
+- **Doors a client opens are a round trip late** (measured, not changed). The host opens the door on
+  the client's command; the client's copy opens when the snapshots say so, a round trip and the
+  puppets' delay later, so the client stands at the shut door while the host's copy of it walks through
+  (Bunker 1 at 220 ms: the host's player through at command 126, the client's own at 144, eased
+  corrections of 12-22 units every block). The plan: the client opens the door its own use press
+  reaches, at the press, as the host does on the same command (doorsRequestMode on its copy and its
+  own `doorsCalcFrac` each tick), holds the records' older states off that door until they show it
+  opening, and a replay poses it at each replayed tick's frac. It changes how a client poses doors
+  (netpuppettest's doors case compares fracs at the render tick), so it is a pass of its own.
+- **No team score limit online with teams off** (`mpApplyLimits()`; the owner's coordinator, from
+  pdplay's offline 80-simulant find, 19a68320d). Perfect Dark checks each team
+  number's summed score against the team limit teams or not (`lvTick`, `mpGetTeamRankings`), and online
+  a team number with teams off is nothing a player chose: pdlobbyd deals a room's members onto teams 0
+  and 1 (`quietest_team`) and the host puts them on the seats, and a seat past the fourth of a direct
+  session is team 0 - so half a room's kills summed to the limit (default 20) and ended a free-for-all
+  before anyone reached the score limit. The gates had set `--net-test-teamscorelimit 400` round it.
+  Offline (the clock test too) is the cartridge's. netpredicttest's `teamlimit` case (the time case
+  with teams off, a team limit of 3 and the client's seat given 4 kills at tick 600): before, the host
+  ended the match at tick 600 by the team limit; now the clock ends it at 3600. A probe of a direct
+  session of five (gdb on the host, `[Net] MaxPlayers=8`): every seat team 0 (clients take the host's
+  through RULES), two seats given three kills each against a team limit of 6 ended the match at once;
+  now it runs on.
+- **A Perfect Dark shield on a GoldenEye arena is a shield** (gesfx.c, propobj.c, bot.c).
+  e03d577a7/12b45b28e gave GoldenEye's body armour its own sound and words on a converted level by
+  `SFX_PICKUP_SHIELD` and `geRoomActive()`, so every shield there - the Perfect Dark weapon set's too -
+  sounded and read as body armour. The armour is the converted setup's shield in `MODEL_BODYARMOUR`
+  (geconvert.c's objects(), 0x182); its pickup sound is `GESFX_PICKUP_ARMOUR`, the shield's number with
+  a bit `sndStart` never reads (a sound that is not an MP3 plays by its id field), so it travels in E8
+  like any sound and is the shield's own wherever `geSfxPickup` does not answer for it.
+- Not bugs: the armour on Bunker 1's table is worth half a shield (its setup's 0.5; the level's other
+  is 1.0) and stays on the table while the player wears as much - GoldenEye's own rule (`amount <=
+  currentPlayerGetArmor()`) and Perfect Dark's for its shield - so a set's full shield picked up first
+  keeps it there; the host picks it up for a client within GoldenEye's 100 units, and the table lets a
+  player within 73. Both on one map: GoldenEye lays its armour in every arena whatever the weapon set,
+  and a Perfect Dark set brings its shield (the owner's call).
+- Lag compensation rewinds every chr slot, simulants and co-op guards as well as players
+  (`netLagCompHostTickEnd` records each chr's pose, `netLcRewindScreen` takes PROPTYPE_CHR and
+  PROPTYPE_PLAYER alike). At the owner's 207-219 ms the cap binds: the network's share is capped at
+  Net.LagCompMaxMs (200 ms, 12 ticks) where the link's is ~16-17, and the interpolation allowance comes
+  from ENet's RTT variance (8-10 ticks) where the client's own render delay ran 6-11 ticks. Measured
+  with netlagcomptest's on run at 220 ms (`--net-sim 0,110`): every shot capped (rewind 20.00 ticks),
+  81.7% of the 82 hits the shooter saw scored; with Net.LagCompMaxMs=300 none capped and 96.0% of 50.
+  Raising the default is the owner's call (a cutoff by design: past it a laggy shooter is no longer
+  fully favoured over the victim). **The owner raised it to 300 (2026-10-12, fix/f3-1012-lagcomp300):
+  the default and Mod.SettingsRevision 2 (main.c), which moves a pd.ini still at 200 to 300 once.**

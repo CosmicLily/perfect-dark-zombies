@@ -10,9 +10,11 @@
 #include "bss.h"
 #include "data.h"
 #include "config.h"
+#include "net/netlobby.h"
 #include "system.h"
 #include "input.h"
 #include "lib/vi.h"
+#include "game/coop.h"
 #include "game/game_1531a0.h"
 #include "game/mplayer/setup.h"
 #include "game/menu.h"
@@ -72,14 +74,16 @@
 #define FEED_MAX        32
 #define FEED_SHOW       6     // lines shown while the line is shut ...
 #define FEED_SHOW_OPEN  10    // ... and open
-#define FEED_LIFE_MS    10000 // a line's time on screen
+#define FEED_LIFE_MS    10000 // a line's time on screen (the server's: twice it)
 #define FEED_FADE_MS    1000  // the last of it, fading
 
 #define HUDKIND_HINT    3     // a line of this machine's own (the keys)
+#define HUDKIND_SERVER  4     // the lobby's notice (pdlobbyd's, netHudServerNotice): "Server: ..."
 
 #define CHAT_SHUT       0
 #define CHAT_MATCH      1     // the match's chat (netSessionChatSend)
 #define CHAT_LOBBY      2     // the lobby room's (netLobbyChat)
+#define CHAT_MAIN       3     // the main menu's, on the Briefing Room (netLobbyMainChatSay)
 
 struct feedline {
 	u64 at;
@@ -107,6 +111,7 @@ static u32 s_EscFrame = 0; // the frame whose ESC press the line took
 static s32 s_LiveWas = 0;
 static u32 s_Frame = 1;
 static u32 s_LobbyFrame = 0;
+static u32 s_MainFrame = 0;   // the Briefing Room's last frame up (netHudMainChatFrame)
 
 static char s_ChatKeyName[32] = "T";
 static char s_PlayersKeyName[32] = "P";
@@ -290,6 +295,22 @@ void netHudFeed(s32 kind, s32 from, const char *name, const char *text)
 	}
 }
 
+/**
+ * The lobby's notice (pdlobbyd's POST /notice, and its word before a
+ * restart), from the room's chat: in the feed as the server's, in the
+ * notices' colour and on screen twice as long as a line
+ */
+void netHudServerNotice(const char *text)
+{
+	sysLogPrintf(LOG_NOTE, "net: server notice: %s", text);
+	netHudPush(HUDKIND_SERVER, NETCHAT_FROM_NONE, "Server", text);
+}
+
+static u64 netHudLineLife(const struct feedline *line)
+{
+	return line->kind == HUDKIND_SERVER ? FEED_LIFE_MS * 2 : FEED_LIFE_MS;
+}
+
 // Whether Space is free for the chat in a match: no bind of player 1's uses it
 static s32 netHudSpaceFree(void)
 {
@@ -354,6 +375,8 @@ static void netHudChatStop(s32 say)
 
 	if (mode == CHAT_LOBBY) {
 		netLobbyChat(s_ChatText);
+	} else if (mode == CHAT_MAIN) {
+		netLobbyMainChatSay(s_ChatText);
 	} else if (netSessionChatSend(s_ChatText) != 0) {
 		netHudPush(NETCHAT_PRIVATE, NETCHAT_FROM_NONE, "", "Not sent: the host is not there.");
 	}
@@ -504,11 +527,14 @@ void netHudFrame(void)
 {
 	const s32 live = g_NetMode != NETMODE_NONE && netSessionHudLive();
 	const s32 lobby = !live && s_LobbyFrame && s_Frame - s_LobbyFrame <= 2 && netLobbyInRoom();
+	// the Briefing Room, and the lobby has the main menu's chat
+	const s32 mainchat = !live && !lobby && s_MainFrame && s_Frame - s_MainFrame <= 2 && netLobbyMainChatAvailable() > 0;
 
 	s_Frame++;
 
-	// offline: nothing to read, and the last session's lines went with it
-	if (g_NetMode == NETMODE_NONE && !g_NetLobbyRoom) {
+	// offline: nothing to read, and the last session's lines went with it.
+	// The Briefing Room's chat is read with no room and no match.
+	if (g_NetMode == NETMODE_NONE && !g_NetLobbyRoom && !mainchat) {
 		s_FeedLen = 0;
 		s_LiveWas = 0;
 		s_PanelHeld = 0;
@@ -540,19 +566,19 @@ void netHudFrame(void)
 
 	s_LiveWas = live;
 
-	if (s_ChatOpen != CHAT_SHUT && !(s_ChatOpen == CHAT_MATCH ? live : lobby)) {
-		// the match or the Game Lobby went from under the line
+	if (s_ChatOpen != CHAT_SHUT && !(s_ChatOpen == CHAT_MATCH ? live : s_ChatOpen == CHAT_MAIN ? mainchat : lobby)) {
+		// the match, the Game Lobby or the Briefing Room went from under the line
 		netHudChatStop(0);
 	}
 
 	if (s_ChatOpen != CHAT_SHUT) {
 		netHudChatType();
-	} else if ((live || lobby) && !inputIsTextInputActive() && g_MenuKeyboardPlayer < 0) {
+	} else if ((live || lobby || mainchat) && !inputIsTextInputActive() && g_MenuKeyboardPlayer < 0) {
 		const s32 vk = netHudKey(s_ChatKeyName, &s_ChatVk);
-		const s32 space = inputKeyPressedThisFrame(VK_SPACE) && (lobby || netHudSpaceFree());
+		const s32 space = inputKeyPressedThisFrame(VK_SPACE) && (lobby || mainchat || netHudSpaceFree());
 
 		if ((vk > 0 && inputKeyPressedThisFrame(vk)) || space) {
-			netHudChatStart(live ? CHAT_MATCH : CHAT_LOBBY, NULL);
+			netHudChatStart(live ? CHAT_MATCH : lobby ? CHAT_LOBBY : CHAT_MAIN, NULL);
 		} else if (lobby && s_TestLobbyType[0]) {
 			netHudChatStart(CHAT_LOBBY, s_TestLobbyType);
 			s_TestLobbyType[0] = '\0';
@@ -615,6 +641,33 @@ void netHudLobbyFrame(void)
 }
 
 /**
+ * The Game Lobby's Chat row chosen by a keyboard or mouse player
+ * (netlobbymenu.c): the line Space and T open, rather than the on-screen
+ * keyboard. 0 when it cannot open now (typing elsewhere).
+ */
+s32 netHudLobbyChatOpen(void)
+{
+	if (s_ChatOpen == CHAT_LOBBY) {
+		return 1;
+	}
+
+	if (s_ChatOpen != CHAT_SHUT || !netLobbyInRoom() || inputIsTextInputActive() || g_MenuKeyboardPlayer >= 0) {
+		return 0;
+	}
+
+	netHudChatStart(CHAT_LOBBY, NULL);
+
+	return 1;
+}
+
+// The Briefing Room is up this frame: Space and the chat key open the main
+// menu's chat line there
+void netHudMainChatFrame(void)
+{
+	s_MainFrame = s_Frame;
+}
+
+/**
  * The open line for a row of the Game Lobby: "Say: " and as much of its tail
  * as `maxchars` lets in, with a cursor. 0 while it is shut.
  */
@@ -623,7 +676,7 @@ s32 netHudChatLine(char *out, s32 size, s32 maxchars)
 	const char *tail = s_ChatText;
 	const s32 cursor = (netHudNowMs() / 500) & 1;
 
-	if (s_ChatOpen != CHAT_LOBBY) {
+	if (s_ChatOpen != CHAT_LOBBY && s_ChatOpen != CHAT_MAIN) {
 		return 0;
 	}
 
@@ -655,6 +708,12 @@ void netHudSay(const char *text)
 	} else if (netLobbyInRoom()) {
 		netLobbyChat(line);
 	}
+}
+
+/** The players panel is up (held P): the kill feed (killfeed.c) keeps out of its way */
+s32 netHudPanelUp(void)
+{
+	return s_PanelHeld || (s_TestPanelTick && g_NetTick >= s_TestPanelTick);
 }
 
 void netHudCounts(s32 *in, s32 *of, s32 *specs)
@@ -753,6 +812,12 @@ static s32 netHudTagPlayerOf(struct prop *prop)
 	}
 
 	if ((chr->hidden & CHRHFLAG_CLOAKED) && !USINGDEVICE(DEVICE_IRSCANNER)) {
+		return -1;
+	}
+
+	// online counter-op: a counter-op is a guard to the agents, and named
+	// only to its own side
+	if (g_Vars.antiplayernum >= 0 && coopIsAntiNum(pn) != coopIsAntiNum(g_Vars.currentplayernum)) {
 		return -1;
 	}
 
@@ -941,6 +1006,7 @@ static u32 netHudLineColour(const struct feedline *line)
 {
 	switch (line->kind) {
 	case NETCHAT_NOTICE:  return COL_NOTICE;
+	case HUDKIND_SERVER:  return COL_NOTICE;
 	case NETCHAT_PRIVATE: return COL_PRIVATE;
 	case HUDKIND_HINT:    return COL_HINT;
 	default:              return COL_TEXT;
@@ -971,8 +1037,14 @@ static Gfx *netHudRenderFeed(Gfx *gdl, s32 top)
 	const u64 now = netHudNowMs();
 	const s32 open = s_ChatOpen == CHAT_MATCH;
 	const s32 left = viGetViewLeft() + 10;
-	const s32 maxw = viGetViewWidth() * 60 / 100;
-	const s32 bottom = viGetViewTop() + viGetViewHeight() * 60 / 100;
+	// At the online pages' text size (Online Text Size, netlobbymenu.c; the
+	// owner, 2026-10-11): laid out as much bigger as it is drawn smaller,
+	// and drawn scaled from the feed's corner into the same part of the view
+	// (gDPSetRectScaleEXT), more of each line on a line and more lines in
+	// it. Never wider than the 320 units, past which a glyph is dropped.
+	const s32 pct = netLobbyMenuGetTextScale();
+	const s32 maxw = MIN(viGetViewWidth() * 60 / 100 * 100 / pct, viGetWidth() - left - 8);
+	const s32 bottom = top + (viGetViewTop() + viGetViewHeight() * 60 / 100 - top) * 100 / pct;
 	s32 lineh;
 	s32 dummy;
 	s32 room;
@@ -993,11 +1065,13 @@ static Gfx *netHudRenderFeed(Gfx *gdl, s32 top)
 		s32 prefixw = 0;
 		s32 h;
 
-		if (!open && now - line->at >= FEED_LIFE_MS) {
-			break;
+		// gone from the screen (the server's stay longer than the
+		// players' lines after them)
+		if (!open && now - line->at >= netHudLineLife(line)) {
+			continue;
 		}
 
-		if (line->kind == NETCHAT_PLAYER) {
+		if (line->kind == NETCHAT_PLAYER || line->kind == HUDKIND_SERVER) {
 			snprintf(prefix, sizeof(prefix), "%s: ", line->name);
 			netHudMeasure(prefix, &prefixw, &h);
 		}
@@ -1019,27 +1093,31 @@ static Gfx *netHudRenderFeed(Gfx *gdl, s32 top)
 
 	y = top;
 
+	if (pct != 100) {
+		gDPSetRectScaleEXT(gdl++, pct / 100.0f, left, top);
+	}
+
 	for (i = nshown - 1; i >= 0; i--) {
 		struct feedline *line = netHudFeedAt(shown[i]);
 		const u64 age = now - line->at;
 		s32 alpha = 255;
 		s32 x = left;
 
-		if (!open && age > FEED_LIFE_MS - FEED_FADE_MS) {
-			alpha = (s32)((FEED_LIFE_MS - age) * 255 / FEED_FADE_MS);
+		if (!open && age > netHudLineLife(line) - FEED_FADE_MS) {
+			alpha = (s32)((netHudLineLife(line) - age) * 255 / FEED_FADE_MS);
 			alpha = alpha < 0 ? 0 : alpha;
 		}
 
 		gdl = text0f153a34(gdl, left - 3, y - 1, left + line->width + 3, y + line->height + 1, netHudFade(COL_BACK, alpha));
 
-		if (line->kind == NETCHAT_PLAYER) {
+		if (line->kind == NETCHAT_PLAYER || line->kind == HUDKIND_SERVER) {
 			char prefix[NET_MAXNAME + 4];
 			s32 w;
 			s32 h;
 
 			snprintf(prefix, sizeof(prefix), "%s: ", line->name);
 			netHudMeasure(prefix, &w, &h);
-			gdl = netHudText(gdl, x, y, prefix, netHudNameColour(line), alpha);
+			gdl = netHudText(gdl, x, y, prefix, line->kind == HUDKIND_SERVER ? COL_NOTICE : netHudNameColour(line), alpha);
 			x += w;
 		}
 
@@ -1091,6 +1169,10 @@ static Gfx *netHudRenderFeed(Gfx *gdl, s32 top)
 		if (cursor) {
 			gdl = text0f153a34(gdl, left + w + 1, y + 1, left + w + 3, y + lineh - 2, COL_TEXT);
 		}
+	}
+
+	if (pct != 100) {
+		gDPSetRectScaleEXT(gdl++, 1.0f, 0, 0);
 	}
 
 	return gdl;

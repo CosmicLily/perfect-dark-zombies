@@ -82,6 +82,7 @@
 #include "modloader.h"
 #include "simbrain.h"
 #include "net/net.h"
+#include "killfeed.h"
 
 // GoldenEye's frame as geguns.c takes it for its guns' rates: two sixtieths
 #define GE_FRAME60 2
@@ -4975,20 +4976,28 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	}
 
 	// Don't damage if attacker was anti and chr is non-interactable by anti
-	if (g_Vars.antiplayernum >= 0
-			&& aprop
-			&& aprop == g_Vars.anti->prop
+	if (aprop
+			&& coopIsAntiProp(aprop)
 			&& (chr->hidden & CHRHFLAG_ANTINONINTERACTABLE)) {
 		return;
 	}
 
+#ifndef PLATFORM_N64
+	// online counter-op: one waiting for a guard to take is out of the game
+	if (aprop && aprop->type == PROPTYPE_PLAYER && coopAntiIsWaiting(playermgrGetPlayerNumByProp(aprop))) {
+		return;
+	}
+#endif
+
 	// Don't damage if coop and friendly fire is off (human buddy)
+	// (online counter-op: a player of the same side, coop.c)
 	if (g_Vars.coopplayernum >= 0
 			&& g_Vars.coopfriendlyfire == false
 			&& aprop
 			&& aprop != vprop
 			&& aprop->type == PROPTYPE_PLAYER
-			&& vprop->type == PROPTYPE_PLAYER) {
+			&& vprop->type == PROPTYPE_PLAYER
+			&& coopSameSide(aprop, vprop)) {
 		return;
 	}
 
@@ -5041,6 +5050,10 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	if (chr->prop == g_Vars.currentplayer->prop && g_Vars.currentplayer->invincible) {
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	killfeedNoteHit(chr, gset, aprop, explosion); // the kill feed's weapon (drawing only)
+#endif
 
 	if (g_NetMode == NETMODE_SERVER) netEvChrDamage(chr, aprop, hitpart, damageshield, explosion); // netplay E4: a hit that lands
 
@@ -5096,7 +5109,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			healthscale = g_Vars.players[playermgrGetPlayerNumByProp(vprop)]->healthscale;
 			armourscale = g_Vars.players[playermgrGetPlayerNumByProp(vprop)]->armourscale;
 		}
-	} else if (g_Vars.coopplayernum >= 0) {
+	} else if (g_Vars.coopplayernum >= 0 && g_Vars.antiplayernum < 0) {
 		// Co-op
 		if (explosion) {
 			if (vprop->type == PROPTYPE_PLAYER) {
@@ -5119,28 +5132,32 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		}
 	} else if (g_Vars.antiplayernum >= 0) {
 		// Anti
+		// (online counter-op: "bond" is any agent, coop.c - an agent's
+		// own shots at another agent take a player's scale too)
 		if (explosion) {
-			if (vprop == g_Vars.bond->prop) {
+			if (coopIsAgentProp(vprop)) {
 				damage *= g_ExplosionDamageTxScale;
 			}
-		} else if (aprop && aprop == g_Vars.bond->prop) {
+		} else if (aprop && coopIsAgentProp(aprop)) {
 			damage *= g_PlayerDamageTxScale;
 			headshotdamagescale = g_ModPlayerHeadshotScale;
-		} else if (aprop && aprop != g_Vars.bond->prop && vprop == g_Vars.bond->prop) {
+		} else if (aprop && !coopIsAgentProp(aprop) && coopIsAgentProp(vprop)) {
 			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage();
 		}
 
-		if (vprop != g_Vars.bond->prop) {
+		if (!coopIsAgentProp(vprop)) {
 			damage /= pdmodeGetEnemyHealth();
 		}
 
-		if (vprop == g_Vars.bond->prop) {
+		if (coopIsAgentProp(vprop)) {
 			healthscale = g_Vars.players[playermgrGetPlayerNumByProp(vprop)]->healthscale;
 			armourscale = g_Vars.players[playermgrGetPlayerNumByProp(vprop)]->armourscale;
 		}
 
-		// Anti shooting other enemies is lethal
-		if (aprop && aprop == g_Vars.anti->prop && vprop != g_Vars.bond->prop) {
+		// Anti shooting other enemies is lethal (online, the guards: not
+		// another counter-op's player)
+		if (aprop && coopIsAntiProp(aprop) && !coopIsAgentProp(vprop)
+				&& !(g_CoopAntiMask && vprop->type == PROPTYPE_PLAYER)) {
 			damage *= 100;
 		}
 	} else {
@@ -8165,6 +8182,25 @@ bool chrHasLosToChr(struct chrdata *chr, struct chrdata *target, RoomNum *room)
 				&& geStanLinks(&prop->pos, chr->ground, &target->prop->pos, target->ground, true) == 0) {
 			cansee = false;
 		}
+
+		// And its line test meets the props of every room its walk's tiles
+		// are in (stanTestLineUnobstructed(): roomGetProps() of the walk's
+		// rooms). Perfect Dark's walk goes by portals in three dimensions and
+		// can pass over a room: Bunker's glass doors are filed in the
+		// corridor's room, and the line from the floor above it to the main
+		// room went from one to the other over it - a guard upstairs saw Bond
+		// through the shut doors and opened fire (F3 20261012-042236), where
+		// the cartridge's guard never sees him
+		if (cansee && !chr->aibot && target->prop->type == PROPTYPE_PLAYER && geRoomActive()) {
+			RoomNum walkrooms[21];
+
+			if (geStanLineRooms(&prop->pos, chr->ground, &target->prop->pos, walkrooms, ARRAYCOUNT(walkrooms)) > 0
+					&& !cdTestAToB(&pos, &target->prop->pos, walkrooms,
+						CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_AIOPAQUE,
+						GEOFLAG_BLOCK_SIGHT, CHECKVERTICAL_YES, 1, 0, 0)) {
+				cansee = false;
+			}
+		}
 #endif
 
 		chrSetPerimEnabled(chr, true);
@@ -10296,7 +10332,7 @@ void chrAlertOthersOfInjury(struct chrdata *chr, bool dying)
 	s32 numinrange = 0;
 	s32 numchrs = chrsGetNumSlots();
 
-	if (g_Vars.antiplayernum >= 0 && chr->prop == g_Vars.anti->prop) {
+	if (coopIsAntiProp(chr->prop)) {
 		return;
 	}
 
@@ -16068,7 +16104,7 @@ void chraTickBg(void)
 
 				if (targetprop && (targetprop->type == PROPTYPE_CHR || targetprop->type == PROPTYPE_PLAYER)) {
 					if ((targetprop->type == PROPTYPE_PLAYER
-								&& !(g_Vars.antiplayernum >= 0 && g_Vars.anti && g_Vars.anti->prop == targetprop)
+								&& !coopIsAntiProp(targetprop)
 								&& chrCompareTeams(chr, targetprop->chr, COMPARE_ENEMIES))
 							|| CHRRACE(targetprop->chr) == RACE_EYESPY) {
 						s32 time60;

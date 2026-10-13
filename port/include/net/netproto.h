@@ -154,7 +154,53 @@
 //    gun (weaponleft), so a client's Akimbo pair is the host's; RULES ends
 //    with the host's cheat banks (u32 cheats0, cheats1), which every machine
 //    plays the match by
-#define NET_PROTOCOL_VERSION 28
+// 29 (state and events apart, EQOA's DRDP: CLAUDE-notes/netplay.md "State
+//    and events", 2026-10-11): SNAP ends in a world block (u8 hasworld, a
+//    320-byte delta: broken glass bits, N-bomb storms, the gas; networld.c);
+//    an OBJ record's byte 23 and a DOOR record's byte 5 carry the object's
+//    crumpling (NETDEFORM_*), a DOOR record's byte 4 bit 4 its pane shot out
+//    (NETDOOR_GLASSGONE); DEFORM, NBOMB and GAS events are no longer sent,
+//    GLASS only past the block's 1760 panes; events go in three classes on
+//    channels of their own: EVENTS (deaths, scores, hudmsgs, pickup sounds;
+//    the only ones evseq counts), EVFX on NET_CHAN_EVFX (explosions, hits),
+//    EVSHOT unreliable on NET_CHAN_EVSHOT (shots, sparks, grunts); five
+//    ENet channels; EXPLOSION and CHRDAMAGE go in EVSHOT several times each
+//    inside a SURE event (15: u16 serial, u8 ticks back, the event), and a
+//    joiner's first EVENTS carries the explosions still burning; an OBJ
+//    record's byte 0 bit 0x80 is a camera's lens shot out
+//    (NETOBJ_LENSGONE); MARKS (27, bulk) gives a joiner the host's marks
+//    on the walls and floors
+// 30 (everything by delta, 2026-10-11: CLAUDE-notes/netplay.md "State and
+//    events apart"): SNAP ends in a marks block (the host's wall-hit pool,
+//    a u16 serial per slot, delta'd, and up to 3 records of 74 bytes a
+//    snapshot), which replaces MARKS (27, gone); a client draws no bg mark
+//    but its own shots' bullet holes; CMD names a base tick (the newest
+//    command the host acked) and its commands are packed to 32 bytes, the
+//    first XOR-delta'd against the base, each after it against the one
+//    before (port/src/net/netcmd.c); CMDACK is 9 bytes (the match's low
+//    byte, the ack as a distance from the host tick); the world block grows to 352 bytes, the players
+//    list's pings at 320, and PLAYERS goes only when the spectators change
+// 31 (GoldenEye's tank ridden on top, 2026-10-12: CLAUDE-notes/netplay.md
+//    "F3 pass 37"): the local-player block's tank part grows to 48 bytes
+//    (NETLP_SIZE 736): u8 ride at 24 (the player stands on a tank somebody
+//    else drives), f32 across, up, along at 28 (its place in the hull's axes);
+//    a CMD's command can carry Team Control's order to a sim (NETCMD_ORDER:
+//    u8 sim, u8 command, u8 target), packed commands 36 bytes (were 32);
+//    an autogun's OBJ record (a thrown Laptop Gun's sentry, a mission's
+//    turret) carries its aim and firing in bytes 20-22 (NETAUTOGUN_FIRING,
+//    the turn in 256ths, the elevation in half degrees), and a client makes
+//    a DYNOBJ autogun (the thrown laptop) it had left out; the local-player
+//    block's byte 202 (was 0) holds the player's cloaks on (NETLPDEV_*: the
+//    RC-P120's, the Cloaking Device), the host's word over the client's;
+//    and DEATH ends in a u8 weapon (the kill feed, killfeed.c)
+// 32 (counter-op online, 2026-10-12: CLAUDE-notes/netplay.md "Counter-op
+//    online"): RULES' mission block ends in u8 anti (a counter-op mission)
+//    and u16 antimask (its counter-ops, a bit per player number); SNAP's
+//    mission block grows by 74 bytes at 74: u16 antimask (the sides now: a
+//    join in progress takes its room team's), u8 antispawns[12] (each
+//    counter-op's guards taken), u8 antiradius[12] (the guard's radius),
+//    s16 antibody[12], s16 antihead[12] (the guard's body and head it wears)
+#define NET_PROTOCOL_VERSION 32
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2
@@ -170,7 +216,7 @@
 #define NETMSG_CMDACK     12
 #define NETMSG_SLOTCFG    13
 #define NETMSG_SNAP       14 // netsnap.c writes this number itself (NETSNAP_MSGTYPE)
-#define NETMSG_EVENTS     15
+#define NETMSG_EVENTS     15 // and EVFX 25, EVSHOT 26 (protocol 29)
 #define NETMSG_ROSTER     16 // protocol 9: the match's seats, host -> client
 // protocol 14: a conversion or map mod served by the host (netcontent.c)
 #define NETMSG_CONTENT_REQ   17 // client -> host: the dir a stage key named that it lacks
@@ -183,6 +229,10 @@
 #define NETMSG_PLAYERS       23 // host -> client: each seat's ping, the spectators
 // protocol 21: host migration (netmigrate.c)
 #define NETMSG_RESUME        24 // client -> host: its player as the old host last had it
+// protocol 29: the events split by class onto channels of their own (netevents.c)
+#define NETMSG_EVFX          25 // host -> client, NET_CHAN_EVFX, reliable: as EVENTS
+#define NETMSG_EVSHOT        26 // host -> client, NET_CHAN_EVSHOT, unreliable unsequenced: as EVENTS
+// 27 was MARKS (protocol 29 only): the marks block in SNAP since 30
 
 /**
  * Refusal and leave reasons: REFUSE's and LEAVE's code byte, and the u32
@@ -398,6 +448,12 @@
  *                                 (Cuba); a conversion's set only
  *     u8 cinemaloop               its Loop row (0 off, 1 level, 2 all)
  *     u8 cinemaminutes            and its Time row (Loop All's minutes)
+ *     u8 anti                     (protocol 32) 1: a counter-op mission (the
+ *                                 room's Game "Counter-Op Mission"); never
+ *                                 with a cinema
+ *     u16 antimask                its counter-ops, a bit per player number
+ *                                 (0 unless anti; every player or none is
+ *                                 played as co-op)
  *   content block (protocol 13; netcontent.c):
  *     str(127) mod, u64 modhash   as ACCEPT's (checked again at H3)
  *     str(15) gevariant           the GoldenEye ROM hack whose mode the
@@ -503,7 +559,7 @@
  * mid-match sends its player as that host last had it
  *   u8      NETMSG_RESUME
  *   u32     oldmatch              the old host's id of the match
- *   u16     len                   NETLP_SIZE (720)
+ *   u16     len                   NETLP_SIZE (736)
  *   bytes   localplayer           the newest local-player block it had (the
  *                                 SNAP layout below): the new host gives that
  *                                 seat's player its next life where the block
@@ -547,7 +603,9 @@
  *
  * PLAYERS (host -> client, UNRELIABLE; protocol 18) - every 60 host ticks of
  * a match, to each client in it: what the HUD's player list shows besides
- * the ROSTER's seats
+ * the ROSTER's seats. (protocol 30) In a match only once a second for five
+ * seconds when the spectators change (and the match's first); the pings
+ * ride the world block, delta'd; at the barrier as before
  *   u8      NETMSG_PLAYERS
  *   u32     matchid
  *   u8      nseats                MAX_PLAYERS
@@ -615,7 +673,20 @@
  *                                 needs again (its local prop went stale)
  *   u32     first                 the first command's tick
  *   u8      count                 1..NET_MAXCMDSEND
- *   per command, ticks first, first+1, ...:
+ *   u32     basetick              (protocol 30) the command the first is
+ *                                 delta'd against: the newest the host acked
+ *                                 (it keeps every command it took, by tick,
+ *                                 per view), 0xffffffff none (zeros); a CMD
+ *                                 whose base the host has not got is dropped
+ *                                 (the client keyframes when its base has not
+ *                                 moved for 30 ticks)
+ *   per command, ticks first, first+1, ...: (protocol 30) a netdelta of its
+ *     NETCMD_PACKED bytes against the command before it in this packet (the
+ *     first against basetick's): u32 buttons, s8 x4, f32 mdx, mdy, u8 flags, u32
+ *     tick - viewtick (0xffffffff none), u8 viewfrac, viewdelay, u8
+ *     equip[2], u8 device[2], u16 body[2], u8 bodyflags, (protocol 31) u8
+ *     order[3], u8 0 - 36 bytes (0 where the flag is clear); before 30 each
+ *     command's fields as follows, whole:
  *     u32 buttons                 OSContPad.button (protocol 11: START too;
  *                                 the host clears it unless the player is
  *                                 dead, where it respawns as offline)
@@ -657,13 +728,27 @@
  *                                 host faces that player's body by it and
  *                                 reads its speeds against it, and the body
  *                                 reaches everyone in SNAP as any chr's yaw
+ *     (protocol 31) when flags has NETCMD_ORDER: u8 sim, u8 command, u8
+ *                                 target - Team Control (the active menu's
+ *                                 sim pages in a team match): the sim by its
+ *                                 bot config slot (NETORDER_ALLSIMS: every
+ *                                 sim on the player's team), the AIBOTCMD_*
+ *                                 and Attack's target (a playernum, or
+ *                                 NETORDER_SIM + a bot config slot;
+ *                                 NETORDER_NOTARGET for the rest); the host
+ *                                 gives it in that player's pass, as its own
+ *                                 menu would, if teams are on, the sim is on
+ *                                 the player's team and the scenario's menu
+ *                                 has the command
  *
  * A spectator sends CMD too (protocol 9): the host takes its snapshot ack
  * and nothing else (its commands drive nothing), and its CMDACK names the
  * newest it has, with as depth how far that is ahead of the host's tick.
  *
  * CMDACK (host -> client, UNRELIABLE, once a host tick) - what the host has
- * of this client's commands, and the clock (spec-tick.md §3b)
+ * of this client's commands, and the clock (spec-tick.md §3b). (protocol
+ * 30) 9 bytes: u8 NETMSG_CMDACK, u8 matchid's low byte, u32 hosttick, s16
+ * ack - hosttick (-32768 none), u8 depth; before it, whole:
  *   u8      NETMSG_CMDACK
  *   u32     matchid
  *   u32     hosttick              the host's g_NetTick
@@ -734,19 +819,30 @@
  *     changes, by any amount; a toggled bit would lose two in one gap)
  *     (protocol 24: OBJ byte 0 bit 0x20 / DOOR byte 4 bit 2: a setup object
  *     out of the world, in no prop list on the host - taken out here too)
+ *     (protocol 29: OBJ byte 0 bit 0x80, NETOBJ_LENSGONE: a camera's lens
+ *     shot out)
+ *     (protocol 29: OBJ byte 23 / DOOR byte 5, the crumpling: objDeform
+ *     calls since the object was last whole in the low nibble, saturating at
+ *     15, the last call's level in the high one; DOOR byte 4 bit 4,
+ *     NETDOOR_GLASSGONE: a windowed door's pane shot out)
  *     (protocol 28: OBJ byte 0 bit 0x40, NETOBJ_MOUNTED: GoldenEye's tank
+ *     (protocol 31: an autogun's OBJ byte 20 bit 1, NETAUTOGUN_FIRING;
+ *     byte 21 its turn in 256ths of a turn, byte 22 its elevation in half
+ *     degrees, signed - GoldenEye's tank's bytes 21-22 are its turret's)
  *     with somebody in it, which nobody else may climb into; DOOR bytes
  *     6-14 where the door stands (3 x 24-bit eighths, as OBJ's) and 15-16
  *     its first room: a fall-away door, Surface's vent hatch, falls)
  *   u8      haslp                 0 none, 1 keyframe, 2 against the baseline's
- *   delta   localplayer           NETLP_SIZE (720) bytes, full precision:
+ *   delta   localplayer           NETLP_SIZE (736) bytes, full precision:
  *     u8 flags (1 dead, 2 invincible), u8 respawns, u8 teleports (counters),
  *     u8 dualwielding, f32 pos[3], s16 rooms[8], f32 theta, f32 verta,
  *     f32 health, f32 shield, s16 weaponnum, s16 weaponleft (protocol 28: the
  *     left hand's gun, 0 for none; was 0), s32 loadedammo[4]
  *     (right 0, 1, left 0, 1), u16 ammoheld[33], u16 0, u8 weapons[32]
  *     (a bit per weapon number), u8 dualweapons[32], u16 blurdrug (protocol
- *     20: the chr's blurdrugamount, a tranquilizer's drugged screen), u8 0[6],
+ *     20: the chr's blurdrugamount, a tranquilizer's drugged screen), u8
+ *     devices (protocol 31: NETLPDEV_CLOAKRCP120 1, NETLPDEV_CLOAKDEVICE 2,
+ *     the cloaks on; was 0), u8 0[5],
  *     then the movement state (protocol 5; struct netmove, netsnap.h), the
  *     player after command lastcmd, from which the client replays the
  *     commands after it (netpredict.c): f32 speedtheta, speedverta,
@@ -804,6 +900,36 @@
  *     again; at most 120 ticks' wait), after every event of T and before
  *     any later one
  *
+ *   u8      hasworld              (protocol 29) 0 none, 1 keyframe, 2 against
+ *                                 the baseline's
+ *   delta   world                 NETWORLD_SIZE (352 since protocol 30) bytes, the world's
+ *                                 state no record carries, the same for every
+ *                                 client (networld.c): u16 nglass, u8 gas, u8 0,
+ *                                 u32 gastick, f32 gaspos[3]; at 20 four storms
+ *                                 { u8 serial (0 none), u8 0[3], u32 tick,
+ *                                 f32 pos[3] }; at 100 a bit per setup glass
+ *                                 (GLASS/TINTEDGLASS commands in order, the
+ *                                 first 1760): broken now. The client applies
+ *                                 the newest block its render clock has
+ *                                 reached, held for no event; (protocol
+ *                                 30) at 320 the players list's pings:
+ *                                 u16 ping[12], u8 nspecs, 2 x { u8 view,
+ *                                 u16 ping }, u8 0
+ *   u8      hasmarks              (protocol 30) 0 none, 1 keyframe, 2 against
+ *                                 the baseline's
+ *   u16     nslots                the host's wall-hit pool (<= 360)
+ *   delta   marks                 nslots x u16: the serial of the bg mark in
+ *                                 each slot (0 none), as this snapshot
+ *                                 leaves it: a slot the host emptied is 0, a
+ *                                 slot whose mark the client lacks holds it
+ *                                 only with its record below, else what the
+ *                                 baseline had (networld.c, netsnap.c)
+ *   u8      nrecs                 <= 3, the oldest marks the client lacks
+ *   per rec: u16 slot, 74 bytes { f32 relpos[3], s16 room, u8 texnum, u8
+ *            bits (1 xlu, 2 unk6f_01), s8 mtxindex, s8 origin (the player
+ *            whose shot made it, -1 none: that machine swaps its own mark
+ *            for it), 4 x { s16 x, y, z, s, t, u8 basecolour[4] } }
+ *
  * Present and not updated: the client copies its base record (it is
  * unchanged, or - deferred - changed and left by the 1100-byte cap for a
  * later packet: then it is the state of the base's tick, and the puppets
@@ -821,7 +947,28 @@
  * for this client, before that tick's SNAP; and before MATCH_END) - what
  * happened in the tick (PLANS/netplay/spec-entities.md §5; netevents.c).
  * The client applies a tick's events once its render clock reaches the
- * tick, after the snapshot records it poses for it, in the order sent.
+ * tick, after the snapshot records it poses for it, in tick order.
+ * (protocol 29) Three classes, each a message type on a channel of its own,
+ * the same body: EVENTS on NET_CHAN_RELIABLE carries DEATH, HUDMSG,
+ * PICKUPSFX and SCORES (and is all evseq counts); EVFX (25) on
+ * NET_CHAN_EVFX, reliable, GLASS past the world block's panes; EVSHOT (26)
+ * on NET_CHAN_EVSHOT, unreliable and unsequenced, at most
+ * NET_MAXUNRELIABLE bytes, FIRESLOT, PLAYERSHOT, SPARKS and CHOKE, and
+ * EXPLOSION and CHRDAMAGE as SURE copies:
+ *  15 SURE       u16 serial (the host's, rising), u8 back (ticks before the
+ *                message's hosttick it happened), then an EXPLOSION or
+ *                CHRDAMAGE event whole; sent in the EVSHOT messages of
+ *                ticks +0, +2, +5 (an explosion) or +0, +3 (a hit on a
+ *                player; a sim's or a guard's goes once, as itself); the
+ *                client keeps the first copy of a serial. A joiner's first
+ *                EVENTS (the SCORES catch-up) adds a SURE copy of each
+ *                explosion still burning; one applied more than 6 ticks
+ *                late is put in at that age (no bang)
+ * DEFORM, NBOMB and GAS are no longer sent (records and the world block
+ * carry them).
+ *
+ * MARKS (protocol 29 only) gave a joiner the host's marks once; the marks
+ * block in SNAP carries them since protocol 30
  *   u8      NETMSG_EVENTS
  *   u32     matchid
  *   u32     hosttick              the host's g_NetTick they happened on
@@ -862,7 +1009,9 @@
  *   8 GLASS      (E5, glassDestroy)       REF obj
  *   9 DEATH      (E6, mpstatsRecordDeath) s8 attacker, s8 victim (mpchr slots:
  *                players 0-11, sims 12+, -1 none), s8 attacker given (-1 none,
- *                -2 outside the match), s8 victim given (the same)
+ *                -2 outside the match), s8 victim given (the same),
+ *                31) u8 weapon (the kill feed's: a weapon number, 0xfe an
+ *                explosion nothing named, 0xff none; killfeed.c)
  *  10 HUDMSG     (E7, hudmsgCreateFromArgs; only to the player's machine)
  *                str(255) text, u8 type (<= 11), s32 conf00, conf01, conf02,
  *                u32 textcolour, glowcolour, alignh, s32 conf16, u32 alignv,
@@ -888,6 +1037,10 @@
 #define NETCMD_DEVICE      0x04 // u8 weaponnum, u8 on follow (protocol 15)
 #define NETCMD_BODY        0x08 // u16 facing, u16 travel, u8 bodyflags follow (protocol 19)
 #define NETBODY_TRAVEL     0x01 // NETCMD_BODY's travel is held (the player moving)
+#define NETCMD_ORDER       0x10 // u8 sim, u8 command, u8 target follow (protocol 31): Team Control
+#define NETORDER_ALLSIMS   0xff // the order's sim: every sim on the player's team (the menu's all-bots mode)
+#define NETORDER_NOTARGET  0xff // the order's target: none (any command but Attack)
+#define NETORDER_SIM       0x80 // ... a sim's: 0x80 + its bot config slot (below it a player's playernum)
 
 #define NETCONN_SPECTATE   0x01 // CONNECT's flags
 #define NETACC_INPROGRESS  0x01 // ACCEPT's flags

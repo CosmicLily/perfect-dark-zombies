@@ -5,6 +5,7 @@
 #include "constants.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
+#include "game/coop.h"
 #include "game/bondwalk.h"
 #include "game/chraction.h"
 #include "game/dlights.h"
@@ -1043,7 +1044,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 			texnum = lightsHandleHit(&shotdata.gunpos3d, &hitpos, room);
 
-			if (sp694.texturenum < 0 || sp694.texturenum >= NUM_TEXTURES) {
+			if (sp694.texturenum < 0 || sp694.texturenum >= g_NumListTextures) {
 				surfacetype = g_SurfaceTypes[SURFACETYPE_DEFAULT];
 			} else {
 				index = g_Textures[sp694.texturenum].surfacetype;
@@ -1074,7 +1075,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 #ifndef PLATFORM_N64
 					// GoldenEye's own on its levels (geimpact.c); none is 0 here
 					if (geImpactActive()) {
-						texnum = geImpactTexnum(sp694.texturenum >= 0 && sp694.texturenum < NUM_TEXTURES
+						texnum = geImpactTexnum(sp694.texturenum >= 0 && sp694.texturenum < g_NumListTextures
 								? g_Textures[sp694.texturenum].surfacetype : SURFACETYPE_DEFAULT, texnum);
 						texnum = texnum < 0 ? 0 : texnum;
 					}
@@ -1149,7 +1150,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 #ifndef PLATFORM_N64
 								// the same bound the surface type above is read with; the
 								// release's rooms reach here with a number past the table
-								texnum = sp694.texturenum >= 0 && sp694.texturenum < NUM_TEXTURES
+								texnum = sp694.texturenum >= 0 && sp694.texturenum < g_NumListTextures
 									? g_Textures[sp694.texturenum].surfacetype : SURFACETYPE_DEFAULT;
 #else
 								texnum = g_Textures[sp694.texturenum].surfacetype;
@@ -2827,7 +2828,7 @@ void propsTestForPickup(void)
 
 	if (g_Vars.currentplayer->bondmovemode != MOVEMODE_CUTSCENE
 			&& !g_PlayerInvincible
-			&& g_Vars.currentplayer != g_Vars.anti) {
+			&& !coopIsAnti(g_Vars.currentplayer)) {
 		roomsCopy(g_Vars.currentplayer->prop->rooms, allrooms);
 
 		for (i = 0; g_Vars.currentplayer->prop->rooms[i] != -1; i++) {

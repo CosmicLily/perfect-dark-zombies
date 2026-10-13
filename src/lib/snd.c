@@ -1512,6 +1512,14 @@ ALSound *sndLoadSound(s16 soundnum)
 		return NULL;
 	}
 
+#ifndef PLATFORM_N64
+	// A sound chained from another's key map takes its number from the bank
+	// data, which sndStart()'s bound never saw
+	if (sfxnum <= 0 || sfxnum >= g_NumSounds) {
+		return NULL;
+	}
+#endif
+
 	// If this sound doesn't exist in the cache
 	cacheindex = g_SndCache.indexes[sfxnum];
 
@@ -1537,6 +1545,24 @@ ALSound *sndLoadSound(s16 soundnum)
 #endif
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Every slot held by a sound still playing: the player keeps 64
+		// sounds and the cache 45, so a big enough firefight of different
+		// sounds fills it, and slot -1 (65535 as a u16) wrote and handed
+		// out an ALSound far past the cache. The sound is left out instead
+		// (crash 20261012-164544, GoldenEye mission with 50 chrs)
+		if (oldestindex < 0) {
+			static s32 logged = 0;
+
+			if (logged < 4) {
+				logged++;
+				sysLogPrintf(LOG_WARNING, "snd: every sound cache slot is playing, sound %d left out", sfxnum);
+			}
+
+			return NULL;
+		}
+#endif
 
 		cacheindex = oldestindex;
 
@@ -2016,7 +2042,17 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// a sequence whose header points past what it inflated to is refused, and
+	// one that reads outside itself ends there (n_alCSeqNewBounded())
+	if (ziplen <= 0 || ziplen > (s32)g_SeqBufferSize || !n_alCSeqNewBounded(&seq->seq, seq->data, ziplen)) {
+		sysLogPrintf(LOG_WARNING, "music: sequence %d is not one (%d bytes); not played", tracknum, ziplen);
+		seq->seqp->state = AL_STOPPED;
+		return false;
+	}
+#else
 	n_alCSeqNew(&seq->seq, seq->data);
+#endif
 	n_alCSPSetSeq(seq->seqp, &seq->seq);
 	seqSetVolume(seq, seqGetVolume(seq));
 	n_alCSPPlay(seq->seqp);

@@ -422,6 +422,7 @@ struct modoptions {
 	s32 sitinchairs; // the use button on a Carrington Institute chair sits the player in it (sitchair.c)
 	s32 muzzleflashlight; // on GoldenEye's levels a muzzle flash lights the rooms round it too (always on Perfect Dark's)
 	s32 geroomdim;   // on GoldenEye's levels a room goes dark as its lights are shot out (always on Perfect Dark's)
+	s32 killfeed;    // KILLFEED_*: the kill feed at a match's top right; -1 on online only (killfeed.c)
 };
 
 extern struct modoptions g_ModOptions;
@@ -480,6 +481,8 @@ bool modIsRunTintOn(void);
 bool modIsRunWalkInOn(void);
 bool modIsMissionRespawnOn(void);
 bool modIsSkipDeathScreenOn(void);
+extern s32 g_ModNetThirdPerson; // Mod.NetThirdPerson: a match online allows third person (a Room Rule)
+bool modIsThirdPersonAllowed(void);
 bool modIsQuickWeaponSwapOn(void);
 s32 modGetMissionLives(void);
 bool modIsTranquilizerEffectOn(void);

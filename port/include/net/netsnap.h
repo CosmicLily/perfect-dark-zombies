@@ -115,10 +115,22 @@ static inline void netStoreSetTick(u8 *s, u32 t) { s[4] = (u8)t; s[5] = (u8)(t >
 #define NETOBJ_EMBEDDED   0x10
 #define NETOBJ_DELISTED   0x20 // (protocol 24) a setup object out of the world (disable_object)
 #define NETOBJ_MOUNTED    0x40 // (protocol 28) somebody is in it: GoldenEye's tank driven
+#define NETOBJ_LENSGONE   0x80 // (protocol 29) a camera's lens shot out (cctvHandleLensShot)
+
+// (protocol 31) OBJ record byte 20 of an autogun (no weapon number there)
+#define NETAUTOGUN_FIRING 0x01
 
 // DOOR record byte 4
 #define NETDOOR_ENABLED   0x01
 #define NETDOOR_DELISTED  0x02 // (protocol 24) as NETOBJ_DELISTED
+#define NETDOOR_GLASSGONE 0x04 // (protocol 29) a windowed door's pane shot out (doorDestroyGlass)
+
+// (protocol 29) OBJ record byte 23 / DOOR record byte 5: the object's
+// crumpling (objDeform) since it was last whole: the calls made, saturating
+// at 15, in the low nibble; the last call's level (1-15) in the high one.
+// 0 again once the host's object is whole (a match's regenerated prop)
+#define NETDEFORM_COUNT(b) ((b) & 0x0f)
+#define NETDEFORM_LEVEL(b) (((b) >> 4) & 0x0f)
 
 // CHR anim flags byte
 #define NETANIM_FLIP    0x01
@@ -162,6 +174,7 @@ struct netentstate {
 	u8 laserfade;
 	s8 levelcur;
 	s8 levelaim;
+	u8 deform;     // (protocol 29) NETDEFORM_* (obj, door)
 };
 
 void netRecPack(s32 rec, const struct netentstate *s, u8 *out);   // out: netRecSize(rec) bytes
@@ -171,6 +184,7 @@ void netRecUnpack(s32 rec, const u8 *in, struct netentstate *out);
 void netQuatFromMatrix(const f32 m[3][3], f32 *q);  // q x y z w, unit, largest component >= 0
 void netQuatCanon(f32 *q);
 void netQuatWire(f32 *q);   // q as it comes off the wire (quantized there and back)
+f32 netPosWire(f32 v);      // a place's coordinate as it comes off the wire (eighths of a unit)
 
 /**
  * The local-player block: the receiving client's own player at full
@@ -178,7 +192,7 @@ void netQuatWire(f32 *q);   // q as it comes off the wire (quantized there and b
  * baseline snapshot. Layout in netproto.h.
  */
 #define NETLP_SIZE     (208 + NETMOVE_SIZE + NETLPTANK_SIZE)
-#define NETLPTANK_SIZE 32 // (protocol 23) the GoldenEye tank the player drives, at bytes 688..719
+#define NETLPTANK_SIZE 48 // (protocol 23) the GoldenEye tank the player drives, at bytes 688..735 ((protocol 31) and the one it rides on)
 #define NETLP_NUMAMMO  33
 #define NETMOVE_SIZE   480
 #define NETMOVE_HEADWORDS 30 // struct player bondheadsave: the head model's rwdata
@@ -306,7 +320,15 @@ struct netlptank {
 	f32 speed;
 	f32 turnsum;
 	f32 turretyaw;
+	u8 ride;       // (protocol 31) standing on a tank somebody else drives (getank.c geTankRideCarry)
+	f32 rel[3];    // ... where: across, up, along in the hull's axes
 };
+
+// (protocol 31) the local-player block's byte 202: the player's cloaks on
+// (devicesactive), the host's word once it has played the command that
+// switched one here (netEntsClientApplyLocal)
+#define NETLPDEV_CLOAKRCP120 0x01 // DEVICE_CLOAKRCP120: the RC-P120's cloak
+#define NETLPDEV_CLOAKDEVICE 0x02 // DEVICE_CLOAKDEVICE: the Cloaking Device
 
 #define NETLP_DEAD       0x01
 #define NETLP_INVINCIBLE 0x02
@@ -329,6 +351,7 @@ struct netlpstate {
 	u8 inv[32];             // a bit per weapon number held
 	u8 invdual[32];         // a bit per weapon number held twice
 	u16 blurdrug;           // (protocol 20) the player chr's blurdrugamount: a tranquilizer's drugged screen
+	u8 devices;             // (protocol 31) the cloaks switched on: NETLPDEV_*
 	struct netmove mv;
 	struct netlptank tank;  // (protocol 23)
 };
@@ -343,6 +366,26 @@ void netLpUnpack(const u8 *in, struct netlpstate *out);
  * file carries its bytes only.
  */
 #define NETSCEN_SIZE 768 // protocol 10 (was 640): MAX_MPCHRS 92, MAX_PLAYERS 12
+
+/**
+ * The world block (protocol 29): the world's latest-value-wins state that no
+ * entity record carries, the same for every client, delta'd against the
+ * block in the baseline snapshot like the scenario block but applied as soon
+ * as the render clock reaches its tick, never held for an event (networld.c;
+ * layout in netproto.h, SNAP)
+ */
+#define NETWORLD_SIZE 352 // protocol 30 (was 320): the players list's pings at 320
+
+/**
+ * The marks block (protocol 30): the host's marks on the walls and floors as
+ * state, one u16 per slot of its wall-hit pool (the serial of the bg mark in
+ * it, 0 none), delta'd against the baseline's like the other blocks, and the
+ * records of the marks the client lacks, at most NETMARK_PERSNAP a snapshot,
+ * oldest first (networld.c; layout in netproto.h, SNAP)
+ */
+#define NETMARK_MAXSLOTS 360 // wallhitreset.c's largest pool
+#define NETMARK_REC      74
+#define NETMARK_PERSNAP  3
 
 /**
  * The ack block in each CMD (client -> host): the newest snapshot decoded
@@ -407,6 +450,11 @@ struct netsnaphost {
 	u16 lpseq[NETBASELINE_SLOTS];
 	u8 scen[NETBASELINE_SLOTS][NETSCEN_SIZE];
 	u16 scenseq[NETBASELINE_SLOTS];
+	u8 world[NETBASELINE_SLOTS][NETWORLD_SIZE]; // (protocol 29)
+	u16 worldseq[NETBASELINE_SLOTS];
+	u16 marks[NETBASELINE_SLOTS][NETMARK_MAXSLOTS]; // (protocol 30) the slots as this snapshot left them
+	u16 marksseq[NETBASELINE_SLOTS];
+	u32 markrecs;   // mark records sent
 	s32 rate;
 	// the adaptive rate's window
 	u32 winsent;
@@ -444,11 +492,14 @@ void netSnapHostOnAck(struct netsnaphost *h, const struct netsnapack *a);
  * into out, at most cap bytes, and stores it as the client will hold it.
  * lp is this client's NETLP_SIZE block or NULL, scen the NETSCEN_SIZE
  * scenario block or NULL, evseq the EVENTS messages sent to this client
- * before it (sent with the block). Returns the length, or -1 if nothing could be
+ * before it (sent with the block), world the NETWORLD_SIZE world block or
+ * NULL; markser the host's mark serial per pool slot (nmarkslots of them,
+ * NULL none), markrec their NETMARK_REC-byte records. Returns the length, or -1 if nothing could be
  * built.
  */
 s32 netSnapHostBuild(struct netsnaphost *h, struct netsnaphdr *hdr, struct netsnapent *ents, s32 n,
-		const u8 *lp, const u8 *scen, u32 evseq, u8 *out, s32 cap);
+		const u8 *lp, const u8 *scen, u32 evseq, const u8 *world,
+		const u16 *markser, const u8 *markrec, s32 nmarkslots, u8 *out, s32 cap);
 
 /**
  * Client
@@ -462,8 +513,16 @@ struct netsnapinfo {
 	u8 haslp;
 	u8 hasscen;
 	u32 evseq;      // with the scenario block: EVENTS messages the host had sent before it
+	u8 hasworld;    // (protocol 29)
+	u8 hasmarks;    // (protocol 30)
+	u8 nmarkrecs;
+	u16 nmarkslots;
+	u16 marks[NETMARK_MAXSLOTS];
+	u16 markslot[NETMARK_PERSNAP];
+	u8 markrec[NETMARK_PERSNAP][NETMARK_REC];
 	u8 lp[NETLP_SIZE];
 	u8 scen[NETSCEN_SIZE];
+	u8 world[NETWORLD_SIZE];
 };
 
 struct netsnapdescin {

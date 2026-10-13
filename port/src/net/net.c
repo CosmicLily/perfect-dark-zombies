@@ -12,6 +12,7 @@
 #include "system.h"
 #include "input.h"
 #include "net/net.h"
+#include "getank.h"
 #include "net/nettransport.h"
 #include "netint.h"
 #include "netrdv.h"
@@ -194,6 +195,7 @@ void netStageStart(void)
 	// a match's stage: the entity table (setup commands <-> props)
 	netEntsStageStart();
 	netEventsStageStart();
+	netWorldStageStart();
 	netLagCompStageStart();
 	netScenStageStart();
 }
@@ -305,6 +307,8 @@ void netTickBegin(void)
 {
 	netSessionTickBegin();
 	netPlayersTickBegin();
+	netWorldTickBegin();
+	geTankNetTestTick(); // --net-test-tankride (getank.c)
 }
 
 void netTickEnd(void)
@@ -316,6 +320,7 @@ void netTickEnd(void)
 		if (g_NetMode == NETMODE_SERVER) {
 			// the tick's events go before its snapshot
 			netEventsHostFlush();
+			netWorldHostTickEnd();
 			netScenHostTickEnd();
 			netEntsHostTickEnd();
 			netLagCompHostTickEnd();
@@ -324,6 +329,8 @@ void netTickEnd(void)
 			netEventsClientTickEnd();
 		}
 	}
+
+	netWorldTickEnd();
 
 	if (g_NetMode == NETMODE_CLIENT) {
 		netPuppetsTraceFlush();
