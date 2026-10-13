@@ -90,6 +90,8 @@ bool zombiesKnifeWantsTrigger(void);
 bool zombiesKnifeInHand(void);
 bool zombiesKnifeQuickSwap(void);
 bool zombiesHidesHud(void);
+s32 zombiesPapClipMult(s32 weaponnum);
+const char *zombiesPapName(s32 weaponnum, const char *name);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
 f32 zombiesHandRate(s32 handstate);
@@ -16062,6 +16064,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		nameid = invGetNameIdByIndex(invGetCurrentIndex());
 		str = langGet(nameid);
 
+#ifndef PLATFORM_N64
+		// Zombies: a Pack-a-Punched gun has a name of its own
+		str = (char *)zombiesPapName(hand->gset.weaponnum, str);
+#endif
+
 		if (ctrl->curgunstr != nameid) {
 			ctrl->guntypetimer = 0;
 			ctrl->curgunstr = nameid;
@@ -16728,6 +16735,11 @@ void bgun0f0abd30(s32 handnum)
 			hand->ammotypes[i] = weapon->ammos[i]->type;
 
 			hand->clipsizes[i] = weapon->ammos[i]->clipsize;
+
+#ifndef PLATFORM_N64
+			// Zombies: a Pack-a-Punched gun's magazine is bigger
+			hand->clipsizes[i] *= zombiesPapClipMult(hand->gset.weaponnum);
+#endif
 
 			if (handnum == HAND_LEFT && weaponHasFlag2(hand->gset.weaponnum, WEAPONFLAG2_DETONATORHAND)) {
 				hand->clipsizes[i] = 0;

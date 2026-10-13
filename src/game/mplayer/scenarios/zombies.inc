@@ -1090,6 +1090,16 @@ static s32 g_ZombieSelfRevive60[MAX_PLAYERS];  // Quick Revive alone: 60ths unti
 static s32 g_ZombiePerkOrder[MAX_PLAYERS][ZOMBIEPERK_COUNT];
 static s32 g_ZombiePerkOrderCount[MAX_PLAYERS];
 
+// Pack-a-Punch's machine (zombiesPlacePap()); a machine id past the perks', for
+// the corner code, which places every machine alike
+#define ZOMBIE_PAP_ID ZOMBIEPERK_COUNT
+static struct defaultobj g_ZombiePapObj;
+static bool g_ZombiePapPlaced;
+
+// A machine by id, Pack-a-Punch's after the perks', the box after that: the
+// ones any machine keeps clear of
+#define ZOMBIE_MACHINE_IDS (ZOMBIEPERK_COUNT + 2)
+
 static bool zombiesFindWall(struct coord *pos, RoomNum *rooms, f32 reach, f32 *dist, struct coord *dir);
 static void zombiesLoseMuleGun(s32 playernum);
 static void zombiesReturnMuleGun(s32 playernum);
@@ -1452,9 +1462,8 @@ static bool zombiesFindPerkWall(struct coord *pos, RoomNum *rooms, f32 mindist, 
 }
 
 // A machine against the wall beside pad, its front to the room
-static bool zombiesPlacePerkMachine(s32 perk, struct pad *pad, f32 walldist, struct coord *wall)
+static bool zombiesPlaceMachineObj(struct defaultobj *obj, struct pad *pad, f32 walldist, struct coord *wall)
 {
-	struct defaultobj *obj = &g_ZombiePerkObjs[perk];
 	struct prop *prop;
 	struct coord pos;
 	RoomNum padrooms[2];
@@ -1506,9 +1515,42 @@ static bool zombiesPlacePerkMachine(s32 perk, struct pad *pad, f32 walldist, str
 	propEnable(prop);
 
 	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
+
+	return true;
+}
+
+static bool zombiesPlacePerkMachine(s32 perk, struct pad *pad, f32 walldist, struct coord *wall)
+{
+	if (!zombiesPlaceMachineObj(&g_ZombiePerkObjs[perk], pad, walldist, wall)) {
+		return false;
+	}
+
 	g_ZombiePerkPlaced[perk] = true;
 
 	return true;
+}
+
+// A machine by id: the perks', Pack-a-Punch's, then the box; NULL for none up
+static struct defaultobj *zombiesMachineObjAt(s32 id)
+{
+	if (id == ZOMBIEPERK_JUGGERNOG) {
+		return g_ZombieJugg;
+	}
+
+	if (id < ZOMBIEPERK_COUNT) {
+		return g_ZombiePerkPlaced[id] ? &g_ZombiePerkObjs[id] : NULL;
+	}
+
+	if (id == ZOMBIE_PAP_ID) {
+		return g_ZombiePapPlaced ? &g_ZombiePapObj : NULL;
+	}
+
+	return g_ZombieBox;
+}
+
+static const char *zombiesMachineName(s32 id)
+{
+	return id < ZOMBIEPERK_COUNT ? g_ZombiePerks[id].name : "Pack-a-Punch";
 }
 
 /**
@@ -1668,9 +1710,8 @@ static bool zombiesMachineSpotFree(struct coord *pos, f32 radius, struct default
 		}
 	}
 
-	for (i = 0; i <= ZOMBIEPERK_COUNT; i++) {
-		struct defaultobj *other = i == ZOMBIEPERK_COUNT ? g_ZombieBox
-			: (i == ZOMBIEPERK_JUGGERNOG ? g_ZombieJugg : (g_ZombiePerkPlaced[i] ? &g_ZombiePerkObjs[i] : NULL));
+	for (i = 0; i < ZOMBIE_MACHINE_IDS; i++) {
+		struct defaultobj *other = zombiesMachineObjAt(i);
 		f32 dx;
 		f32 dz;
 
@@ -1792,7 +1833,7 @@ static bool zombiesCornerFrom(s32 perk, struct defaultobj *obj, struct coord *or
 			continue;
 		}
 
-		sysLogPrintf(LOG_NOTE, "zombies: %s into a corner at %.0f %.0f %.0f%s", g_ZombiePerks[perk].name,
+		sysLogPrintf(LOG_NOTE, "zombies: %s into a corner at %.0f %.0f %.0f%s", zombiesMachineName(perk),
 				obj->prop->pos.x, obj->prop->pos.y, obj->prop->pos.z, angled ? ", angled" : "");
 
 		return true;
@@ -1853,7 +1894,7 @@ static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *orig
 	pos.y = origin->y;
 
 	if (!zombiesMachineSpotFree(&pos, radius, obj)) {
-		sysLogPrintf(LOG_NOTE, "zombies: %s's picked wall spot is not free", g_ZombiePerks[perk].name);
+		sysLogPrintf(LOG_NOTE, "zombies: %s's picked wall spot is not free", zombiesMachineName(perk));
 		return false;
 	}
 
@@ -1867,7 +1908,7 @@ static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *orig
 	mtx00015f04(obj->model->scale, &mtx);
 	func0f06a730(obj, &pos, &mtx, rooms, &pos);
 
-	sysLogPrintf(LOG_NOTE, "zombies: %s on its picked wall at %.0f %.0f %.0f", g_ZombiePerks[perk].name,
+	sysLogPrintf(LOG_NOTE, "zombies: %s on its picked wall at %.0f %.0f %.0f", zombiesMachineName(perk),
 			obj->prop->pos.x, obj->prop->pos.y, obj->prop->pos.z);
 
 	return fabsf(obj->prop->pos.y - (floor + lift)) <= 30;
@@ -1952,9 +1993,8 @@ static bool zombiesOpenestCorner(s32 perk, struct defaultobj *obj, f32 halfw, f3
 			bool apart = true;
 			s32 k;
 
-			for (k = 0; k <= ZOMBIEPERK_COUNT; k++) {
-				struct defaultobj *other = k == ZOMBIEPERK_COUNT ? g_ZombieBox
-					: (k == ZOMBIEPERK_JUGGERNOG ? g_ZombieJugg : (g_ZombiePerkPlaced[k] ? &g_ZombiePerkObjs[k] : NULL));
+			for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+				struct defaultobj *other = zombiesMachineObjAt(k);
 
 				if (other && other != obj && other->prop) {
 					f32 dx = other->prop->pos.x - c->pos.x;
@@ -2001,7 +2041,7 @@ static bool zombiesOpenestCorner(s32 perk, struct defaultobj *obj, f32 halfw, f3
 
 	for (i = 0; i < numcands; i++) {
 		if (zombiesCornerFrom(perk, obj, &cands[i].origin, cands[i].rooms, halfw, halfd, radius, lift, &cands[i].corner.pos)) {
-			sysLogPrintf(LOG_NOTE, "zombies: %s in the openest free corner, %.0f of room in front", g_ZombiePerks[perk].name, cands[i].open);
+			sysLogPrintf(LOG_NOTE, "zombies: %s in the openest free corner, %.0f of room in front", zombiesMachineName(perk), cands[i].open);
 			return true;
 		}
 	}
@@ -2054,7 +2094,7 @@ static void zombiesCornerMachine(s32 perk, struct defaultobj *obj)
 	}
 
 	// Double Tap where it is best seen: the corner with the most room in front
-	if (perk == ZOMBIEPERK_DOUBLETAP && zombiesOpenestCorner(perk, obj, halfw, halfd, radius, lift)) {
+	if ((perk == ZOMBIEPERK_DOUBLETAP || perk == ZOMBIE_PAP_ID) && zombiesOpenestCorner(perk, obj, halfw, halfd, radius, lift)) {
 		zombiesRaiseSolid(obj);
 		return;
 	}
@@ -2112,9 +2152,11 @@ static void zombiesCornerMachine(s32 perk, struct defaultobj *obj)
 		}
 	}
 
-	sysLogPrintf(LOG_NOTE, "zombies: no free corner for %s, left on its wall", g_ZombiePerks[perk].name);
+	sysLogPrintf(LOG_NOTE, "zombies: no free corner for %s, left on its wall", zombiesMachineName(perk));
 	zombiesRaiseSolid(obj);
 }
+
+static bool zombiesPlacePap(void);
 
 static void zombiesCornerMachines(void)
 {
@@ -2132,6 +2174,11 @@ static void zombiesCornerMachines(void)
 
 	if (g_ZombiePerkPlaced[ZOMBIEPERK_DOUBLETAP]) {
 		zombiesCornerMachine(ZOMBIEPERK_DOUBLETAP, &g_ZombiePerkObjs[ZOMBIEPERK_DOUBLETAP]);
+	}
+
+	// Pack-a-Punch last of all, where it is best seen, apart from the rest
+	if (zombiesPlacePap()) {
+		zombiesCornerMachine(ZOMBIE_PAP_ID, &g_ZombiePapObj);
 	}
 
 	zombiesRaiseSolid(g_ZombieBox);
@@ -2297,18 +2344,27 @@ f32 zombiesMoveScale(void)
 	return 1;
 }
 
-// chrDamage() asks, for a player's bullet on a zombie: Double Tap's two for one
+static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum);
+
+// chrDamage() asks, for a player's bullet on a zombie: Double Tap's two for
+// one, and twice again from a Pack-a-Punched gun (the right hand's)
 f32 zombiesBulletScale(struct prop *aprop)
 {
+	f32 scale = 1;
+
 	if (aprop && aprop->type == PROPTYPE_PLAYER) {
 		s32 playernum = playermgrGetPlayerNumByProp(aprop);
 
 		if (zombiesPlayerHasPerk(playernum, ZOMBIEPERK_DOUBLETAP)) {
-			return ZOMBIE_DOUBLETAP_DAMAGE;
+			scale *= ZOMBIE_DOUBLETAP_DAMAGE;
+		}
+
+		if (playernum >= 0 && zombiesGunIsPapped(playernum, g_Vars.players[playernum]->gunctrl.weaponnum)) {
+			scale *= 2.0f;
 		}
 	}
 
-	return 1;
+	return scale;
 }
 
 static Gfx *zombiesRadarDrops(Gfx *gdl);
@@ -2346,6 +2402,17 @@ Gfx *zombiesRadarExtra(Gfx *gdl)
 		dist.z = box->pos.z - g_Vars.currentplayer->prop->pos.z;
 
 		gdl = radarDrawDot(gdl, box, &dist, 0x60c0ff00, 0, 1);
+	}
+
+	// and Pack-a-Punch, in purple
+	if (g_ZombiePapPlaced && g_ZombiePapObj.prop) {
+		struct prop *pap = g_ZombiePapObj.prop;
+
+		dist.x = pap->pos.x - g_Vars.currentplayer->prop->pos.x;
+		dist.y = pap->pos.y - g_Vars.currentplayer->prop->pos.y;
+		dist.z = pap->pos.z - g_Vars.currentplayer->prop->pos.z;
+
+		gdl = radarDrawDot(gdl, pap, &dist, 0xb040ff00, 0, 1);
 	}
 
 	// and the wall buys, in green
@@ -2479,6 +2546,8 @@ static bool zombiesCrossed(s32 prev, s32 now, s32 at);
 static bool zombiesPlayerIsUp(s32 playernum);
 bool zombiesIsActive(void);
 
+static f32 zombiesPapLowerFrac(s32 playernum);
+
 // How far down the current player's gun is held for a drink, 0 to 1.
 // bondgun.c asks, to lower the arms and hold the trigger.
 f32 zombiesGunLowerFrac(void)
@@ -2489,6 +2558,11 @@ f32 zombiesGunLowerFrac(void)
 
 	if (playernum < 0 || playernum >= MAX_PLAYERS) {
 		return 0;
+	}
+
+	// Pack-a-Punch: the gun is in the machine
+	if (zombiesPapLowerFrac(playernum) > 0) {
+		return zombiesPapLowerFrac(playernum);
 	}
 
 	// GAME OVER: the gun goes down and stays down
@@ -2596,7 +2670,7 @@ void zombiesQuickMelee(void)
 	}
 
 	if (!zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
-			|| g_ZombieKnifeCooldown60[playernum] > 0) {
+			|| g_ZombieKnifeCooldown60[playernum] > 0 || zombiesPapLowerFrac(playernum) > 0) {
 		return;
 	}
 
@@ -3769,15 +3843,24 @@ static bool zombiesEveryoneIsDown(void)
 #define ZOMBIE_AMMO_CLIPS        8
 #define ZOMBIE_AMMO_START_CLIPS  4
 
+s32 zombiesPapClipMult(s32 weaponnum);
+#define ZOMBIE_PAP_CLIPS_FILL 10 // a Pack-a-Punched gun's spare clips (ZOMBIE_PAP_CLIPS)
+
 // Every ammunition the current player's weaponnum takes topped up to clips
-// clips spare, and one to load when loadclip
+// clips spare, and one to load when loadclip. A Pack-a-Punched gun's clips
+// are its bigger ones, and it is never given fewer than its upgrade's.
 static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip)
 {
 	struct weapon *weapon = weaponFindById(weaponnum);
+	s32 mult = zombiesPapClipMult(weaponnum);
 	s32 j;
 
 	if (weapon == NULL) {
 		return;
+	}
+
+	if (mult > 1 && clips < ZOMBIE_PAP_CLIPS_FILL) {
+		clips = ZOMBIE_PAP_CLIPS_FILL;
 	}
 
 	for (j = 0; j < ARRAYCOUNT(weapon->ammos); j++) {
@@ -3790,7 +3873,7 @@ static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip)
 			continue;
 		}
 
-		clip = ammo->clipsize > 0 ? ammo->clipsize : 1;
+		clip = (ammo->clipsize > 0 ? ammo->clipsize : 1) * mult;
 		want = clip * (clips + (loadclip ? 1 : 0));
 		cap = bgunGetCapacityByAmmotype(ammo->type);
 
@@ -4494,6 +4577,427 @@ static void zombiesReturnMuleGun(s32 playernum)
 	}
 
 	setCurrentPlayerNum(prevplayernum);
+}
+
+/**
+ * Pack-a-Punch, as Call of Duty's: a machine of its own (the perk machines'
+ * model, lit purple, in the openest corner left: zombiesPlacePap()), where B
+ * (E) held with a gun in hand and 5000 points puts the gun in for a few
+ * seconds - it goes down off the view as a perk's drink takes it - and gives
+ * it back upgraded:
+ *
+ * - a name of its own (zombiesPapName(); bondgun.c shows it),
+ * - twice the damage (zombiesBulletScale()),
+ * - a magazine twice as big (bondgun.c's clip sizes, zombiesPapClipMult()),
+ * - and full, with ZOMBIE_PAP_CLIPS of the bigger magazine spare; Max Ammo and
+ *   the wall buys fill it to that from then on (zombiesFillGun()).
+ *
+ * A gun is upgraded once. The upgrade is the player's gun's, and goes with
+ * it: a gun traded away or lost and had again is a plain one. The look - an
+ * animated camo - is for later.
+ */
+#define ZOMBIE_PAP_COST     5000
+#define ZOMBIE_PAP_DOWN60   18   // the gun goes down into the machine
+#define ZOMBIE_PAP_WORK60   180  // in it
+#define ZOMBIE_PAP_UP60     18   // and comes back up
+#define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 + ZOMBIE_PAP_UP60)
+#define ZOMBIE_PAP_DAMAGE   2.0f
+#define ZOMBIE_PAP_CLIPMULT 2
+#define ZOMBIE_PAP_CLIPS    10
+#define ZOMBIE_PAP_MAX      8
+#define ZOMBIE_PAP_RADAR    0xb040ff00
+
+static s32 g_ZombiePap60[MAX_PLAYERS];         // into the machine, -1 for not
+static s32 g_ZombiePapGun[MAX_PLAYERS];        // the gun in it
+static s32 g_ZombiePapped[MAX_PLAYERS][ZOMBIE_PAP_MAX];
+static s32 g_ZombiePapCount[MAX_PLAYERS];
+static bool g_ZombieNearPap[MAX_PLAYERS];
+static s32 g_ZombiePapHeld60[MAX_PLAYERS];
+static bool g_ZombiePapNeedsRelease[MAX_PLAYERS];
+
+struct zombiepapname {
+	s32 weaponnum;
+	const char *name;
+};
+
+// Call of Duty names its upgrades; these are Perfect Dark's guns'. Each ends
+// in a newline as the game's own names do: textMeasure() gives a line with
+// none no height, and the HUD put the name down over the ammo.
+static const struct zombiepapname g_ZombiePapNames[] = {
+	{ WEAPON_FALCON2,          "Fallen Falcon\n" },
+	{ WEAPON_FALCON2_SILENCER, "Silent Talon\n" },
+	{ WEAPON_FALCON2_SCOPE,    "Falcon's Eye\n" },
+	{ WEAPON_MAGSEC4,          "MagSec Overload\n" },
+	{ WEAPON_MAULER,           "The Mangler\n" },
+	{ WEAPON_PHOENIX,          "Ashen Phoenix\n" },
+	{ WEAPON_DY357MAGNUM,      "Judgement Day\n" },
+	{ WEAPON_DY357LX,          "Hand of Judgement\n" },
+	{ WEAPON_CMP150,           "Cerberus 150\n" },
+	{ WEAPON_CYCLONE,          "Maelstrom\n" },
+	{ WEAPON_CALLISTO,         "Callisto Eclipse\n" },
+	{ WEAPON_RCP120,           "RC-P1200\n" },
+	{ WEAPON_LAPTOPGUN,        "Overclocked Laptop\n" },
+	{ WEAPON_DRAGON,           "The Wyrm\n" },
+	{ WEAPON_K7AVENGER,        "Avenger Prime\n" },
+	{ WEAPON_AR34,             "AR-3400\n" },
+	{ WEAPON_SUPERDRAGON,      "The Hydra\n" },
+	{ WEAPON_SHOTGUN,          "Boomstick\n" },
+	{ WEAPON_REAPER,           "The Grim Reaper\n" },
+	{ WEAPON_SNIPERRIFLE,      "Long Silence\n" },
+	{ WEAPON_FARSIGHT,         "Omniscience\n" },
+	{ WEAPON_DEVASTATOR,       "Annihilator\n" },
+	{ WEAPON_ROCKETLAUNCHER,   "Rocket Rain\n" },
+	{ WEAPON_SLAYER,           "The Slaughterer\n" },
+	{ WEAPON_CROSSBOW,         "Silent Death\n" },
+	{ WEAPON_TRANQUILIZER,     "Lullaby\n" },
+	{ WEAPON_LASER,            "Sun Spear\n" },
+	{ WEAPON_PP9I,             "PP9-Infinity\n" },
+	{ WEAPON_CC13,             "CC-1300\n" },
+	{ WEAPON_KL01313,          "KL-Overdrive\n" },
+	{ WEAPON_KF7SPECIAL,       "KF7 Ultimate\n" },
+	{ WEAPON_ZZT,              "ZZT Zero\n" },
+	{ WEAPON_DMC,              "DMC Devil\n" },
+	{ WEAPON_AR53,             "AR-5300\n" },
+	{ WEAPON_RCP45,            "RC-P4500\n" },
+};
+
+static void zombiesResetPap(void)
+{
+	s32 i;
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		g_ZombiePap60[i] = -1;
+		g_ZombiePapGun[i] = WEAPON_NONE;
+		g_ZombiePapCount[i] = 0;
+		g_ZombieNearPap[i] = false;
+		g_ZombiePapHeld60[i] = 0;
+		g_ZombiePapNeedsRelease[i] = false;
+	}
+}
+
+static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum)
+{
+	s32 i;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || weaponnum <= WEAPON_UNARMED) {
+		return false;
+	}
+
+	for (i = 0; i < g_ZombiePapCount[playernum]; i++) {
+		if (g_ZombiePapped[playernum][i] == weaponnum) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// bondgun.c: the gun's name on the HUD, its upgrade's when it has one
+const char *zombiesPapName(s32 weaponnum, const char *name)
+{
+	s32 i;
+
+	if (!zombiesIsActive() || !zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return name;
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombiePapNames); i++) {
+		if (g_ZombiePapNames[i].weaponnum == weaponnum) {
+			return g_ZombiePapNames[i].name;
+		}
+	}
+
+	return "Pack-a-Punched\n";
+}
+
+// bondgun.c: how many times its own the current player's weaponnum's
+// magazine is
+s32 zombiesPapClipMult(s32 weaponnum)
+{
+	if (zombiesIsActive() && zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return ZOMBIE_PAP_CLIPMULT;
+	}
+
+	return 1;
+}
+
+// The machine up: against the wall of the pad furthest from every other
+// machine and the box, for zombiesCornerMachine() to put in the openest
+// corner left. Called once the others are placed.
+static bool zombiesPlacePap(void)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	f32 bestscore = -1;
+	s32 best = -1;
+	f32 bestwalldist = 0;
+	struct coord bestwall;
+	struct pad pad;
+	s32 i;
+
+	g_ZombiePapPlaced = false;
+	bzero(&g_ZombiePapObj, sizeof(g_ZombiePapObj));
+
+	for (i = 0; i < n; i++) {
+		RoomNum rooms[2];
+		f32 walldist;
+		struct coord wall;
+		f32 score = 1e20f;
+		s32 k;
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+
+		if (pad.room <= 0) {
+			continue;
+		}
+
+		rooms[0] = pad.room;
+		rooms[1] = -1;
+
+		if (!zombiesFindPerkWall(&pad.pos, rooms, ZOMBIE_PERK_PADCLEAR, ZOMBIE_PERK_WALLREACH, &walldist, &wall)) {
+			continue;
+		}
+
+		for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+			struct defaultobj *other = zombiesMachineObjAt(k);
+
+			if (other && other->prop) {
+				f32 dx = pad.pos.x - other->prop->pos.x;
+				f32 dz = pad.pos.z - other->prop->pos.z;
+
+				if (dx * dx + dz * dz < score) {
+					score = dx * dx + dz * dz;
+				}
+			}
+		}
+
+		if (score > bestscore) {
+			bestscore = score;
+			best = i;
+			bestwalldist = walldist;
+			bestwall = wall;
+		}
+	}
+
+	if (best < 0) {
+		sysLogPrintf(LOG_WARNING, "zombies: no wall near enough a pad for Pack-a-Punch on stage 0x%02x", g_Vars.stagenum);
+		return false;
+	}
+
+	padUnpack(g_SpawnPoints[best], PADFIELD_POS | PADFIELD_ROOM, &pad);
+
+	if (!zombiesPlaceMachineObj(&g_ZombiePapObj, &pad, bestwalldist, &bestwall)) {
+		return false;
+	}
+
+	g_ZombiePapPlaced = true;
+
+	return true;
+}
+
+// The machine lit purple, whatever light it stands in
+static void zombiesTintPap(void)
+{
+	struct defaultobj *obj = &g_ZombiePapObj;
+
+	if (g_ZombiePapPlaced && obj->prop && obj->model) {
+		obj->shadecol[0] = obj->nextcol[0] = 0xb0;
+		obj->shadecol[1] = obj->nextcol[1] = 0x70;
+		obj->shadecol[2] = obj->nextcol[2] = 0xff;
+		obj->shadecol[3] = obj->nextcol[3] = 0xff;
+	}
+}
+
+// The gun given back: upgraded, its magazine the bigger one and full, and
+// its spare clips with it
+static void zombiesPapUpgrade(s32 playernum, s32 weaponnum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	struct player *player;
+	s32 h;
+	s32 j;
+
+	if (zombiesGunIsPapped(playernum, weaponnum) || g_ZombiePapCount[playernum] >= ZOMBIE_PAP_MAX) {
+		return;
+	}
+
+	setCurrentPlayerNum(playernum);
+	player = g_Vars.currentplayer;
+
+	if (!invHasSingleWeaponIncAllGuns(weaponnum)) {
+		setCurrentPlayerNum(prevplayernum);
+		return;
+	}
+
+	g_ZombiePapped[playernum][g_ZombiePapCount[playernum]++] = weaponnum;
+
+	zombiesFillGun(weaponnum, ZOMBIE_PAP_CLIPS, false);
+
+	// the hand holding it now has the bigger magazine, full
+	for (h = 0; h < 2; h++) {
+		struct hand *hand = &player->hands[h];
+
+		if (!hand->inuse || hand->gset.weaponnum != weaponnum) {
+			continue;
+		}
+
+		for (j = 0; j < 2; j++) {
+			struct weapon *weapon = weaponFindById(weaponnum);
+
+			if (weapon && weapon->ammos[j] && hand->ammotypes[j] >= 0 && weapon->ammos[j]->clipsize > 0) {
+				hand->clipsizes[j] = weapon->ammos[j]->clipsize * ZOMBIE_PAP_CLIPMULT;
+				hand->loadedammo[j] = hand->clipsizes[j];
+			}
+		}
+	}
+
+	// the new name up, as for a gun just drawn
+	player->gunctrl.guntypetimer = 0;
+
+	setCurrentPlayerNum(prevplayernum);
+
+	sysLogPrintf(LOG_NOTE, "zombies: player %d Pack-a-Punched weapon %d", playernum + 1, weaponnum);
+}
+
+static void zombiesTickPap(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+	struct prop *machine = g_ZombiePapPlaced ? g_ZombiePapObj.prop : NULL;
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	s32 held;
+	s32 i;
+	s32 n;
+
+	// an upgrade goes with its gun: one no longer held comes off
+	setCurrentPlayerNum(playernum);
+
+	for (i = 0, n = 0; i < g_ZombiePapCount[playernum]; i++) {
+		if (invHasSingleWeaponIncAllGuns(g_ZombiePapped[playernum][i])) {
+			g_ZombiePapped[playernum][n++] = g_ZombiePapped[playernum][i];
+		}
+	}
+
+	g_ZombiePapCount[playernum] = n;
+	held = zombiesHeldGun(playernum);
+	setCurrentPlayerNum(prevplayernum);
+
+	// in the machine
+	if (g_ZombiePap60[playernum] >= 0) {
+		s32 prev = g_ZombiePap60[playernum];
+		s32 now = prev + g_Vars.lvupdate60;
+
+		if (!zombiesPlayerIsUp(playernum)) {
+			g_ZombiePap60[playernum] = -1;
+			return;
+		}
+
+		if (prev < ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 && now >= ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60) {
+			zombiesPapUpgrade(playernum, g_ZombiePapGun[playernum]);
+			zombiesPlaySound(SFX_PICKUP_SHIELD, 0.8f);
+		}
+
+		g_ZombiePap60[playernum] = now >= ZOMBIE_PAP_TOTAL60 ? -1 : now;
+		return;
+	}
+
+	g_ZombieNearPap[playernum] = false;
+
+	if (machine == NULL || g_ZombieMarking || !zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0
+			|| g_ZombieNearDowned[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE) {
+		g_ZombiePapHeld60[playernum] = 0;
+		return;
+	}
+
+	{
+		f32 dx = player->prop->pos.x - machine->pos.x;
+		f32 dy = player->prop->pos.y - machine->pos.y;
+		f32 dz = player->prop->pos.z - machine->pos.z;
+
+		if (dx * dx + dz * dz >= ZOMBIE_JUGG_RANGE * ZOMBIE_JUGG_RANGE || dy > 250 || dy < -250) {
+			g_ZombiePapHeld60[playernum] = 0;
+			g_ZombiePapNeedsRelease[playernum] = false;
+			return;
+		}
+	}
+
+	g_ZombieNearPap[playernum] = true;
+
+	if (!zombiesHoldingUse(playernum)) {
+		g_ZombiePapHeld60[playernum] = 0;
+		g_ZombiePapNeedsRelease[playernum] = false;
+		return;
+	}
+
+	if (g_ZombiePapNeedsRelease[playernum]) {
+		return;
+	}
+
+	g_ZombiePapHeld60[playernum] += g_Vars.lvupdate60;
+
+	if (g_ZombiePapHeld60[playernum] < ZOMBIE_JUGG_HOLD60) {
+		return;
+	}
+
+	g_ZombiePapNeedsRelease[playernum] = true;
+	g_ZombiePapHeld60[playernum] = 0;
+
+	if (!zombiesIsSlotGun(held) || zombiesGunIsPapped(playernum, held) || g_ZombiePoints[playernum] < ZOMBIE_PAP_COST) {
+		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		return;
+	}
+
+	g_ZombiePoints[playernum] -= ZOMBIE_PAP_COST;
+	zombiesAddPopup(playernum, -ZOMBIE_PAP_COST);
+	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+	zombiesPlaySound(SFX_MAULER_CHARGE, 0.6f);
+
+	g_ZombiePapGun[playernum] = held;
+	g_ZombiePap60[playernum] = 0;
+}
+
+// How far down the gun is held for Pack-a-Punch, 0 to 1 (zombiesGunLowerFrac())
+static f32 zombiesPapLowerFrac(s32 playernum)
+{
+	s32 t = g_ZombiePap60[playernum];
+	f32 f;
+
+	if (t < 0) {
+		return 0;
+	}
+
+	if (t < ZOMBIE_PAP_DOWN60) {
+		f = (f32)t / ZOMBIE_PAP_DOWN60;
+	} else if (t < ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60) {
+		f = 1;
+	} else {
+		f = (f32)(ZOMBIE_PAP_TOTAL60 - t) / ZOMBIE_PAP_UP60;
+	}
+
+	return f * f * (3 - 2 * f);
+}
+
+// The prompt at the machine: what it does with the gun in hand
+static bool zombiesPapPrompt(s32 playernum, char *text)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	s32 held;
+
+	if (!g_ZombieNearPap[playernum] || g_ZombiePap60[playernum] >= 0) {
+		return false;
+	}
+
+	setCurrentPlayerNum(playernum);
+	held = zombiesHeldGun(playernum);
+	setCurrentPlayerNum(prevplayernum);
+
+	if (!zombiesIsSlotGun(held)) {
+		strcpy(text, "Pack-a-Punch takes a gun");
+	} else if (zombiesGunIsPapped(playernum, held)) {
+		strcpy(text, "This gun is already Pack-a-Punched");
+	} else {
+		sprintf(text, "Hold %s to Pack-a-Punch [Cost: %d]", zombiesUseName(playernum), ZOMBIE_PAP_COST);
+	}
+
+	return true;
 }
 
 // The gun from the box into the player's hands, full
@@ -5485,7 +5989,7 @@ static void zombiesWallBuyShowGun(struct zombiewallbuy *buy)
 static void zombiesPlaceWallBuys(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
-	struct coord taken[ZOMBIE_WALLBUY_MAX + 1 + ZOMBIEPERK_COUNT];
+	struct coord taken[ZOMBIE_WALLBUY_MAX + 1 + ZOMBIE_MACHINE_IDS];
 	struct coord walldir[MAX_SPAWNPOINTS];
 	f32 walldist[MAX_SPAWNPOINTS];
 	bool usable[MAX_SPAWNPOINTS];
@@ -5602,8 +6106,8 @@ static bool zombiesGunIsFull(s32 weaponnum)
 			continue;
 		}
 
-		clip = ammo->clipsize > 0 ? ammo->clipsize : 1;
-		want = clip * ZOMBIE_AMMO_CLIPS;
+		clip = (ammo->clipsize > 0 ? ammo->clipsize : 1) * zombiesPapClipMult(weaponnum);
+		want = clip * (zombiesPapClipMult(weaponnum) > 1 ? ZOMBIE_PAP_CLIPS_FILL : ZOMBIE_AMMO_CLIPS);
 		cap = bgunGetCapacityByAmmotype(ammo->type);
 
 		if (want > cap) {
@@ -6330,6 +6834,7 @@ void zombiesTick(void)
 		zombiesResetDrops();
 		zombiesResetWallBuys();
 		zombiesResetPerks();
+		zombiesResetPap();
 
 		for (i = 0; i < MAX_BOTS; i++) {
 			g_ZombieHealth[i] = 0;
@@ -6442,10 +6947,12 @@ void zombiesTick(void)
 		zombiesTickRegen(i);
 		zombiesTickJuggernog(i);
 		zombiesTickPerkMachines(i);
+		zombiesTickPap(i);
 		zombiesTickKnife(i);
 	}
 
 	zombiesTintPerkMachines();
+	zombiesTintPap();
 
 	zombiesTickBox();
 	zombiesTickWallBuys();
@@ -6986,7 +7493,7 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
 				viGetViewTop() + viGetViewHeight() * 62 / 100, 0xffffffe0,
 				g_CharsHandelGothicSm, g_FontHandelGothicSm);
-	} else if (zombiesBoxPrompt(playernum, text) || zombiesWallBuyPrompt(playernum, text)) {
+	} else if (zombiesPapPrompt(playernum, text) || zombiesBoxPrompt(playernum, text) || zombiesWallBuyPrompt(playernum, text)) {
 		s32 textwidth;
 		s32 textheight;
 
