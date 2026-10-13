@@ -624,6 +624,22 @@ void mainLoop(void)
 				mpSetSimSlotOn(s, true);
 			}
 
+			// --mpscenario N plays the match as that scenario (6 is Zombies,
+			// which then adds its horde the way mpStartMatch() does)
+			if (mpsims > 0) {
+				const s32 scenario = sysArgGetInt("--mpscenario", -1);
+
+				if (scenario >= 0 && scenario <= MPSCENARIO_ZOMBIES) {
+					g_MpSetup.scenario = scenario;
+
+					if (scenario == MPSCENARIO_ZOMBIES) {
+						void zombiesAddSimulants(void);
+
+						zombiesAddSimulants();
+					}
+				}
+			}
+
 			if (mpsims > 0) {
 				mpsimsapplied = true;
 			}

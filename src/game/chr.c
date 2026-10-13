@@ -115,6 +115,8 @@ bool chrIsGeListBody(struct chrdata *chr)
 #include "getank.h"
 #endif
 #include "net/net.h"
+
+bool zombiesSpectatorHidesProp(struct prop *prop); // zombies.inc
 #endif
 #endif
 
@@ -4334,6 +4336,12 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 #ifndef PLATFORM_N64
 	// the driver of GoldenEye's tank is inside it (getank.c)
 	if (geTankHidesChr(chr)) {
+		return gdl;
+	}
+
+	// Zombies: a dead player watching a teammate through their eyes does not
+	// see the body they look out of (zombies.inc)
+	if (zombiesSpectatorHidesProp(prop)) {
 		return gdl;
 	}
 #endif

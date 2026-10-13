@@ -130,6 +130,17 @@
 #endif
 #endif
 
+#ifndef PLATFORM_N64
+// zombies.inc: downed players, and the dead held until the next round
+bool zombiesPlayerGoesDown(s32 playernum, bool force);
+s32 zombiesRespawnRule(s32 playernum);
+s32 zombiesDeadCameraTick(void);
+bool zombiesIsActive(void);
+s32 zombiesFirstPersonWatched(void);
+s32 zombiesStartAmmo(s32 weaponnum);
+void bgunRenderWatched(Gfx **gdlptr, s32 playernum); // bondgun.c
+#endif
+
 s32 g_DefaultWeapons[2];
 f32 g_MpSwirlRotateSpeed;
 f32 g_MpSwirlAngleDegrees;
@@ -1161,7 +1172,11 @@ static void playerSpawnWeapons(void)
 	// is ITEM_UNARMED) and the list hides the hands, but the body the camera
 	// circles holds the gun the hands hold - Start Armed's roll put one in his
 	// hand for the kiss (F3 20260928-002443)
-	const s32 spawnweapon = modloaderStageMission(g_Vars.stagenum) == GEMISSION_CUBA ? -1 : mpGetSpawnWeapon();
+	// and in Zombies everyone starts with the plain Falcon 2, as Call of
+	// Duty's do with their pistol, whatever Start Armed says (zombies.inc)
+	const s32 spawnweapon = modloaderStageMission(g_Vars.stagenum) == GEMISSION_CUBA ? -1
+		: zombiesIsActive() ? MPWEAPON_FALCON2
+		: mpGetSpawnWeapon();
 
 	// A Randomizer run: the guns held when the player stepped through the
 	// portal. The same override as Mission Respawn's below and for the same
@@ -1219,6 +1234,13 @@ static void playerSpawnWeapons(void)
 			// quantity: with a lobby this size you are not going to find
 			// a crate before someone finds you.
 			s32 startammo = bgunGetCapacityByAmmotype(ammotype);
+
+			// Zombies' pistol starts as Call of Duty's does: a clip in it
+			// and four spare (zombies.inc)
+			if (zombiesIsActive()) {
+				startammo = zombiesStartAmmo(mpweapon->weaponnum);
+			}
+
 			if (startammo <= 0) {
 				startammo = 1;
 			}
@@ -6202,6 +6224,9 @@ void playerTick(bool arg0)
 			player0f0c1840(&spf4, &camup, &camlook, &deathcamhint, deathcamrooms);
 		} else if (g_Vars.currentplayer->isdead && g_NetMode != NETMODE_NONE && netSpecDeadCameraTick()) {
 			// netplay: a dead co-op player watching the others (netspec.c)
+		} else if (g_Vars.currentplayer->isdead && zombiesDeadCameraTick()) {
+			// Zombies: a bled-out player watching the others until the next
+			// round (zombies.inc)
 		} else
 #endif
 		{
@@ -7109,6 +7134,15 @@ Gfx *playerRenderHud(Gfx *gdl)
 				&& !geWatchHidesGun()
 #endif
 				) {
+#ifndef PLATFORM_N64
+			// Zombies: a dead player looking through a teammate's eyes sees
+			// the teammate's gun, not their own empty hands (zombies.inc)
+			s32 watched = zombiesFirstPersonWatched();
+
+			if (watched >= 0) {
+				bgunRenderWatched(&gdl, watched);
+			} else
+#endif
 			bgunRender(&gdl);
 		}
 
@@ -7502,6 +7536,18 @@ Gfx *playerRenderHud(Gfx *gdl)
 						if (gexPlusLivesSpent(g_Vars.currentplayer->prop->chr)) {
 							canrestart = false;
 						}
+
+						// Zombies: the dead come back when the next round
+						// starts, by themselves (zombies.inc)
+						{
+							s32 rule = zombiesRespawnRule(g_Vars.currentplayernum);
+
+							if (rule == 0) {
+								canrestart = false;
+							} else if (rule > 0) {
+								canrestart = true;
+							}
+						}
 #endif
 
 						if (canrestart) {
@@ -7526,7 +7572,9 @@ Gfx *playerRenderHud(Gfx *gdl)
 			|| geDeathCamRunning(g_Vars.currentplayer);
 		// and a death on a GE Plus mission takes the gun out of Bond's hands
 		// as he falls, with its sight and its ammo (bondview2.c)
-		const bool nogun = cinema || geDeathCamIsGoldenEye();
+		// and in Zombies the dead have no sight while they watch the others
+		const bool nogun = cinema || geDeathCamIsGoldenEye()
+			|| (g_Vars.currentplayer->isdead && zombiesIsActive());
 #else
 		const bool cinema = false;
 		const bool nogun = false;
@@ -7623,6 +7671,12 @@ void playerDie(bool force)
 void playerDieByShooter(u32 shooter, bool force)
 {
 	if (g_NetReplaying) return; // netplay: a prediction replay moves the player and does nothing else (netpredict.c)
+#ifndef PLATFORM_N64
+	// Zombies with more than one player: down, not dead (zombies.inc)
+	if (zombiesPlayerGoesDown(g_Vars.currentplayernum, force)) {
+		return;
+	}
+#endif
 #if VERSION >= VERSION_NTSC_1_0
 	if (!g_Vars.currentplayer->isdead && (force || !g_Vars.currentplayer->invincible))
 #else

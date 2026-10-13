@@ -11,6 +11,26 @@ the long form.
 - **A simulant's stat sliders, and what the player count really changes** — chrs-and-memory.md, the section of that name: no code scales a simulant by the player count except a challenge's per-player-count *difficulty* table; `botGetStatScale()` and its five sites; `g_MpAllChrPtrs[i]` is not bot slot `i - 1`
 - **A head past the Combat Simulator's list** — chrs-and-memory.md, "A head past the Combat Simulator's list: Perfect Heads the port never has" (2026-09-22): an `mpheadnum` at or past `mpGetNumHeads2()` means a Perfect Head, whose store `pheadInit()` never allocates on the port, and the list shrinks under a saved number when the release's pool or a mod's borrowed heads come off its tail - `mpHeadNumSafe()` at every reader, `modGhostCiHead()` for the Institute's pick
 - **Chrs above 60 FPS** — chrs-and-memory.md, "Chrs above 60 FPS: what runs per frame and what per 60th" (2026-10-10): an alert chr's list and action tick ran every frame; the shapes that keep a count, a roll or a timer per 60th; `chraTick()`'s `runlist` gate (`diffframe240 >= 4 || lvupdate60 > 0`, a chr's first tick exempt); off-screen props' turns in `propsTickPlayer()` (`bgturn`) once per 60th; probing chraiExecute with gdb
+- **A simulant killed before its first spawn can never die** — the section of that name below (2026-10-11)
+
+
+## A simulant killed before its first spawn can never die
+
+A match's simulants are stood up for the first time by an AI list command,
+`aiMpInitSimulants()` -> `botSpawnAll()` -> `botSpawn(chr, false)`, on level
+frame 2, not at setup. `botSpawn()` clears `chr->damage` only when
+`respawning` is true. So a simulant killed on frame 1 (a scenario tick doing
+`chrDamageByMisc(chr, 1000, ...)`) is stood up on frame 2 with damage 1000
+against a maxdamage of 4, and `chrDamage()` skips everything once
+`damage >= maxdamage`: it walks about and nothing hurts it. Zombies hit this
+putting its horde down at the start; it now does that from
+`aiMpInitSimulants()`, after `botSpawnAll()` (`zombiesPutDownHorde()`).
+
+Found with `--mpsims 1 --mpscenario 6 --exit-frame N --log` (the scenario
+switch is pdmain.c's; 6 is Zombies, which adds its 24 the way a Start press
+does) and a `sysLogPrintf` of each bot's `actiontype`, `damage` and
+`maxdamage` per frame: action 4 on frame 1, back to 1 on frame 2 with the
+damage still 1000.
 
 
 ## A chr's prop and model are read before its tick, not during

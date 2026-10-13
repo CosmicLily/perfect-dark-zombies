@@ -56,6 +56,9 @@
 #include "sitchair.h"
 #endif
 
+bool zombiesIsActive(void);
+void zombiesQuickMelee(void);
+
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
 			|| ((c1buttons & (buttons2)) && (c1buttonsthisframe & (buttons1))))
@@ -1892,6 +1895,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						for (i = 0; i < numsamples; i++) {
 							u32 pressed = joyGetButtonsPressedOnSample(i, contpad1, c1allowedbuttons);
 
+
 							if (pressed & BUTTON_THIRDPERSON) {
 								g_Vars.currentplayer->thirdperson = !g_Vars.currentplayer->thirdperson;
 							}
@@ -1906,7 +1910,12 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								modSpectateToggle();
 							}
 
-							if (pressed & (BUTTON_THIRDPERSON | BUTTON_ROLL | BUTTON_SPECTATE)) {
+							// Zombies' knife, a press of its own button
+							if ((pressed & BUTTON_MELEE) && zombiesIsActive()) {
+								zombiesQuickMelee();
+							}
+
+							if (pressed & (BUTTON_THIRDPERSON | BUTTON_ROLL | BUTTON_SPECTATE | BUTTON_MELEE)) {
 								break;
 							}
 						}

@@ -59,6 +59,8 @@
 #include <string.h>
 #include "gebeanstage.h"
 
+bool zombiesKnifeStrike(bool landing);
+
 s16 *g_RoomPropListChunkIndexes;
 struct roomproplistchunk *g_RoomPropListChunks;
 struct prop *g_InteractProp;
@@ -1780,6 +1782,11 @@ void handTickAttack(s32 handnum)
 			break;
 		case HANDATTACKTYPE_MELEE:
 			chrUncloakTemporarily(g_Vars.currentplayer->prop->chr);
+
+#ifndef PLATFORM_N64
+			// Zombies' knife button deals its own blow, at its own reach
+			if (!zombiesKnifeStrike(true))
+#endif
 			handInflictMeleeDamage(handnum, &gset, false);
 
 			// The blow landing, and the one report a swing always makes: the
@@ -1792,6 +1799,9 @@ void handTickAttack(s32 handnum)
 #endif
 			break;
 		case HANDATTACKTYPE_MELEENOUNCLOAK:
+#ifndef PLATFORM_N64
+			if (!zombiesKnifeStrike(false))
+#endif
 			handInflictMeleeDamage(handnum, &gset, true);
 			break;
 		case HANDATTACKTYPE_DETONATE:

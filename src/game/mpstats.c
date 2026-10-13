@@ -20,6 +20,8 @@
 #include "types.h"
 #include "net/net.h"
 
+bool zombiesIsActive(void);
+
 u32 var80070590 = 0x00000000;
 
 void mpstatsIncrementPlayerShotCount(struct gset *gset, s32 region)
@@ -96,9 +98,11 @@ void mpstatsRecordPlayerKill(void)
 		time = playerGetMissionTime();
 
 		// Show HUD message
-		// "Kill count: %d"
-		sprintf(text, "%s: %d\n", langGet(L_GUN_001), g_Vars.currentplayerstats->killcount);
-		hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+		// "Kill count: %d" (not in Zombies, whose points say it)
+		if (!zombiesIsActive()) {
+			sprintf(text, "%s: %d\n", langGet(L_GUN_001), g_Vars.currentplayerstats->killcount);
+			hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+		}
 
 		// Update slowest/fastest two kills
 		if (g_Vars.currentplayerstats->killcount > 1) {
@@ -185,9 +189,11 @@ void mpstatsRecordPlayerSuicide(void)
 		mpchr = MPCHR(mpindex);
 
 		// Show HUD message
-		// "Suicide count: %d"
-		sprintf(text, "%s: %d\n", langGet(L_GUN_005), mpchr->killcounts[mpindex]);
-		hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+		// "Suicide count: %d" (not in Zombies, where bleeding out counts as one)
+		if (!zombiesIsActive()) {
+			sprintf(text, "%s: %d\n", langGet(L_GUN_005), mpchr->killcounts[mpindex]);
+			hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+		}
 
 		// Update slowest/fastest two kills
 		if (g_Vars.currentplayerstats->killcount > 1) {
@@ -335,7 +341,7 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 			prevplayernum = g_Vars.currentplayernum;
 			setCurrentPlayerNum(aplayernum);
 
-			if (g_Vars.normmplayerisrunning && vplayernum >= 0) {
+			if (g_Vars.normmplayerisrunning && vplayernum >= 0 && !zombiesIsActive()) {
 				// "Killed %s"
 				sprintf(text, "%s %s", langGet(L_MISC_184), g_MpAllChrConfigPtrs[vplayernum]->name);
 				hudmsgCreate(text, HUDMSGTYPE_DEFAULT);

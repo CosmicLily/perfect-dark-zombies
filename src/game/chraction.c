@@ -90,6 +90,10 @@
 
 bool zombiesCanRespawn(struct chrdata *chr);
 bool zombiesIsActive(void);
+f32 zombiesMeleeDamage(void);
+bool zombiesInstaKillOn(void);
+f32 zombiesBulletScale(struct prop *aprop);
+void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim);
 
 s32 g_RecentQuipsPlayed[5];
 u32 var8009cd84;
@@ -5146,6 +5150,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			setCurrentPlayerNum(playermgrGetPlayerNumByProp(vprop));
 			damage *= g_Vars.currentplayerstats->damagescale;
 			setCurrentPlayerNum(prevplayernum);
+
+			// Zombies' Juggernog: more health, as the solo modes' scale is
+			if (zombiesIsActive()) {
+				healthscale = g_Vars.players[playermgrGetPlayerNumByProp(vprop)]->healthscale;
+			}
 		}
 
 #ifndef PLATFORM_N64
@@ -5763,6 +5772,22 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				return;
 			}
 
+			// Zombies: a player's melee hit on a zombie is Call of Duty's knife,
+			// the same whatever the angle - one kills in round 1, two in round 2
+			if (zombiesIsActive() && chr->aibot && aprop && aprop->type == PROPTYPE_PLAYER) {
+				if (ismelee) {
+					damage = zombiesMeleeDamage();
+				} else if (!explosion) {
+					// Double Tap: each bullet counts twice
+					damage *= zombiesBulletScale(aprop);
+				}
+
+				// Insta-Kill: any hit, whatever its damage, kills
+				if (zombiesInstaKillOn()) {
+					damage = chr->maxdamage * 2 + 1;
+				}
+			}
+
 			// Handle applying damage to NPCs
 			// Don't enter this branch if there is no damage to give,
 			// or we are making a chr dizzy in solo mode (unless force is set)
@@ -5834,6 +5859,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						chrPlayArghAnimation(chr, angle, hitpart);
 					}
 #endif
+
+					// Zombies: points for every hit, more for the kill
+					if (zombiesIsActive()) {
+						zombiesAwardHit(aprop, hitpart, ismelee, explosion, chr->damage >= chr->maxdamage, chr);
+					}
 				} else if (explosion) {
 					// Chrs die instantly from explosion damage provided they
 					// don't have any armour (the chr has armour if their

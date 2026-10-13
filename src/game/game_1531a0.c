@@ -480,6 +480,15 @@ void textReset(void)
 			textLoadFont(REF_SEG _fonthandelgothiclgSegmentRomStart, REF_SEG _fonthandelgothiclgSegmentRomEnd, &g_FontHandelGothicLg, &g_CharsHandelGothicLg, false);
 		}
 #endif
+
+#ifndef PLATFORM_N64
+		// Zombies draws its round counter in the large font, which a level
+		// never loads otherwise (textMeasure() on the NULL font crashed)
+		if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES
+				&& g_FontHandelGothicLg == NULL) {
+			textLoadFont(REF_SEG _fonthandelgothiclgSegmentRomStart, REF_SEG _fonthandelgothiclgSegmentRomEnd, &g_FontHandelGothicLg, &g_CharsHandelGothicLg, false);
+		}
+#endif
 	}
 }
 

@@ -6,12 +6,21 @@
 #include "data.h"
 #include "types.h"
 
+bool zombiesIsActive(void);
+void zombiesPutDownHorde(void);
+
 /**
  * @cmd 0185
  */
 bool aiMpInitSimulants(void)
 {
 	botSpawnAll();
+
+	// Zombies: the horde starts down and comes in a few at a time
+	if (zombiesIsActive()) {
+		zombiesPutDownHorde();
+	}
+
 	g_Vars.aioffset += 2;
 	return false;
 }

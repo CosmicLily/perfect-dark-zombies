@@ -22,8 +22,10 @@
 #include "pngread.h"
 #include "menuimage.h"
 
-// A handful: every one is a picture compiled into the game.
-#define MENUIMAGE_MAX 8
+// A handful: the community packs' covers, the XBLA logo and Zombies' perk
+// icons (zombieperks.c). One past this is dropped without a word, and the
+// constructors that register them run in no fixed order.
+#define MENUIMAGE_MAX 16
 
 static struct menuimage *images[MENUIMAGE_MAX];
 static s32 numImages;

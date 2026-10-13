@@ -297,6 +297,15 @@ Gfx *radarRender(Gfx *gdl)
 	}
 
 #ifndef PLATFORM_N64
+	// Zombies' GAME OVER has the screen to itself
+	{
+		extern bool zombiesHidesHud(void);
+
+		if (zombiesHidesHud()) {
+			return gdl;
+		}
+	}
+
 	// GoldenEye's own disc and blips on GE Plus's levels. Whether the radar is
 	// up and who is on it stay as they are below; its place and its picture
 	// are gehud.c's, on GoldenEye's frame and with no aspect mode

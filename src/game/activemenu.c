@@ -738,6 +738,20 @@ void amChangeScreen(s32 step)
 	g_AmMenus[g_AmIndex].slotwidth = amCalculateSlotWidth();
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Zombies has no fists to pick: the knife has a button of its own, and the
+ * cycle skips them too (bgunCycleForward()). They stay in the inventory, for
+ * what falls back on them, but not on the menu.
+ */
+static bool amHidesWeapon(s32 weaponnum)
+{
+	extern bool zombiesIsActive(void);
+
+	return weaponnum == WEAPON_UNARMED && zombiesIsActive();
+}
+#endif
+
 void amAssignWeaponSlots(void)
 {
 	s32 numitems = invGetCount();
@@ -757,10 +771,14 @@ void amAssignWeaponSlots(void)
 	for (i = 0; i < numitems; i++) {
 		weaponnum = invGetWeaponNumByIndex(i);
 
-		if ((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41 || weaponHost(weaponnum) != weaponnum)
+		if (((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41 || weaponHost(weaponnum) != weaponnum)
 				|| weaponHost(weaponnum) == WEAPON_SUICIDEPILL
 				|| weaponHost(weaponnum) == WEAPON_BACKUPDISK
-				|| weaponHost(weaponnum) == WEAPON_SUITCASE) {
+				|| weaponHost(weaponnum) == WEAPON_SUITCASE)
+#ifndef PLATFORM_N64
+				&& !amHidesWeapon(weaponnum)
+#endif
+				) {
 			for (j = 0; j < ARRAYCOUNT(g_AmMenus[g_AmIndex].favourites); j++) {
 				if (g_AmMenus[g_AmIndex].favourites[j] == weaponnum) {
 					if (g_AmMenus[g_AmIndex].invindexes[j] == 0xff) {
@@ -788,9 +806,13 @@ void amAssignWeaponSlots(void)
 		if (!isfavourited) {
 			weaponnum = invGetWeaponNumByIndex(i);
 
-			if ((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41 || weaponHost(weaponnum) != weaponnum)
+			if (((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41 || weaponHost(weaponnum) != weaponnum)
 					|| weaponHost(weaponnum) == WEAPON_SUICIDEPILL
-					|| weaponHost(weaponnum) == WEAPON_SUITCASE) {
+					|| weaponHost(weaponnum) == WEAPON_SUITCASE)
+#ifndef PLATFORM_N64
+					&& !amHidesWeapon(weaponnum)
+#endif
+					) {
 				s32 useindex = -1;
 				s32 j;
 

@@ -20,6 +20,8 @@
 #include <string.h>
 #include "gexplus.h"
 
+bool zombiesCanRespawn(struct chrdata *chr);
+
 /**
  * Bodies that are left lying where they fell.
  *
@@ -417,6 +419,11 @@ void modBodiesTick(void)
 			// You Only Live Twice (GoldenEye): chrTickDead() holds a simulant
 			// twice dead here for good, and this was getting it up anyway
 			if (gexPlusLivesSpent(chr)) {
+				continue;
+			}
+
+			// Zombies: the wave logic decides when a dead zombie comes back
+			if (!zombiesCanRespawn(chr)) {
 				continue;
 			}
 

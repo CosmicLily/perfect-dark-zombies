@@ -930,6 +930,13 @@ bool modIsSkipDeathScreenOn(void)
 bool modIsQuickWeaponSwapOn(void)
 {
 #ifndef PLATFORM_N64
+	extern bool zombiesKnifeQuickSwap(void);
+
+	// Zombies' knife button: out and back in again at once, as Call of Duty's
+	if (zombiesKnifeQuickSwap()) {
+		return true;
+	}
+
 	if (modGhostTrialRulesApply()) {
 		return false;
 	}

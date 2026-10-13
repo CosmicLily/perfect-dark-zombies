@@ -5288,6 +5288,7 @@ enum weaponnum {
 #define BUTTON_THIRDPERSON    CONT_1000
 #define BUTTON_ROLL           CONT_0800
 #define BUTTON_SPECTATE       CONT_0400
+#define BUTTON_MELEE          CONT_0100 // Zombies' knife
 #define BUTTON_FIRELEFT       CONT_0040 // Akimbo Triggers: the left hand's own trigger
 #define BUTTON_FIREMODELEFT   CONT_0080 // Akimbo Triggers: the left hand's own fire mode toggle
 

@@ -15,9 +15,9 @@ section it names. The notes are large (`ge-bean.md` is 850KB): grep the digest
 or a section heading, don't read one whole.
 
 - [windows-build.md](CLAUDE-notes/windows-build.md) — The Windows build, wine, the pd.ini format
-- [chrs-and-memory.md](CLAUDE-notes/chrs-and-memory.md) — chrs, bodies, heads, simulants, memory pools, mpconfig; Simulants running on the spot at the head of a ladder; A head on a body it was not made for; A simulant's stat sliders, and what the player count really changes; A head past the Combat Simulator's list; Chrs above 60 FPS (AI lists and off-screen props' turns once per 60th)
+- [chrs-and-memory.md](CLAUDE-notes/chrs-and-memory.md) — chrs, bodies, heads, simulants, memory pools, mpconfig; Simulants running on the spot at the head of a ladder; A head on a body it was not made for; A simulant's stat sliders, and what the player count really changes; A head past the Combat Simulator's list; Chrs above 60 FPS (AI lists and off-screen props' turns once per 60th); A simulant killed before its first spawn can never die
 - [save-format.md](CLAUDE-notes/save-format.md) — Saves, eeprom, where pd.ini lives, the migration
-- [text-rendering.md](CLAUDE-notes/text-rendering.md) — Menu text, `textMeasure()`, reaching the widescreen pillars
+- [text-rendering.md](CLAUDE-notes/text-rendering.md) — Menu text, `textMeasure()`, reaching the widescreen pillars; which fonts a level has loaded; 3-D in a HUD corner (a scissor under the HUD's alignment lands elsewhere); a HUD rectangle at a negative x wraps to the far right
 - [stage-numbers.md](CLAUDE-notes/stage-numbers.md) — Adding stages
 - [mods.md](CLAUDE-notes/mods.md) — A mod entered from the Perfect Menu without a restart (modmode.c, the swap at the stage boundary in port/src/pdmain.c); The Stage Loader: every mod's maps as arenas beside the mod loaded; Mod directories, Load Mods, modconfig, `modcodediff`, the ROM symbol file, the data segment and importing a mod's weapon definitions; A rule or colour a mod's code changes that is not a weapon's
 - [vulkan.md](CLAUDE-notes/vulkan.md) — The Vulkan renderer

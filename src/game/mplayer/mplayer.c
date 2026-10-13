@@ -49,6 +49,8 @@
 #include "langpack.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+
+bool zombiesIsActive(void); // zombies.inc
 #endif
 
 // bss
@@ -443,6 +445,13 @@ void mpStartMatch(void)
 
 	mpConfigureQuickTeamSimulants();
 #ifndef PLATFORM_N64
+	// Zombies brings its own horde, whatever simulants were set up
+	if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		void zombiesAddSimulants(void);
+
+		zombiesAddSimulants();
+	}
+
 	gexPlusThemeSimulants();
 #endif
 
@@ -1027,7 +1036,10 @@ s32 g_MpEndlessMatch = 0;
 
 void mpApplyLimits(void)
 {
-	if (g_MpEndlessMatch) {
+	// Zombies too: it ends only when the player dies, and its score starts
+	// at 500 points, which passes any menu score limit on the first frame,
+	// before zombiesTick() could clear it
+	if (g_MpEndlessMatch || g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
 		lvSetMpTimeLimit60(0);
 		lvSetMpScoreLimit(0);
 		lvSetMpTeamScoreLimit(0);
@@ -1933,6 +1945,9 @@ Gfx *mpRenderModalText(Gfx *gdl)
 			// not over GoldenEye's death replay, which a press cuts short
 			// (gedeathcam.c)
 			&& !geDeathCamHolds()
+			// Zombies: the dead come back on their own at the next round,
+			// watching the others until then (zombies.inc)
+			&& !zombiesIsActive()
 #endif
 			&& !(g_Vars.coopplayernum >= 0 && (coopAllDead() || !g_Vars.currentplayer->coopcanrestart || g_InCutscene))
 			&& !(g_Vars.antiplayernum >= 0 && ((g_Vars.currentplayer != g_Vars.anti || g_InCutscene)))

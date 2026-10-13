@@ -59,6 +59,10 @@
 #include "game/portal.h"
 #include "gestan.h"
 #include "system.h"
+
+#ifndef PLATFORM_N64
+bool zombiesIsActive(void); // zombies.inc
+#endif
 #include "lib/lib_17ce0.h"
 #include "geguns.h"
 #include "geslappers.h"
@@ -843,6 +847,16 @@ void setupPlaceWeapon(struct weaponobj *weapon, s32 cmdindex)
 				locationindex = weapon->weaponnum - WEAPON_MPLOCATION00;
 				mpweapon = mpGetMpWeaponByLocation(locationindex);
 				g_SetupCurMpLocation = locationindex;
+
+#ifndef PLATFORM_N64
+				// Zombies: no guns lying about - the pistol you start with
+				// and the Mystery Box are the guns (zombies.inc). The
+				// location is still set, for the ammo crates that follow it.
+				if (zombiesIsActive()) {
+					createweapon = false;
+					break;
+				}
+#endif
 				weapon->weaponnum = mpweapon->weaponnum;
 				weapon->base.modelnum = mpweapon->model;
 #ifndef PLATFORM_N64
@@ -2530,6 +2544,14 @@ void setupCreateProps(s32 stagenum)
 								crate->slots[mpweapon->secammotype - 1].quantity = mpweapon->secammoqty;
 							}
 						}
+
+#ifndef PLATFORM_N64
+						// Zombies: no ammo lying about either - Max Ammo is
+						// the ammo (zombies.inc)
+						if (zombiesIsActive()) {
+							ammoqty = 0;
+						}
+#endif
 
 						if (ammoqty > 0 && withobjs && (obj->flags2 & diffflag) == 0) {
 							for (i = 0; i < ARRAYCOUNT(crate->slots); i++) {

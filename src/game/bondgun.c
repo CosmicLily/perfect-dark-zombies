@@ -83,6 +83,21 @@
 #include "modloader.h"
 #endif
 
+bool zombiesIsActive(void);
+s32 zombiesHudNameBottom(s32 bottom);
+f32 zombiesGunLowerFrac(void);
+bool zombiesKnifeWantsTrigger(void);
+bool zombiesKnifeInHand(void);
+bool zombiesKnifeQuickSwap(void);
+bool zombiesHidesHud(void);
+f32 zombiesKnifeAnimSpeed(void);
+void zombiesKnifeViewShift(struct coord *shift);
+f32 zombiesHandRate(s32 handstate);
+bool zombiesIsWatchedFirstPerson(s32 playernum);
+#ifndef PLATFORM_N64
+#include <string.h>
+#endif
+
 #define GUNLOADSTATE_FLUX     0
 #define GUNLOADSTATE_MODEL    1
 #define GUNLOADSTATE_TEXTURES 2
@@ -644,7 +659,9 @@ void bgun0f098030(struct hand *hand, struct modeldef *modeldef)
 	for (i = 0; i < 2; i++) {
 		if (weapon->ammos[i] && (weapon->ammos[i]->flags & AMMOFLAG_QTYAFFECTSPARTVIS)) {
 			for (j = 0; j < hand->clipsizes[i]; j++) {
-				if (j >= hand->loadedammo[i]) {
+				// Zombies' knife button: the blade is the Combat Knife's one
+				// round, and none are held - it was drawn as an empty fist
+				if (j >= hand->loadedammo[i] && !(j == 0 && zombiesKnifeInHand())) {
 					bgunSetPartVisible(j + 100, false, hand, modeldef);
 				} else {
 					bgunSetPartVisible(j + 100, true, hand, modeldef);
@@ -787,6 +804,13 @@ void bgun0f0981e8(struct hand *hand, struct modeldef *modeldef)
 			if (hand->unk0d0e_07 && g_Vars.currentplayer->hands[HAND_LEFT].inuse) {
 				animspeedmult = RANDOMFRAC() * 0.77f + 0.7f;
 			}
+
+#ifndef PLATFORM_N64
+			// Zombies' knife button: the Combat Knife's slash at Call of Duty's pace
+			if (zombiesKnifeInHand()) {
+				animspeedmult *= zombiesKnifeAnimSpeed();
+			}
+#endif
 
 			if (hand->unk0ce8 && animspeed < 0.0f) {
 				modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
@@ -1297,6 +1321,14 @@ s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo *info, struct hand *hand)
 	if (!func) {
 		return -1;
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies' knife button: a slash needs no knife to throw. Asked of the
+	// Combat Knife's own count it found none and switched straight away.
+	if (zombiesKnifeInHand()) {
+		return 3;
+	}
+#endif
 
 	if (func->ammoindex != -1) {
 		s32 ammoindex = func->ammoindex;
@@ -3007,6 +3039,16 @@ bool bgunTickIncAttackingMelee(s32 handnum, struct hand *hand)
 			hand->attacktype = HANDATTACKTYPE_MELEENOUNCLOAK;
 
 			if (func->fire_animation) {
+#ifndef PLATFORM_N64
+				// Zombies' knife button: always the slash that sweeps the blade
+				// across the view. The other of the two at random (the draw,
+				// played as a slash) points it away, and shows only the hand.
+				extern struct guncmd invanim_combatknife_slash2[];
+
+				if (zombiesKnifeInHand()) {
+					bgunStartAnimation(invanim_combatknife_slash2, handnum, hand);
+				} else
+#endif
 				bgunStartAnimation(func->fire_animation, handnum, hand);
 				hand->unk0cc8_01 = true;
 			}
@@ -3853,6 +3895,9 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					&& !g_PlayerInvincible
 #ifndef PLATFORM_N64
 					&& !gegunsEquipSilent(info->weaponnum)
+					// Zombies' knife button: neither the knife nor the gun
+					// after it is drawn audibly - in and out of a swing only
+					&& !zombiesKnifeQuickSwap()
 #endif
 					&& !g_Vars.currentplayer->isdead) {
 #if VERSION >= VERSION_NTSC_1_0
@@ -4172,6 +4217,24 @@ void bgunTickHand(s32 handnum)
 	hand->animframeincfreal = bgunAnimFrameIncReal(hand);
 #else
 	hand->animframeincfreal += PALUPF(g_Vars.lvupdate60);
+#endif
+
+#ifndef PLATFORM_N64
+	// Zombies' Speed Cola and Double Tap: the hand's own clock runs faster
+	// while it reloads, or fires - its states' time and its animation's
+	if (zombiesIsActive()) {
+		const f32 rate = zombiesHandRate(hand->state);
+
+		if (rate != 1.0f) {
+			lvupdate = (s32)(lvupdate * rate + 0.5f);
+			hand->animframeinc = (s32)(hand->animframeinc * rate + 0.5f);
+#if VERSION < VERSION_PAL_BETA
+			hand->animframeincfreal += PALUPF(g_Vars.lvupdate60) * (rate - 1.0f);
+#else
+			hand->animframeincfreal = bgunAnimFrameIncReal(hand);
+#endif
+		}
+	}
 #endif
 
 	while (i >= 0) {
@@ -7476,6 +7539,14 @@ void bgunCycleForward(void)
 			weaponnum2 = bgunCycleLeftWeapon(weaponnum1, weaponnum2);
 #endif
 			invChooseCycleForwardWeapon(&weaponnum1, &weaponnum2, false);
+
+#ifndef PLATFORM_N64
+			// Zombies: no fists in the cycle, as Call of Duty has none - the
+			// knife has a button of its own. Held alone, they are kept.
+			if (zombiesIsActive() && weaponnum1 == WEAPON_UNARMED) {
+				invChooseCycleForwardWeapon(&weaponnum1, &weaponnum2, false);
+			}
+#endif
 		}
 
 #ifndef PLATFORM_N64
@@ -7524,6 +7595,13 @@ void bgunCycleBack(void)
 			weaponnum2 = bgunCycleLeftWeapon(weaponnum1, weaponnum2);
 #endif
 			invChooseCycleBackWeapon(&weaponnum1, &weaponnum2, false);
+
+#ifndef PLATFORM_N64
+			// Zombies: no fists in the cycle (bgunCycleForward())
+			if (zombiesIsActive() && weaponnum1 == WEAPON_UNARMED) {
+				invChooseCycleBackWeapon(&weaponnum1, &weaponnum2, false);
+			}
+#endif
 		}
 
 #ifndef PLATFORM_N64
@@ -9697,6 +9775,17 @@ void bgun0f0a5550(s32 handnum)
 	// adjust viewmodel position for different FOVs
 	sp274.y -= bgunGetFovOffsetY();
 	sp274.z += bgunGetFovOffsetZ();
+
+	// Zombies' knife button: the blade nearer the middle of the view and the
+	// eye, where its reach can be judged, not low in the corner
+	if (handnum == HAND_RIGHT && zombiesKnifeInHand()) {
+		struct coord shift;
+
+		zombiesKnifeViewShift(&shift);
+		sp274.x += shift.x;
+		sp274.y += shift.y;
+		sp274.z += shift.z;
+	}
 #endif
 
 	if (hand->firing && shootfunc && g_Vars.lvupdate240 != 0 && shootfunc->recoilsettings != NULL) {
@@ -13271,6 +13360,10 @@ glabel var7f1aca90
 );
 #endif
 #else
+#ifndef PLATFORM_N64
+static void bgunStashSpectatorPose(s32 handnum, struct hand *hand);
+#endif
+
 // Mismatch: Goal uses different codegen for accessing vertices
 void bgunRender(Gfx **gdlptr)
 {
@@ -13645,6 +13738,12 @@ void bgunRender(Gfx **gdlptr)
 #endif
 			}
 
+#ifndef PLATFORM_N64
+			// the pose as it was drawn, for a Zombies spectator looking
+			// through this player's eyes (bgunRenderWatched())
+			bgunStashSpectatorPose(i, hand);
+#endif
+
 			mtxF2LBulk(hand->gunmodel.matrices, hand->gunmodel.definition->nummatrices);
 			mtx00016784();
 
@@ -13654,6 +13753,190 @@ void bgunRender(Gfx **gdlptr)
 
 	casingsRender(&gdl);
 	zbufSwap();
+
+	gdl = zbufConfigureRdp(gdl);
+	gdl = vi0000b1d0(gdl);
+
+	gDPSetScissor(gdl++, G_SC_NON_INTERLACE, viGetViewLeft(), viGetViewTop(),
+			viGetViewLeft() + viGetViewWidth(), viGetViewTop() + viGetViewHeight());
+
+	*gdlptr = gdl;
+}
+#endif
+
+#ifndef PLATFORM_N64
+/**
+ * A Zombies spectator looking through a teammate's eyes sees the teammate's
+ * gun (zombies.inc). The gun is posed in its owner's own pass, in its own
+ * camera's space, and turned to fixed point in place at the end of
+ * bgunRender(); the release's meshes pose from the float matrices when they
+ * are drawn, and the spectator's pass may come before the owner's, so the
+ * float pose is kept here as it was drawn - in this frame's memory, which
+ * lasts to the end of the next frame (gfxmemory.c's two buffers) - and the
+ * spectator draws a copy of it. Nothing of bgunRender()'s own is run again:
+ * it writes the current player's viewport, which the owner's lists point at,
+ * hands a fired rocket over, slides the laser's liquid and drops casings.
+ */
+struct bgunspecpose {
+	Mtxf *mtx;
+	s32 nummatrices;
+	u32 swap;    // g_GfxNumSwaps when it was kept
+};
+
+static struct bgunspecpose g_BgunSpecPose[MAX_PLAYERS][2];
+
+static void bgunStashSpectatorPose(s32 handnum, struct hand *hand)
+{
+	s32 playernum = g_Vars.currentplayernum;
+	s32 n = hand->gunmodel.definition->nummatrices;
+	struct bgunspecpose *pose;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || handnum < 0 || handnum > 1
+			|| !zombiesIsWatchedFirstPerson(playernum)
+			|| !gfxHasVtxSpace(n * sizeof(Mtxf))) {
+		return;
+	}
+
+	pose = &g_BgunSpecPose[playernum][handnum];
+	pose->mtx = gfxAllocate(n * sizeof(Mtxf));
+	memcpy(pose->mtx, hand->gunmodel.matrices, n * sizeof(Mtxf));
+	pose->nummatrices = n;
+	pose->swap = g_GfxNumSwaps;
+}
+
+/**
+ * The gun and hands of playernum, drawn into the current player's view the
+ * way bgunRender() draws the current player's own: over a cleared depth, at
+ * the view model's near and far planes, lit by the owner's gun light.
+ */
+void bgunRenderWatched(Gfx **gdlptr, s32 playernum)
+{
+	Gfx *gdl = *gdlptr;
+	struct player *player;
+	s32 i;
+
+	if (playernum < 0 || playernum >= PLAYERCOUNT() || playernum == g_Vars.currentplayernum) {
+		return;
+	}
+
+	player = g_Vars.players[playernum];
+
+	if (player->visionmode == VISIONMODE_XRAY) {
+		return;
+	}
+
+	gdl = viPrepareZbuf(gdl);
+	gdl = vi0000b1d0(gdl);
+
+	gDPSetScissor(gdl++, G_SC_NON_INTERLACE, viGetViewLeft(), viGetViewTop(),
+			viGetViewLeft() + viGetViewWidth(), viGetViewTop() + viGetViewHeight());
+
+	gdl = vi0000aca4(gdl, 1.5, 1000);
+
+	for (i = 0; i < 2; i++) {
+		struct hand *hand = &player->hands[i];
+		struct bgunspecpose *pose = &g_BgunSpecPose[playernum][i];
+		struct modelrenderdata renderdata = {NULL, true, 3};
+		s32 weaponnum = hand->gset.weaponnum;
+		Mtxf *matrices;
+		Mtxf *saved;
+		u32 colour;
+		s32 n;
+		bool flip;
+		bool hidden;
+
+		if (!hand->visible || !pose->mtx || hand->gunmodel.definition == NULL) {
+			continue;
+		}
+
+		n = hand->gunmodel.definition->nummatrices;
+
+		// this frame's or the last one's, and of the gun now in the hand
+		if (pose->nummatrices != n || (g_GfxNumSwaps - pose->swap) > 1
+				|| !gfxHasVtxSpace(n * sizeof(Mtxf))) {
+			continue;
+		}
+
+		matrices = gfxAllocate(n * sizeof(Mtxf));
+		memcpy(matrices, pose->mtx, n * sizeof(Mtxf));
+
+		if (gegunsOwnModelInUse(weaponnum) && weaponnum != WEAPON_UNARMED) {
+			gdl = gegunsLightsAndLookAt(gdl, weaponnum);
+		} else if (weaponHasFlag(weaponnum, WEAPONFLAG_00008000)) {
+			gSPSetLights1(gdl++, var80070090);
+			gSPLookAt(gdl++, camGetLookAt());
+		}
+
+		gSPPerspNormalize(gdl++, mtx00016dcc(0, 300));
+
+		renderdata.gdl = gdl;
+		renderdata.unk30 = 4;
+		renderdata.envcolour = player->gunshadecol[0] << 24 | player->gunshadecol[1] << 16
+			| player->gunshadecol[2] << 8 | player->gunshadecol[3];
+		renderdata.zbufferenabled = true;
+		colour = renderdata.envcolour;
+
+		mtx00016760();
+
+		flip = weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP)
+			&& !(i == HAND_LEFT && bgunLeftHandSkipsFlip(weaponnum));
+
+		if (flip) {
+			gSPClearGeometryMode(renderdata.gdl++, G_CULL_BOTH);
+			renderdata.cullmode = i == HAND_RIGHT ? CULLMODE_BACK : CULLMODE_FRONT;
+
+			if (i == HAND_LEFT && gegunsOwnModelInUse(weaponnum)) {
+				renderdata.cullmode = CULLMODE_BACK;
+				gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_INVERT_CULLING_EXT);
+			}
+		}
+
+		hidden = gegunsOwnModelHidden(weaponnum) || gegunsOwnThrowHidesHand(hand);
+
+		saved = hand->gunmodel.matrices;
+		hand->gunmodel.matrices = matrices;
+
+		// the release's meshes keep a model's pose for the rest of the pass
+		// (xblamesh.c): this one is posed afresh from the copy
+		xblaMeshPassBegin();
+
+		if (!hidden) {
+			g_ModelXluDecal = gegunsOwnModelInUse(weaponnum);
+			modelRender(&renderdata, &hand->gunmodel);
+			g_ModelXluDecal = 0;
+		}
+
+		if (player->gunctrl.handmodeldef && !hidden && hand->unk0dd0 != NULL
+				&& !bgunIsAkimboIncompatible(weaponnum)) {
+			Mtxf *savedhand = hand->handmodel.matrices;
+			s32 prevcolour = renderdata.envcolour;
+
+			hand->handmodel.matrices = matrices;
+			modelUpdateRelations(&hand->handmodel);
+
+			renderdata.envcolour = colour;
+			modelRender(&renderdata, &hand->handmodel);
+			renderdata.envcolour = prevcolour;
+
+			hand->handmodel.matrices = savedhand;
+		}
+
+		xblaMeshPassBegin();
+
+		hand->gunmodel.matrices = saved;
+		gdl = renderdata.gdl;
+
+		if (flip) {
+			gSPClearGeometryMode(gdl++, G_CULL_BOTH);
+			gSPClearExtraGeometryModeEXT(gdl++, G_INVERT_CULLING_EXT);
+		}
+
+		// the lists read the copy in fixed point, as the owner's read theirs
+		mtxF2LBulk(matrices, n);
+		mtx00016784();
+
+		gSPPerspNormalize(gdl++, viGetPerspScale());
+	}
 
 	gdl = zbufConfigureRdp(gdl);
 	gdl = vi0000b1d0(gdl);
@@ -14427,6 +14710,11 @@ bool bgunIsUsingSecondaryFunctionForHand(s32 handnum)
 	// A GoldenEye gun keeps its host's choice (weaponHost())
 	weaponnum = weaponHost(weaponnum);
 
+	// Zombies' knife button slashes, whatever the Combat Knife was last set to
+	if (zombiesKnifeInHand()) {
+		return false;
+	}
+
 	if (weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_COMBATBOOST) {
 		s32 index = (weaponnum - 1) >> 3;
 		s32 value = 1 << ((weaponnum - 1) & 7);
@@ -14608,8 +14896,19 @@ void bgunTickGameplay(bool triggeron)
 		triggeron = false;
 	}
 
+	// Zombies: no firing while a perk is being drunk
+	if (zombiesIsActive() && zombiesGunLowerFrac() > 0) {
+		triggeron = false;
+	}
+
+	// Zombies: the knife button's slash, held until it starts
+	if (zombiesKnifeWantsTrigger()) {
+		triggeron = true;
+	}
+
 	// Akimbo Triggers: whatever silenced the right trigger silences the left
-	if (g_Vars.currentplayer->gunctrl.passivemode || g_Vars.tickmode == TICKMODE_CUTSCENE || bwalkIsRolling()) {
+	if (g_Vars.currentplayer->gunctrl.passivemode || g_Vars.tickmode == TICKMODE_CUTSCENE || bwalkIsRolling()
+			|| (zombiesIsActive() && zombiesGunLowerFrac() > 0)) {
 		lefttrigger = false;
 	}
 
@@ -14724,6 +15023,20 @@ void bgunTickGameplay(bool triggeron)
 		bgunTickHand(HAND_RIGHT);
 		bgunTickHand(HAND_LEFT);
 		bgunTickSwitch();
+
+#ifndef PLATFORM_N64
+		// Zombies: the gun goes down off the screen while a perk is drunk, the
+		// way the lowered reload takes it down. Each hand tick starts with the
+		// arm level again, so this holds it for as long as the drink lasts.
+		if (zombiesIsActive()) {
+			f32 lower = zombiesGunLowerFrac();
+
+			if (lower > 0) {
+				bgunSetArmPitch(&player->hands[HAND_RIGHT], lower * MAX_PITCH);
+				bgunSetArmPitch(&player->hands[HAND_LEFT], lower * MAX_PITCH);
+			}
+		}
+#endif
 
 		if (cheatIsActive(CHEAT_UNLIMITEDAMMONORELOADS)) {
 			s32 i;
@@ -15566,6 +15879,18 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	}
 
 #ifndef PLATFORM_N64
+	// Zombies' knife button: the Combat Knife is out for a moment only. Its
+	// name, slash and empty count are not shown, nor is its name taken as a
+	// change of gun, so the gun's own does not pop up again as it comes back
+	if (zombiesKnifeInHand()) {
+		return gdl;
+	}
+
+	// nor under Zombies' GAME OVER
+	if (zombiesHidesHud()) {
+		return gdl;
+	}
+
 	// GoldenEye's own ammunition display for anything of GoldenEye's in the
 	// hand on GE Plus's levels; a Perfect Dark weapon keeps what follows
 	if (geHudOwnsWeapon()) {
@@ -15714,6 +16039,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 			y = bottom - textheight - 15;
 #endif
 
+			// Zombies: the name goes over the ammo, which sits over the function
+			if (zombiesIsActive()) {
+				y = zombiesHudNameBottom(bottom) - textheight;
+			}
+
 			if (ctrl->guntypetimer > 192) {
 				alpha = 255 - (ctrl->guntypetimer - 192) * 255 / 63U;
 				colour = (colour & 0xffffff00) | alpha;
@@ -15722,7 +16052,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 			gdl = textSetPrimColour(gdl, 0);
 
-			gDPFillRectangleScaled(gdl++, x - 1, y - 1, xpos - 11, bottom);
+			gDPFillRectangleScaled(gdl++, x - 1, y - 1, xpos - 11, zombiesIsActive() ? y + textheight : bottom);
 
 			gdl = text0f153838(gdl);
 			textSetWaveBlend(g_20SecIntervalFrac * 50.0f, 0, 50);

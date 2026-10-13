@@ -43,6 +43,7 @@
 #endif
 
 bool zombiesIsActive(void);
+f32 zombiesSpeedScale(void);
 
 #define PICKUPCRITERIA_DEFAULT  0
 #define PICKUPCRITERIA_CRITICAL 1
@@ -499,7 +500,8 @@ void botSpawn(struct chrdata *chr, u8 respawning)
 		func0f02e9a0(chr, 0);
 
 #ifndef PLATFORM_N64
-		const s32 spawnweapon = modCanChrSpawnArmed() ? mpGetSpawnWeapon() : -1;
+		// Zombies' simulants are the horde, and fight with their fists
+		const s32 spawnweapon = modCanChrSpawnArmed() && !zombiesIsActive() ? mpGetSpawnWeapon() : -1;
 
 		if (spawnweapon >= 0) {
 			struct mpweapon *mpweapon = &g_MpWeapons[spawnweapon];
@@ -1416,6 +1418,12 @@ f32 botGetStatScale(struct chrdata *chr, s32 stat)
 
 	if (!chr || !chr->aibot || !chr->aibot->config) {
 		return 1.0f;
+	}
+
+	// Zombies: walkers in the first rounds, by the round rather than the
+	// slider, so a setup's own speeds are left as they were
+	if (stat == BOTSTAT_SPEED && zombiesIsActive()) {
+		return zombiesSpeedScale();
 	}
 
 	value = chr->aibot->config->stats[stat];
@@ -3961,6 +3969,11 @@ void botTickUnpaused(struct chrdata *chr)
 												aibot->punchtimer60[0] = TICKS(60);
 											} else {
 												aibot->punchtimer60[0] = TICKS(30);
+											}
+
+											// Zombies swing at one steady pace, whatever the round
+											if (zombiesIsActive()) {
+												aibot->punchtimer60[0] = TICKS(60);
 											}
 
 											if (rngRandom() % 3 == 0) {

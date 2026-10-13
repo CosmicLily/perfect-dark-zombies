@@ -43,6 +43,12 @@
 #endif
 
 #ifndef PLATFORM_N64
+bool zombiesIsPlayerDowned(s32 playernum); // zombies.inc
+bool zombiesIsActive(void);
+f32 zombiesMoveScale(void);
+#endif
+
+#ifndef PLATFORM_N64
 /**
  * Bond's eye on a converted GoldenEye mission is GoldenEye's own
  * (bondview2.c, bondviewUpdatePlayerCollisionPositionFields()): the animated
@@ -2267,6 +2273,13 @@ void bwalk0f0c63bc(struct coord *arg0, u32 arg1, s32 types)
 	g_Vars.currentplayer->autocrouchpos = CROUCHPOS_STAND;
 
 #ifndef PLATFORM_N64
+	// Zombies: a downed player squats whatever the crouch button says
+	if (zombiesIsPlayerDowned(g_Vars.currentplayernum)) {
+		g_Vars.currentplayer->autocrouchpos = CROUCHPOS_SQUAT;
+	}
+#endif
+
+#ifndef PLATFORM_N64
 	// GoldenEye's tank: one he has walked into is no obstacle to him (above,
 	// where `tank` is switched off for his moves) because this is where
 	// GoldenEye lifts him onto it, holding the move until he is up. Perfect
@@ -2538,6 +2551,16 @@ void bwalkApplyMoveData(struct movedata *data)
 
 		g_Vars.currentplayer->speedforwards *= 1.08f;
 		g_Vars.currentplayer->speedforwards *= g_Vars.currentplayer->speedboost;
+
+#ifndef PLATFORM_N64
+		// Zombies' Stamin-Up
+		if (zombiesIsActive()) {
+			const f32 legs = zombiesMoveScale();
+
+			g_Vars.currentplayer->speedforwards *= legs;
+			g_Vars.currentplayer->speedsideways *= legs;
+		}
+#endif
 
 		if ((data->canlookahead == false && data->digitalstepforward == false) ||
 				bmoveGetCrouchPos() != CROUCHPOS_STAND) {

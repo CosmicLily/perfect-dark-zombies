@@ -36,11 +36,28 @@
 #include "lib/mtx.h"
 #include "lib/anim.h"
 #include "lib/collision.h"
+#include "lib/joy.h"
+#include "lib/lib_317f0.h"
+#include "../../lib/naudio/n_sndp.h"
+#include "lib/model.h"
+#include "game/setuputils.h"
+#include "system.h"
+#include "fs.h"
+#include "game/music.h"
+#include <stdio.h>
+#include <string.h>
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "modloader.h"
 #include "gexplus.h"
+#include "video.h"
+#include "game/camera.h"
+#include "game/gfxmemory.h"
+#include "game/mtxf2lbulk.h"
+#include "game/tex.h"
+#include "game/game_0b0fd0.h"
+#include "xblamesh.h"
 #include "net/net.h"
 #endif
 
@@ -266,6 +283,7 @@ struct mpscenario g_MpScenarios[] = {
 		NULL,
 		zombiesRenderHud,
 		zombiesCalculatePlayerScore,
+		zombiesRadarExtra,
 	},
 };
 

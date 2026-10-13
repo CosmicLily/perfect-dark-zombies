@@ -30,6 +30,9 @@
 #include "net/net.h"
 #endif
 
+bool zombiesIsActive(void);
+void zombiesReserveJuggPad(void);
+
 void playerInitEyespy(void)
 {
 	struct prop *prop;
@@ -281,6 +284,14 @@ void playerReset(void)
 			}
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies: Juggernog's pad comes off the spawn list before anyone spawns,
+	// the same pad whoever spawns where
+	if (zombiesIsActive()) {
+		zombiesReserveJuggPad();
+	}
+#endif
 
 	invGiveSingleWeapon(WEAPON_UNARMED);
 

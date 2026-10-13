@@ -4506,6 +4506,8 @@ static const struct menubind modMenuBinds[] = {
 	{ CK_RTRIG,  LANG_N("Aim Mode [RT]\n"),       LANG_N("N64 R Trigger\n") },
 	{ CK_DPAD_U, LANG_N("Right Hand Menu [DU]\n"), LANG_N("N64 D-Pad Up\n") },
 	{ CK_DPAD_D, LANG_N("Left Hand Menu [DD]\n"), LANG_N("N64 D-Pad Down\n") },
+	// Zombies' knife (BUTTON_MELEE)
+	{ CK_0100,   LANG_N("Zombies Knife [+]\n"),   LANG_N("N64 Ext 0100\n") },
 };
 
 static const char *menutextModBind(struct menuitem *item)
@@ -5083,6 +5085,15 @@ struct menuitem g_ExtendedDabsModPlayerMenuItems[] = {
 		(uintptr_t)"Melee Combos",
 		0,
 		menuhandlerModMelee,
+	},
+	{
+		// Zombies' knife, modMenuBinds[10]
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		0,
+		(uintptr_t)menutextModBind,
+		10,
+		menuhandlerModBind,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

@@ -245,6 +245,7 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 		{ CK_0400,          0,                   0                   },
 		{ CK_1000,          SDL_SCANCODE_V,      0                   },
 		{ CK_0800,          SDL_SCANCODE_C,      0                   },
+		{ CK_0100,          SDL_SCANCODE_G,      0                   }, // Zombies' knife (BUTTON_MELEE)
 		{ CK_ACCEPT,        SDL_SCANCODE_RETURN, SDL_SCANCODE_E      },
 		{ CK_CANCEL,        VK_MOUSE_RIGHT,      0                   },
 	};
@@ -795,6 +796,39 @@ static void inputMigrateRollBind(s32 ctrl)
 	}
 }
 
+/**
+ * Zombies' knife (CK_0100, BUTTON_MELEE) on G, for a config written before it
+ * meant anything. Like the roll's, its line has said NONE in every config ever
+ * written, which the loader honours over the default; CK_0100 never did
+ * anything before, so that NONE was never anyone's choice. It is bound only
+ * while melee has nothing and G is not used for anything else.
+ */
+static void inputMigrateMeleeBind(s32 ctrl)
+{
+	u32 ck;
+	s32 b;
+
+	if (ctrl != 0) {
+		return;
+	}
+
+	for (b = 0; b < INPUT_MAX_BINDS; ++b) {
+		if (binds[ctrl][CK_0100][b]) {
+			return;
+		}
+	}
+
+	for (ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
+		for (b = 0; b < INPUT_MAX_BINDS; ++b) {
+			if (binds[ctrl][ck][b] == SDL_SCANCODE_G) {
+				return;
+			}
+		}
+	}
+
+	inputKeyBind(ctrl, CK_0100, -1, SDL_SCANCODE_G);
+}
+
 static s32 inputHasBind(s32 ctrl, u32 ck, u32 vk)
 {
 	s32 b;
@@ -1008,6 +1042,7 @@ static inline void inputLoadBinds(void)
 		}
 
 		inputMigrateRollBind(i);
+		inputMigrateMeleeBind(i);
 
 		if (i == 0) {
 			inputMendCutPadBinds(i);

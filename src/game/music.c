@@ -630,6 +630,36 @@ void musicStartMpDeath(void)
 #endif
 }
 
+#ifndef PLATFORM_N64
+/**
+ * A short piece over the level's music, the way the multiplayer death sting
+ * is played: the level's music paused under it and brought back once
+ * duration240 is up (musicTick() counts g_MusicDeathTimer240 down to
+ * musicEndDeath()). Zombies' round changes and its game over.
+ */
+void musicStartSting(s32 tracknum, s32 duration240)
+{
+	musicSaveInterval();
+
+	musicQueueStopEvent(TRACKTYPE_MENU);
+	musicQueueStopEvent(TRACKTYPE_DEATH);
+	musicQueueStopEvent(TRACKTYPE_AMBIENT);
+
+	if (g_MusicNrgIsActive) {
+		musicQueueFadeEvent(TRACKTYPE_NRG, 0.1f, FADETYPE_PAUSE);
+	} else {
+		musicQueueFadeEvent(TRACKTYPE_PRIMARY, 0.1f, FADETYPE_PAUSE);
+	}
+
+	musicQueueStartEvent(TRACKTYPE_DEATH, tracknum, 0, VOLUME(g_SfxVolume) > musicGetVolume() ? VOLUME(g_SfxVolume) : musicGetVolume());
+
+	g_MusicDeathTimer240 = duration240;
+	g_MusicMpDeathIsPlaying = true;
+
+	musicRestoreInterval();
+}
+#endif
+
 void musicEndDeath(void)
 {
 	musicQueueFadeEvent(TRACKTYPE_DEATH, 2, FADETYPE_STOP);
