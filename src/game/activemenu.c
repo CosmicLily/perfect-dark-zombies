@@ -544,6 +544,28 @@ void amGetSlotDetails(s32 slot, u32 *flags, char *label)
 				sprintf(label, langGet(L_OPTIONS_491), secs + (modulo > 0 ? 1 : 0)); // "cloak %d"
 			} else {
 				strcpy(label, amSafeText(invGetShortNameByIndex(g_AmMenus[g_AmIndex].invindexes[slot])));
+
+#ifndef PLATFORM_N64
+				// Zombies: a Pack-a-Punched gun goes by its upgrade's name here
+				// too, laid out as the short name it stands for (with or
+				// without its newline)
+				{
+					extern const char *zombiesPapName(s32 weaponnum, const char *name);
+					const char *papname = zombiesPapName(invGetWeaponNumByIndex(g_AmMenus[g_AmIndex].invindexes[slot]), label);
+
+					if (papname != label) {
+						s32 len = strlen(label);
+						bool newline = len > 0 && label[len - 1] == '\n';
+
+						strcpy(label, papname);
+						len = strlen(label);
+
+						if (len > 0 && label[len - 1] == '\n' && !newline) {
+							label[len - 1] = '\0';
+						}
+					}
+				}
+#endif
 			}
 		}
 
