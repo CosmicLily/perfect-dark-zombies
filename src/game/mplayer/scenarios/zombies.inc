@@ -96,9 +96,15 @@ static s32 g_ZombieSpawned = 0;
 static s32 g_ZombieNextSpawnFrame = 0;
 
 // Points, as Call of Duty's Zombies gives them: 10 for every hit that does
-// not kill, and the kill by how it was done. A match starts with 20000 (Call
-// of Duty's own 500 is the thing to put back for its feel).
-#define ZOMBIE_START_POINTS    20000
+// not kill, and the kill by how it was done. A match starts with the Zombies
+// Options page's Starting Points (Call of Duty's own are 500).
+
+// Zombies Options (port/src/zombieperks.c keeps them in pd.ini)
+extern s32 g_ZombieCfgStartPoints;
+extern s32 g_ZombieCfgStartRound;
+extern s32 g_ZombieCfgPowerups;
+extern s32 g_ZombieCfgRoundMusic;
+extern s32 g_ZombieCfgGroans;
 #define ZOMBIE_POINTS_HIT      10
 #define ZOMBIE_POINTS_KILL     60
 #define ZOMBIE_POINTS_HEADSHOT 100
@@ -131,7 +137,7 @@ static void zombiesResetPoints(void)
 	s32 i;
 
 	for (i = 0; i < MAX_PLAYERS; i++) {
-		g_ZombiePoints[i] = ZOMBIE_START_POINTS;
+		g_ZombiePoints[i] = g_ZombieCfgStartPoints;
 		g_ZombieStackTop[i] = -1;
 	}
 
@@ -5429,7 +5435,7 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 	struct prop *prop;
 	s32 i;
 
-	if (victim->prop == NULL || g_ZombieDropsThisRound >= ZOMBIE_DROPS_PER_ROUND
+	if (victim->prop == NULL || !g_ZombieCfgPowerups || g_ZombieDropsThisRound >= ZOMBIE_DROPS_PER_ROUND
 			|| (s32)(rngRandom() % 100) >= ZOMBIE_DROP_CHANCE) {
 		return;
 	}
@@ -6784,6 +6790,10 @@ static void zombiesWriteBest(s32 stagenum, s32 round)
 // The music under a round changing: the end of one, then the start of the next
 static void zombiesRoundSting(bool start)
 {
+	if (!g_ZombieCfgRoundMusic) {
+		return;
+	}
+
 	musicStartSting(start ? MUSIC_DEATH_MP : MUSIC_DEATH_BETA, ZOMBIE_STING240);
 }
 
@@ -6847,6 +6857,10 @@ static void zombiesTickGroans(void)
 	s32 numnear = 0;
 	s32 i;
 	s32 p;
+
+	if (!g_ZombieCfgGroans) {
+		return;
+	}
 
 	g_ZombieNextGroan60 -= g_Vars.lvupdate60;
 
@@ -7051,12 +7065,13 @@ void zombiesTick(void)
 
 	if (g_ZombieRound == 0) {
 		if (g_Vars.lvframenum >= 120) {
-			g_ZombieRound = 1;
+			// the Zombies Options page's Starting Round
+			g_ZombieRound = g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1;
 			zombiesRoundSting(true);
 			g_ZombieRoundStartFrame = g_Vars.lvframenum;
 			g_ZombieGraceUntil = g_Vars.lvframenum + 120;
 			g_ZombieNextSpawnFrame = g_Vars.lvframenum + 120;
-			g_ZombieRoundTotal = zombiesTotalForRound(1);
+			g_ZombieRoundTotal = zombiesTotalForRound(g_ZombieRound);
 			// the zombies already out from the start of the match count as spawned
 			g_ZombieSpawned = zombiesCountAlive();
 		}
@@ -8574,3 +8589,174 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 
 	return gdl;
 }
+
+/**
+ * The Zombies Options page, Game Setup's Options for Zombies: the two of the
+ * Combat Simulator's own rules that mean something here (the radar, auto-aim),
+ * then Zombies' own (zombieperks.c keeps them in pd.ini, so they last from one
+ * run of the game to the next).
+ */
+static const s32 g_ZombieStartPointChoices[] = { 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000 };
+
+MenuItemHandlerResult menuhandlerZombiesStartPoints(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char text[16];
+	s32 i;
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(g_ZombieStartPointChoices);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		sprintf(text, "%d\n", g_ZombieStartPointChoices[data->dropdown.value]);
+		return (uintptr_t)text;
+	case MENUOP_SET:
+		g_ZombieCfgStartPoints = g_ZombieStartPointChoices[data->dropdown.value];
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		// the choice nearest what pd.ini says, which may be anything
+		data->dropdown.value = 0;
+
+		for (i = 0; i < ARRAYCOUNT(g_ZombieStartPointChoices); i++) {
+			if (g_ZombieStartPointChoices[i] <= g_ZombieCfgStartPoints) {
+				data->dropdown.value = i;
+			}
+		}
+		break;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerZombiesStartRound(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1) - 1;
+		break;
+	case MENUOP_SET:
+		g_ZombieCfgStartRound = data->slider.value + 1;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "Round %d", data->slider.value + 1);
+		break;
+	}
+
+	return 0;
+}
+
+// A checkbox for one of the settings: param3 says which
+#define ZOMBIECFG_POWERUPS   1
+#define ZOMBIECFG_ROUNDMUSIC 2
+#define ZOMBIECFG_GROANS     3
+
+MenuItemHandlerResult menuhandlerZombiesToggle(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 *setting = item->param3 == ZOMBIECFG_POWERUPS ? &g_ZombieCfgPowerups
+		: item->param3 == ZOMBIECFG_ROUNDMUSIC ? &g_ZombieCfgRoundMusic : &g_ZombieCfgGroans;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return *setting != 0;
+	case MENUOP_SET:
+		*setting = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+
+extern struct menudialogdef g_ExtGameOptionsMenuDialog;
+
+struct menuitem g_ZombiesOptionsMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		L_MPMENU_226, // "No Radar"
+		MPOPTION_NORADAR,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		L_MPMENU_227, // "No Auto-Aim"
+		MPOPTION_NOAUTOAIM,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Starting Points\n",
+		0,
+		menuhandlerZombiesStartPoints,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Starting Round\n",
+		49, // rounds 1 to 50
+		menuhandlerZombiesStartRound,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Power-Ups\n",
+		ZOMBIECFG_POWERUPS,
+		menuhandlerZombiesToggle,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Round Music\n",
+		ZOMBIECFG_ROUNDMUSIC,
+		menuhandlerZombiesToggle,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Zombie Groans\n",
+		ZOMBIECFG_GROANS,
+		menuhandlerZombiesToggle,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_MPMENU_239, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesOptionsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Zombies Options",
+	g_ZombiesOptionsMenuItems,
+	mpOptionsMenuDialog,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
+	&g_ExtGameOptionsMenuDialog,
+};

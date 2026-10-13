@@ -6688,6 +6688,9 @@ void mpCloseDialogsForNewSetup(void)
 							if (dialogdef == &g_KohOptionsMenuDialog) ok = false;
 							if (dialogdef == &g_HtmOptionsMenuDialog) ok = false;
 							if (dialogdef == &g_PacOptionsMenuDialog) ok = false;
+#ifndef PLATFORM_N64
+							if (dialogdef == &g_ZombiesOptionsMenuDialog) ok = false;
+#endif
 						}
 					}
 				}

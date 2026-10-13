@@ -534,6 +534,7 @@ extern struct menudialogdef g_CtcOptionsMenuDialog;
 extern struct menudialogdef g_KohOptionsMenuDialog;
 extern struct menudialogdef g_HtmOptionsMenuDialog;
 extern struct menudialogdef g_PacOptionsMenuDialog;
+extern struct menudialogdef g_ZombiesOptionsMenuDialog;
 extern struct menudialogdef g_MpScenarioMenuDialog;
 extern struct menudialogdef g_MpQuickTeamScenarioMenuDialog;
 extern s32 var80087260;

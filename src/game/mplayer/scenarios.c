@@ -275,7 +275,7 @@ struct mpscenario g_MpScenarios[] = {
 		ctcIsRoomHighlighted,
 		ctcHighlightRoom,
 	}, {
-		&g_MpCombatOptionsMenuDialog,
+		&g_ZombiesOptionsMenuDialog,
 		NULL,
 		NULL,
 		NULL,

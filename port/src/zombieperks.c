@@ -21,6 +21,7 @@
 #include "pngread.h"
 #include "menuimage.h"
 #include "system.h"
+#include "config.h"
 
 #define ZOMBIEPERK_COUNT 6
 
@@ -85,4 +86,25 @@ struct menuimage *zombiePerkImage(s32 perk)
 	}
 
 	return perkPresent[perk] ? &perkImages[perk] : NULL;
+}
+
+/**
+ * Zombies' own settings, in pd.ini's [Game] and on the Zombies Options page of
+ * the Combat Simulator's setup (scenarios/zombies.inc's menu): how many points
+ * a match starts with (Call of Duty's 500), the round it starts on, and the
+ * power-ups, the round music and the zombies' groans each on or off.
+ */
+s32 g_ZombieCfgStartPoints = 20000;
+s32 g_ZombieCfgStartRound = 1;
+s32 g_ZombieCfgPowerups = 1;
+s32 g_ZombieCfgRoundMusic = 1;
+s32 g_ZombieCfgGroans = 1;
+
+PD_CONSTRUCTOR static void zombieConfigInit(void)
+{
+	configRegisterInt("Game.ZombiesStartPoints", &g_ZombieCfgStartPoints, 0, 1000000);
+	configRegisterInt("Game.ZombiesStartRound", &g_ZombieCfgStartRound, 1, 100);
+	configRegisterInt("Game.ZombiesPowerups", &g_ZombieCfgPowerups, 0, 1);
+	configRegisterInt("Game.ZombiesRoundMusic", &g_ZombieCfgRoundMusic, 0, 1);
+	configRegisterInt("Game.ZombiesGroans", &g_ZombieCfgGroans, 0, 1);
 }
