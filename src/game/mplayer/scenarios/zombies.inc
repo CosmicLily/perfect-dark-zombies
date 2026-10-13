@@ -95,9 +95,10 @@ static s32 g_ZombieRoundTotal = 0;
 static s32 g_ZombieSpawned = 0;
 static s32 g_ZombieNextSpawnFrame = 0;
 
-// Points, as Call of Duty's Zombies gives them: 500 to start, 10 for every
-// hit that does not kill, and the kill by how it was done
-#define ZOMBIE_START_POINTS    500
+// Points, as Call of Duty's Zombies gives them: 10 for every hit that does
+// not kill, and the kill by how it was done. A match starts with 20000 (Call
+// of Duty's own 500 is the thing to put back for its feel).
+#define ZOMBIE_START_POINTS    20000
 #define ZOMBIE_POINTS_HIT      10
 #define ZOMBIE_POINTS_KILL     60
 #define ZOMBIE_POINTS_HEADSHOT 100
@@ -1853,14 +1854,21 @@ static bool zombiesCornerFrom(s32 perk, struct defaultobj *obj, struct coord *or
 struct zombiecornerpick {
 	s32 stagenum;
 	s32 perk;
-	struct coord from;   // somewhere in the room, looked from
-	struct coord corner; // and the corner, or the point on the wall
-	bool wall;           // a wall's middle, not a corner
+	struct coord from;   // somewhere in the room, looked from (faced, for a floor spot)
+	struct coord corner; // and the corner, the point on the wall, or the floor spot
+	s32 kind;            // ZPICK_*
 };
 
+#define ZPICK_CORNER 0
+#define ZPICK_WALL   1
+#define ZPICK_FLOOR  2 // standing free on the floor at corner, its front to from
+
 static const struct zombiecornerpick g_ZombieCornerPicks[] = {
-	{ 0x32, ZOMBIEPERK_STAMINUP,  { 2400, 160, 1000 },   { 2311, 109, 989 },    false }, // Skedar
-	{ 0x32, ZOMBIEPERK_DOUBLETAP, { -2200, -255, 2200 }, { -1644, -255, 1656 }, true  }, // Skedar
+	{ 0x32, ZOMBIEPERK_STAMINUP,  { 2400, 160, 1000 },   { 2311, 109, 989 },     ZPICK_CORNER }, // Skedar
+	{ 0x32, ZOMBIEPERK_DOUBLETAP, { -2200, -255, 2200 }, { -1644, -255, 1656 },  ZPICK_WALL   }, // Skedar
+	// Skedar's Pack-a-Punch in the middle of the sand room under its ceiling
+	// column, facing the way in from the spawn pad at its east end
+	{ 0x32, ZOMBIE_PAP_ID,         { -3185, 102, -4395 }, { -4435, -300, -4395 }, ZPICK_FLOOR  },
 };
 
 void bgFindRoomsByPos(struct coord *pos, RoomNum *inrooms, RoomNum *aboverooms, s32 max, RoomNum *bestroom);
@@ -1914,6 +1922,38 @@ static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *orig
 	return fabsf(obj->prop->pos.y - (floor + lift)) <= 30;
 }
 
+// The machine standing free on the floor at spot, its front to face
+static bool zombiesFloorSpot(s32 perk, struct defaultobj *obj, const struct coord *spot, const struct coord *face, f32 lift)
+{
+	struct coord pos = *spot;
+	RoomNum rooms[8];
+	RoomNum above[8];
+	Mtxf mtx;
+	f32 floor;
+	f32 lx = spot->x - face->x;
+	f32 lz = spot->z - face->z;
+	f32 len = sqrtf(lx * lx + lz * lz);
+
+	bgFindRoomsByPos(&pos, rooms, above, 7, NULL);
+
+	if (rooms[0] <= 0 || len < 1) {
+		return false;
+	}
+
+	floor = zombiesGroundAt(&pos, rooms);
+	pos.y = floor + lift;
+
+	// its back away from face: the look is the way to its back
+	mtx00016d58(&mtx, 0, 0, 0, lx / len, 0, lz / len, 0, 1, 0);
+	mtx00015f04(obj->model->scale, &mtx);
+	func0f06a730(obj, &pos, &mtx, rooms, &pos);
+
+	sysLogPrintf(LOG_NOTE, "zombies: %s on its picked floor spot at %.0f %.0f %.0f", zombiesMachineName(perk),
+			obj->prop->pos.x, obj->prop->pos.y, obj->prop->pos.z);
+
+	return true;
+}
+
 static bool zombiesPickedCorner(s32 perk, struct defaultobj *obj, f32 halfw, f32 halfd, f32 radius, f32 lift)
 {
 	s32 i;
@@ -1931,7 +1971,15 @@ static bool zombiesPickedCorner(s32 perk, struct defaultobj *obj, f32 halfw, f32
 		at = pick->from;
 		bgFindRoomsByPos(&at, rooms, above, 7, NULL);
 
-		if (pick->wall) {
+		if (pick->kind == ZPICK_FLOOR) {
+			if (zombiesFloorSpot(perk, obj, &pick->corner, &pick->from, lift)) {
+				return true;
+			}
+
+			continue;
+		}
+
+		if (pick->kind == ZPICK_WALL) {
 			if (rooms[0] > 0 && zombiesWallSpot(perk, obj, &at, rooms, &pick->corner, halfd, radius, lift)) {
 				return true;
 			}
@@ -7064,8 +7112,8 @@ bool zombiesIsActive(void)
 	return g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES;
 }
 
-// A player's points (zombiesAwardHit() adds them up).
-// Capped because the ranking code only has 16 bits for the score.
+// A player's points (zombiesAwardHit() adds them up), all of them: the
+// rankings sort on sixteen bits of it (mpRankKeyScore()) and show the whole
 static s32 zombiesGetPoints(struct mpchrconfig *mpchr, s32 chrnum)
 {
 	s32 points;
@@ -7075,10 +7123,6 @@ static s32 zombiesGetPoints(struct mpchrconfig *mpchr, s32 chrnum)
 	}
 
 	points = g_ZombiePoints[chrnum];
-
-	if (points > 32767) {
-		points = 32767;
-	}
 
 	return points;
 }

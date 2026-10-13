@@ -1106,6 +1106,25 @@ void mpApplyLimits(void)
  * The function also populates the placement an rankablescore values in the
  * mpchr structs and calculates the last winner and loser for the lock settings.
  */
+/**
+ * A score as the rankings' sort key holds it: sixteen bits of it, the deaths
+ * under them. The score shown is the whole of it; only the order is decided
+ * on this, so a score past what sixteen bits hold (Zombies' points) still
+ * sorts above every smaller one rather than wrapping round below them.
+ */
+static s32 mpRankKeyScore(s32 score)
+{
+	if (score > 32767) {
+		return 32767;
+	}
+
+	if (score < -32768) {
+		return -32768;
+	}
+
+	return score;
+}
+
 s32 mpGetPlayerRankings(struct ranking *rankings)
 {
 	s32 i;
@@ -1137,7 +1156,7 @@ s32 mpGetPlayerRankings(struct ranking *rankings)
 
 			scenarioCalculatePlayerScore(mpchr, i, &score, &deaths);
 
-			rankablescore = (score + 0x8000) << 16 | (0xffff - deaths);
+			rankablescore = (mpRankKeyScore(score) + 0x8000) << 16 | (0xffff - deaths);
 			dstindex = 0;
 			found = false;
 
@@ -1164,7 +1183,7 @@ s32 mpGetPlayerRankings(struct ranking *rankings)
 			count++;
 
 			// Write the new figures
-			rankablescores[dstindex] = (score + 0x8000) << 16 | (0xffff - deaths);
+			rankablescores[dstindex] = (mpRankKeyScore(score) + 0x8000) << 16 | (0xffff - deaths);
 			scores[dstindex] = score;
 			mpchrs[dstindex] = mpchr;
 			chrnums[dstindex] = i;
@@ -1265,7 +1284,7 @@ s32 mpCalculateTeamScore(s32 teamnum, s32 *result)
 
 	if (teamexists) {
 		*result = teamscore;
-		return (teamscore + 0x8000) << 16 | (0xffff - teamdeaths);
+		return (mpRankKeyScore(teamscore) + 0x8000) << 16 | (0xffff - teamdeaths);
 	}
 
 	return 0;
