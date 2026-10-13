@@ -3111,6 +3111,41 @@ static bool zombiesHoldingUse(s32 playernum)
 	return held;
 }
 
+/**
+ * Where am I: the knife button held two seconds turns on (and off) the
+ * player's position at the top of the view, for picking a machine's spot on
+ * an arena by standing on it (g_ZombieCornerPicks).
+ */
+#define ZOMBIE_WHERE_HOLD60 120
+
+static bool g_ZombieWhere[MAX_PLAYERS];
+static s32 g_ZombieWhereHeld60[MAX_PLAYERS];
+
+static void zombiesTickWhere(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	bool held;
+
+	setCurrentPlayerNum(playernum);
+	held = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), BUTTON_MELEE) != 0;
+	setCurrentPlayerNum(prevplayernum);
+
+	if (!held) {
+		g_ZombieWhereHeld60[playernum] = 0;
+		return;
+	}
+
+	if (g_ZombieWhereHeld60[playernum] < 0) {
+		return; // toggled already, waiting for the button to come up
+	}
+
+	g_ZombieWhereHeld60[playernum] += g_Vars.lvupdate60;
+
+	if (g_ZombieWhereHeld60[playernum] >= ZOMBIE_WHERE_HOLD60) {
+		g_ZombieWhere[playernum] = !g_ZombieWhere[playernum];
+		g_ZombieWhereHeld60[playernum] = -1;
+	}
+}
 static void zombiesTellOthers(s32 playernum, char *message)
 {
 	s32 i;
@@ -6996,6 +7031,7 @@ void zombiesTick(void)
 		zombiesTickJuggernog(i);
 		zombiesTickPerkMachines(i);
 		zombiesTickPap(i);
+		zombiesTickWhere(i);
 		zombiesTickKnife(i);
 	}
 
@@ -8512,6 +8548,23 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 #endif
 
 	gdl = zombiesRenderDropMarkers(gdl);
+
+	// where am I (zombiesTickWhere())
+	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS && g_ZombieWhere[g_Vars.currentplayernum]
+			&& g_Vars.currentplayer->prop) {
+		struct coord *pos = &g_Vars.currentplayer->prop->pos;
+
+		sprintf(text, "X %d   Y %d   Z %d", (s32)pos->x, (s32)pos->y, (s32)pos->z);
+#ifndef PLATFORM_N64
+		gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+#endif
+		gdl = text0f153628(gdl);
+		gdl = zombiesDrawWords(gdl, text, centrex, viGetViewTop() + 34, 0x80ff80ff);
+		gdl = text0f153780(gdl);
+#ifndef PLATFORM_N64
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
+	}
 	gdl = zombiesRenderReviveMarkers(gdl);
 	gdl = zombiesRenderDownedHud(gdl, centrex);
 	gdl = zombiesRenderMaxAmmoBanner(gdl);
