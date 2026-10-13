@@ -1802,22 +1802,76 @@ static bool zombiesCornerFrom(s32 perk, struct defaultobj *obj, struct coord *or
 }
 
 /**
- * Corners picked by hand for an arena, by a point in them: the corner nearest
- * it is the machine's. Skedar's Stamin-Up across its room from where it went
- * by itself, into the corner by the dark block.
+ * Spots picked by hand for an arena. A corner, by a point in it: the corner
+ * nearest it is the machine's, at 45 degrees. Or a wall, by a point on it: the
+ * machine stands square to it there, its back to the wall. Skedar's Stamin-Up
+ * across its room from where it went by itself, into the corner by the dark
+ * block; its Double Tap in the middle of the recess under the overhang with
+ * the blue light, across from the Shotgun's wall.
  */
 struct zombiecornerpick {
 	s32 stagenum;
 	s32 perk;
-	struct coord from;   // somewhere in the room, the corners looked for from
-	struct coord corner; // and which of them
+	struct coord from;   // somewhere in the room, looked from
+	struct coord corner; // and the corner, or the point on the wall
+	bool wall;           // a wall's middle, not a corner
 };
 
 static const struct zombiecornerpick g_ZombieCornerPicks[] = {
-	{ 0x32, ZOMBIEPERK_STAMINUP, { 2400, 160, 1000 }, { 2311, 109, 989 } }, // Skedar
+	{ 0x32, ZOMBIEPERK_STAMINUP,  { 2400, 160, 1000 },   { 2311, 109, 989 },    false }, // Skedar
+	{ 0x32, ZOMBIEPERK_DOUBLETAP, { -2200, -255, 2200 }, { -1644, -255, 1656 }, true  }, // Skedar
 };
 
 void bgFindRoomsByPos(struct coord *pos, RoomNum *inrooms, RoomNum *aboverooms, s32 max, RoomNum *bestroom);
+
+// The machine square to the wall at spot, seen from origin: its back to the
+// wall as measured there, facing out; on origin's floor
+static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *origin, RoomNum *originrooms,
+		const struct coord *spot, f32 halfd, f32 radius, f32 lift)
+{
+	f32 floor = zombiesGroundAt(origin, originrooms);
+	f32 dx = spot->x - origin->x;
+	f32 dz = spot->z - origin->z;
+	struct coord eye = *origin;
+	struct coord n;
+	struct coord pos;
+	RoomNum rooms[8];
+	Mtxf mtx;
+	f32 dist;
+	f32 along;
+
+	eye.y += 30;
+
+	if (!zombiesWallLine(&eye, originrooms, atan2f(dx, dz), sqrtf(dx * dx + dz * dz) + 200, &n, &dist)) {
+		return false;
+	}
+
+	// the spot onto the wall as it is, then out from it by the machine's depth
+	along = (spot->x - eye.x) * -n.z + (spot->z - eye.z) * n.x;
+	pos.x = eye.x + n.x * (dist - halfd - ZOMBIE_CORNER_GAP) - n.z * along;
+	pos.z = eye.z + n.z * (dist - halfd - ZOMBIE_CORNER_GAP) + n.x * along;
+	pos.y = origin->y;
+
+	if (!zombiesMachineSpotFree(&pos, radius, obj)) {
+		sysLogPrintf(LOG_NOTE, "zombies: %s's picked wall spot is not free", g_ZombiePerks[perk].name);
+		return false;
+	}
+
+	func0f065e74(origin, originrooms, &pos, rooms);
+
+	if (rooms[0] <= 0 || fabsf(zombiesGroundAt(&pos, rooms) - floor) > 30) {
+		return false;
+	}
+
+	mtx00016d58(&mtx, 0, 0, 0, n.x, 0, n.z, 0, 1, 0);
+	mtx00015f04(obj->model->scale, &mtx);
+	func0f06a730(obj, &pos, &mtx, rooms, &pos);
+
+	sysLogPrintf(LOG_NOTE, "zombies: %s on its picked wall at %.0f %.0f %.0f", g_ZombiePerks[perk].name,
+			obj->prop->pos.x, obj->prop->pos.y, obj->prop->pos.z);
+
+	return fabsf(obj->prop->pos.y - (floor + lift)) <= 30;
+}
 
 static bool zombiesPickedCorner(s32 perk, struct defaultobj *obj, f32 halfw, f32 halfd, f32 radius, f32 lift)
 {
@@ -1835,6 +1889,14 @@ static bool zombiesPickedCorner(s32 perk, struct defaultobj *obj, f32 halfw, f32
 
 		at = pick->from;
 		bgFindRoomsByPos(&at, rooms, above, 7, NULL);
+
+		if (pick->wall) {
+			if (rooms[0] > 0 && zombiesWallSpot(perk, obj, &at, rooms, &pick->corner, halfd, radius, lift)) {
+				return true;
+			}
+
+			continue;
+		}
 
 		if (rooms[0] > 0 && zombiesCornerFrom(perk, obj, &at, rooms, halfw, halfd, radius, lift, (struct coord *)&pick->corner)) {
 			return true;
