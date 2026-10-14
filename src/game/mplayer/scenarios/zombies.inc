@@ -1591,7 +1591,7 @@ struct zombiemesh {
 	Col *col;
 	f32 ymin;         // its foot, and the middle of its plan, in the game's axes
 	f32 midx;
-	f32 zmax;         // its back
+	f32 zmin;         // its back
 };
 
 static struct zombiemesh g_ZombieMeshes[ZOMBIE_PAP_ID + 1];
@@ -1605,19 +1605,17 @@ static u16 g_ZombieMeshWhite[XBLATEX_TILE * XBLATEX_TILE] __attribute__((aligned
 
 static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 slot)
 {
-	// z up and front -y, to y up and front -z: the mainframe's back is its
-	// +z, the side placement puts against the wall. Call of Duty's axes are
-	// the other hand to the game's, so x stays as it is (turned 180 degrees
-	// as well it drew mirrored: the lettering backwards); the triangles keep
-	// the file's winding (zombiesMeshBuild() says why)
+	// z up and front -y, to y up and front +z, a turn and no mirror. The
+	// mainframe's front is its +z: the placement's mtx00016d58() turns its
+	// -z to the wall, the look it is given being into the corner
 	f32 x = ov->pos[0];
 	f32 y = ov->pos[2];
-	f32 z = ov->pos[1];
+	f32 z = -ov->pos[1];
 	f32 nx = ov->nrm[0];
 	f32 ny = ov->nrm[2];
-	f32 nz = ov->nrm[1];
+	f32 nz = -ov->nrm[1];
 	// a light from above, in front and to the left
-	f32 lit = nx * -0.35f + ny * 0.75f + nz * -0.56f;
+	f32 lit = nx * -0.35f + ny * 0.75f + nz * 0.56f;
 	f32 shade = 0.6f + 0.4f * (lit > 0 ? lit : 0);
 	u8 b = (u8)(shade * 255.0f);
 
@@ -1823,16 +1821,15 @@ static void zombiesMeshBuild(s32 id)
 				lo[0] = MIN(lo[0], ov->pos[0]);
 				hi[0] = MAX(hi[0], ov->pos[0]);
 				lo[1] = MIN(lo[1], ov->pos[2]);
-				hi[2] = MAX(hi[2], ov->pos[1]);
+				lo[2] = MIN(lo[2], -ov->pos[1]);
 			}
 
-			// As the file winds them. The axes change hand (zombiesMeshVertex()),
-			// but Call of Duty's fronts are wound the other way to the N64's
-			// (Direct3D's clockwise), so the two cancel: wound over as well it
-			// drew inside out, the near side gone and the far side's inside seen
+			// Wound over: Call of Duty's fronts are wound clockwise (Direct3D's),
+			// the N64's the other way. As the file winds them it drew inside out,
+			// the near side gone and the far side's inside seen
 			tris[numtris * 3 + 0] = (u8)corner[0];
-			tris[numtris * 3 + 1] = (u8)corner[1];
-			tris[numtris * 3 + 2] = (u8)corner[2];
+			tris[numtris * 3 + 1] = (u8)corner[2];
+			tris[numtris * 3 + 2] = (u8)corner[1];
 			numtris++;
 		}
 	}
@@ -1841,7 +1838,7 @@ static void zombiesMeshBuild(s32 id)
 
 	zm->ymin = lo[1];
 	zm->midx = (lo[0] + hi[0]) / 2;
-	zm->zmax = hi[2];
+	zm->zmin = lo[2];
 
 	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands",
 			g_ZombieMeshNames[id], m->numtris, numvtx, numgfx);
@@ -1912,7 +1909,7 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	if (bbox) {
 		f32 lx = (objGetLocalXMin(bbox) + objGetLocalXMax(bbox)) / 2;
 		f32 ly = objGetLocalYMin(bbox);
-		f32 lz = objGetLocalZMax(bbox);
+		f32 lz = objGetLocalZMin(bbox);
 
 		for (j = 0; j < 3; j++) {
 			(&base.x)[j] += obj->realrot[0][j] * lx + obj->realrot[1][j] * ly + obj->realrot[2][j] * lz;
@@ -1931,7 +1928,7 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// less its own foot, middle and back, at the mainframe's
 	for (j = 0; j < 3; j++) {
-		(&base.x)[j] -= (world.m[0][j] * zm->midx + world.m[1][j] * zm->ymin + world.m[2][j] * zm->zmax)
+		(&base.x)[j] -= (world.m[0][j] * zm->midx + world.m[1][j] * zm->ymin + world.m[2][j] * zm->zmin)
 			* ZOMBIE_MESH_FIXED;
 	}
 
