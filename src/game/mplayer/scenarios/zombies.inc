@@ -4693,6 +4693,7 @@ static void zombiesReturnMuleGun(s32 playernum)
 #define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 + ZOMBIE_PAP_UP60)
 #define ZOMBIE_PAP_DAMAGE   2.0f
 #define ZOMBIE_PAP_CLIPMULT 2
+#define ZOMBIE_PAP_PITCH    1.2f // its shots' pitch
 #define ZOMBIE_PAP_CLIPS    10
 #define ZOMBIE_PAP_MAX      8
 #define ZOMBIE_PAP_RADAR    0xb040ff00
@@ -4809,6 +4810,17 @@ s32 zombiesPapClipMult(s32 weaponnum)
 	}
 
 	return 1;
+}
+
+// bondgun.c: the pitch the current player's weaponnum fires at, an
+// upgraded gun's higher
+f32 zombiesPapPitch(s32 weaponnum)
+{
+	if (zombiesIsActive() && zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return ZOMBIE_PAP_PITCH;
+	}
+
+	return 1.0f;
 }
 
 // The machine up: against the wall of the pad furthest from every other
@@ -6794,7 +6806,8 @@ static void zombiesRoundSting(bool start)
 		return;
 	}
 
-	musicStartSting(start ? MUSIC_DEATH_MP : MUSIC_DEATH_BETA, ZOMBIE_STING240);
+	// not MUSIC_DEATH_BETA at the end: that is the solo game over's tune
+	musicStartSting(start ? MUSIC_DEATH_MP : MUSIC_SKEDAR_MYSTERY, ZOMBIE_STING240);
 }
 
 // bondgun.c and radar.c: GAME OVER has the screen to itself, no ammo or radar
@@ -8638,7 +8651,9 @@ MenuItemHandlerResult menuhandlerZombiesStartRound(s32 operation, struct menuite
 		g_ZombieCfgStartRound = data->slider.value + 1;
 		break;
 	case MENUOP_GETSLIDERLABEL:
-		sprintf(data->slider.label, "Round %d", data->slider.value + 1);
+		// the number alone: the item's own name says what it is, and a
+		// narrow page (few digits of points) had "Round" over it
+		sprintf(data->slider.label, "%d", data->slider.value + 1);
 		break;
 	}
 

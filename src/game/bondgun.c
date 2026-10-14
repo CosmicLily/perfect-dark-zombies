@@ -92,6 +92,7 @@ bool zombiesKnifeQuickSwap(void);
 bool zombiesHidesHud(void);
 s32 zombiesPapClipMult(s32 weaponnum);
 const char *zombiesPapName(s32 weaponnum, const char *name);
+f32 zombiesPapPitch(s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
 f32 zombiesHandRate(s32 handstate);
@@ -2472,6 +2473,13 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 					audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *) &tmp);
 				}
 
+#ifndef PLATFORM_N64
+				// Zombies: a Pack-a-Punched gun fires higher, as Call of Duty's do
+				if (handle && zombiesPapPitch(hand->gset.weaponnum) != 1.0f) {
+					f32 pitch = zombiesPapPitch(hand->gset.weaponnum);
+					audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *) &pitch);
+				}
+#endif
 			}
 			}
 
