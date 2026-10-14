@@ -1608,8 +1608,8 @@ static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 sl
 	// z up and front -y, to y up and front -z: the mainframe's back is its
 	// +z, the side placement puts against the wall. Call of Duty's axes are
 	// the other hand to the game's, so x stays as it is (turned 180 degrees
-	// as well it drew mirrored: the lettering backwards), and the triangles
-	// are wound the other way to keep their fronts (zombiesMeshBuild())
+	// as well it drew mirrored: the lettering backwards); the triangles keep
+	// the file's winding (zombiesMeshBuild() says why)
 	f32 x = ov->pos[0];
 	f32 y = ov->pos[2];
 	f32 z = ov->pos[1];
@@ -1826,10 +1826,13 @@ static void zombiesMeshBuild(s32 id)
 				hi[2] = MAX(hi[2], ov->pos[1]);
 			}
 
-			// wound the other way: the axes changed hand (zombiesMeshVertex())
+			// As the file winds them. The axes change hand (zombiesMeshVertex()),
+			// but Call of Duty's fronts are wound the other way to the N64's
+			// (Direct3D's clockwise), so the two cancel: wound over as well it
+			// drew inside out, the near side gone and the far side's inside seen
 			tris[numtris * 3 + 0] = (u8)corner[0];
-			tris[numtris * 3 + 1] = (u8)corner[2];
-			tris[numtris * 3 + 2] = (u8)corner[1];
+			tris[numtris * 3 + 1] = (u8)corner[1];
+			tris[numtris * 3 + 2] = (u8)corner[2];
 			numtris++;
 		}
 	}
