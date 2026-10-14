@@ -725,6 +725,8 @@ static void zombiesResetJuggernog(void)
 	}
 }
 
+static s32 zombiesMachineExtrascale(s32 id);
+
 // The next object of the pool, filled in as the machine
 static struct defaultobj *zombiesNewJuggObj(void)
 {
@@ -733,7 +735,7 @@ static struct defaultobj *zombiesNewJuggObj(void)
 	g_ZombieJuggNext = (g_ZombieJuggNext + 1) % ARRAYCOUNT(g_ZombieJuggObjs);
 
 	bzero(obj, sizeof(*obj));
-	obj->extrascale = ZOMBIE_JUGG_SCALE;
+	obj->extrascale = zombiesMachineExtrascale(0); // ZOMBIEPERK_JUGGERNOG, defined below
 	obj->type = OBJTYPE_BASIC;
 	obj->modelnum = ZOMBIE_JUGG_MODEL;
 	// OBJFLAG_00000100: a solid block round the model's bounds (objInit(),
@@ -1468,15 +1470,16 @@ static bool zombiesFindPerkWall(struct coord *pos, RoomNum *rooms, f32 mindist, 
 	return best <= reach;
 }
 
-// A machine against the wall beside pad, its front to the room
-static bool zombiesPlaceMachineObj(struct defaultobj *obj, struct pad *pad, f32 walldist, struct coord *wall)
+// Machine id's against the wall beside pad, its front to the room
+static bool zombiesPlaceMachineObj(s32 id, struct defaultobj *obj, struct pad *pad, f32 walldist, struct coord *wall)
 {
 	struct prop *prop;
 	struct coord pos;
 	RoomNum padrooms[2];
 	RoomNum rooms[8];
 	Mtxf mtx;
-	f32 move = walldist - ZOMBIE_PERK_HALFDEPTH - 8;
+	const s32 extrascale = zombiesMachineExtrascale(id);
+	f32 move = walldist - ZOMBIE_PERK_HALFDEPTH * extrascale / ZOMBIE_JUGG_SCALE - 8;
 
 	padrooms[0] = pad->room;
 	padrooms[1] = -1;
@@ -1492,7 +1495,7 @@ static bool zombiesPlaceMachineObj(struct defaultobj *obj, struct pad *pad, f32 
 	}
 
 	bzero(obj, sizeof(*obj));
-	obj->extrascale = ZOMBIE_JUGG_SCALE;
+	obj->extrascale = extrascale;
 	obj->type = OBJTYPE_BASIC;
 	obj->modelnum = ZOMBIE_JUGG_MODEL;
 	// OBJFLAG_00000100: a solid block round the model's bounds (objInit(),
@@ -1528,7 +1531,7 @@ static bool zombiesPlaceMachineObj(struct defaultobj *obj, struct pad *pad, f32 
 
 static bool zombiesPlacePerkMachine(s32 perk, struct pad *pad, f32 walldist, struct coord *wall)
 {
-	if (!zombiesPlaceMachineObj(&g_ZombiePerkObjs[perk], pad, walldist, wall)) {
+	if (!zombiesPlaceMachineObj(perk, &g_ZombiePerkObjs[perk], pad, walldist, wall)) {
 		return false;
 	}
 
@@ -1592,6 +1595,8 @@ struct zombiemesh {
 	f32 ymin;         // its foot, and the middle of its plan, in the game's axes
 	f32 midx;
 	f32 zmin;         // its back
+	f32 width;        // across, and front to back, in its own centimetres
+	f32 depth;
 };
 
 static struct zombiemesh g_ZombieMeshes[ZOMBIE_PAP_ID + 1];
@@ -1822,6 +1827,7 @@ static void zombiesMeshBuild(s32 id)
 				hi[0] = MAX(hi[0], ov->pos[0]);
 				lo[1] = MIN(lo[1], ov->pos[2]);
 				lo[2] = MIN(lo[2], -ov->pos[1]);
+				hi[2] = MAX(hi[2], -ov->pos[1]);
 			}
 
 			// Wound over: Call of Duty's fronts are wound clockwise (Direct3D's),
@@ -1839,11 +1845,46 @@ static void zombiesMeshBuild(s32 id)
 	zm->ymin = lo[1];
 	zm->midx = (lo[0] + hi[0]) / 2;
 	zm->zmin = lo[2];
+	zm->width = hi[0] - lo[0];
+	zm->depth = hi[2] - lo[2];
 
 	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands",
 			g_ZombieMeshNames[id], m->numtris, numvtx, numgfx);
 
 	objmeshFree(m);
+}
+
+/**
+ * The extrascale of machine id's mainframe, which is what is solid and what
+ * placement measures. Its own ZOMBIE_JUGG_SCALE (90 across) unless the
+ * machine has a model of its own: then a square the mean of the model's width
+ * and depth as it is drawn, so a wide machine (Black Ops II's Mule Kick is 170
+ * centimetres across, Pack-a-Punch on its table 218) stands clear of the walls
+ * and is not walked into, and a shallow one leaves little air in front of it.
+ * The mainframe is 1000 units square at 256.
+ */
+static s32 zombiesMachineExtrascale(s32 id)
+{
+	struct zombiemesh *zm;
+	f32 side;
+
+	if (id < 0 || id > ZOMBIE_PAP_ID) {
+		return ZOMBIE_JUGG_SCALE;
+	}
+
+	zm = &g_ZombieMeshes[id];
+
+	if (!zm->tried) {
+		zombiesMeshBuild(id);
+	}
+
+	if (!zm->gdl || zm->width <= 0) {
+		return ZOMBIE_JUGG_SCALE;
+	}
+
+	side = (zm->width + zm->depth) * 0.5f * ZOMBIE_MESH_SCALE;
+
+	return (s32)(side * 256.0f / 1000.0f + 0.5f);
 }
 
 /**
@@ -1959,8 +2000,12 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	gDPSetTextureFilter(renderdata->gdl++, G_TF_BILERP);
 	gDPSetTexturePersp(renderdata->gdl++, G_TP_PERSP);
 	gDPSetTextureLOD(renderdata->gdl++, G_TL_TILE);
+	// Every face both ways: Call of Duty draws a machine's thin parts (Buried
+	// Pack-a-Punch's table planks) from either side, and culled they were
+	// gone, the machine left floating on one leg. The depth buffer hides
+	// the inside of the rest.
 	gSPClearGeometryMode(renderdata->gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
-	gSPSetGeometryMode(renderdata->gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH | G_CULL_BACK);
+	gSPSetGeometryMode(renderdata->gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
 	gSPMatrix(renderdata->gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
 	gSPDisplayList(renderdata->gdl++, zm->gdl);
 	gDPPipeSync(renderdata->gdl++);
@@ -5341,7 +5386,7 @@ static bool zombiesPlacePap(void)
 
 	padUnpack(g_SpawnPoints[best], PADFIELD_POS | PADFIELD_ROOM, &pad);
 
-	if (!zombiesPlaceMachineObj(&g_ZombiePapObj, &pad, bestwalldist, &bestwall)) {
+	if (!zombiesPlaceMachineObj(ZOMBIE_PAP_ID, &g_ZombiePapObj, &pad, bestwalldist, &bestwall)) {
 		return false;
 	}
 
