@@ -4579,8 +4579,9 @@ static const struct menubind modMenuBinds[] = {
 	{ CK_RTRIG,  LANG_N("Aim Mode [RT]\n"),       LANG_N("N64 R Trigger\n") },
 	{ CK_DPAD_U, LANG_N("Right Hand Menu [DU]\n"), LANG_N("N64 D-Pad Up\n") },
 	{ CK_DPAD_D, LANG_N("Left Hand Menu [DD]\n"), LANG_N("N64 D-Pad Down\n") },
-	// Zombies' knife (BUTTON_MELEE)
-	{ CK_0100,   LANG_N("Zombies Knife [+]\n"),   LANG_N("N64 Ext 0100\n") },
+	// Zombies' knife (BUTTON_MELEE): its row is on the Zombies Options page
+	// (menuhandlerZombiesBind(), zombies.inc), at this index, 10
+	{ CK_0100,   LANG_N("Knife [+]\n"),   LANG_N("N64 Ext 0100\n") },
 };
 
 static const char *menutextModBind(struct menuitem *item)
@@ -4624,6 +4625,20 @@ static MenuItemHandlerResult menuhandlerModBind(s32 operation, struct menuitem *
 	}
 
 	return 0;
+}
+
+/**
+ * The Zombies knife's row, on the Zombies Options page (zombies.inc) rather than
+ * the Extended Options' controls: the same row as menuhandlerModBind()'s, for
+ * the player whose menu it is, item->param3 the bind's index above.
+ */
+MenuItemHandlerResult menuhandlerZombiesBind(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (g_MpPlayerNum >= 0 && g_MpPlayerNum < MAX_LOCAL_PLAYERS) {
+		g_ExtMenuPlayer = g_MpPlayerNum;
+	}
+
+	return menuhandlerModBind(operation, item, data);
 }
 
 /**
@@ -5158,15 +5173,6 @@ struct menuitem g_ExtendedDabsModPlayerMenuItems[] = {
 		(uintptr_t)"Melee Combos",
 		0,
 		menuhandlerModMelee,
-	},
-	{
-		// Zombies' knife, modMenuBinds[10]
-		MENUITEMTYPE_DROPDOWN,
-		0,
-		0,
-		(uintptr_t)menutextModBind,
-		10,
-		menuhandlerModBind,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

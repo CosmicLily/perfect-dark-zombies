@@ -269,6 +269,10 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 		{ CK_8000,   SDL_CONTROLLER_BUTTON_LEFTSTICK     },
 		{ CK_1000,   SDL_CONTROLLER_BUTTON_BACK          },
 		{ CK_0800,   SDL_CONTROLLER_BUTTON_RIGHTSTICK    },
+		// Zombies' knife (BUTTON_MELEE) on the right stick too, Call of Duty's
+		// melee button: in Zombies it is the knife and does not roll
+		// (bondmove.c), and anywhere else BUTTON_MELEE does nothing
+		{ CK_0100,   SDL_CONTROLLER_BUTTON_RIGHTSTICK    },
 	};
 
 	static const u32 n64kbbinds[][3] = {
@@ -797,36 +801,58 @@ static void inputMigrateRollBind(s32 ctrl)
 }
 
 /**
- * Zombies' knife (CK_0100, BUTTON_MELEE) on G, for a config written before it
- * meant anything. Like the roll's, its line has said NONE in every config ever
- * written, which the loader honours over the default; CK_0100 never did
- * anything before, so that NONE was never anyone's choice. It is bound only
- * while melee has nothing and G is not used for anything else.
+ * Zombies' knife (CK_0100, BUTTON_MELEE) on G and on the controller's right
+ * stick, for a config written before it had them. Like the roll's, its line
+ * said NONE in every config written before it meant anything, which the loader
+ * honours over the default, so that NONE was never anyone's choice; and a
+ * config written since has G and no controller button at all, so the knife
+ * could not be used from a pad.
+ *
+ * Each half separately: G only while the knife has no key of the keyboard's
+ * and G is not used for anything else; the right stick (Call of Duty's melee
+ * button) only while the knife has no controller button and the stick is the
+ * roll's or nobody's. In Zombies the knife wins the stick (bondmove.c).
  */
 static void inputMigrateMeleeBind(s32 ctrl)
 {
+	const u32 joyfirst = VK_JOY_BEGIN + ctrl * INPUT_MAX_CONTROLLER_BUTTONS;
+	const u32 rstick = joyfirst + SDL_CONTROLLER_BUTTON_RIGHTSTICK;
+	s32 haskey = 0;
+	s32 haspad = 0;
+	s32 gtaken = 0;
+	s32 sticktaken = 0;
 	u32 ck;
 	s32 b;
 
-	if (ctrl != 0) {
-		return;
-	}
-
 	for (b = 0; b < INPUT_MAX_BINDS; ++b) {
-		if (binds[ctrl][CK_0100][b]) {
-			return;
+		const u32 vk = binds[ctrl][CK_0100][b];
+
+		if (vk >= joyfirst && vk < joyfirst + INPUT_MAX_CONTROLLER_BUTTONS) {
+			haspad = 1;
+		} else if (vk) {
+			haskey = 1;
 		}
 	}
 
 	for (ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
 		for (b = 0; b < INPUT_MAX_BINDS; ++b) {
 			if (binds[ctrl][ck][b] == SDL_SCANCODE_G) {
-				return;
+				gtaken = 1;
+			}
+
+			if (ck != CK_0800 && binds[ctrl][ck][b] == rstick) {
+				sticktaken = 1;
 			}
 		}
 	}
 
-	inputKeyBind(ctrl, CK_0100, -1, SDL_SCANCODE_G);
+	if (ctrl == 0 && !haskey && !gtaken) {
+		inputKeyBind(ctrl, CK_0100, -1, SDL_SCANCODE_G);
+	}
+
+	if (!haspad && !sticktaken) {
+		inputKeyBind(ctrl, CK_0100, -1, rstick);
+	}
 }
 
 static s32 inputHasBind(s32 ctrl, u32 ck, u32 vk)

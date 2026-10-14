@@ -9123,6 +9123,9 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  */
 static const s32 g_ZombieStartPointChoices[] = { 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000 };
 
+// optionsmenu.c: a key binding row, item->param3 its bind
+MenuItemHandlerResult menuhandlerZombiesBind(s32 operation, struct menuitem *item, union handlerdata *data);
+
 MenuItemHandlerResult menuhandlerZombiesStartPoints(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static char text[16];
@@ -9259,6 +9262,26 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 		(uintptr_t)"Zombie Groans\n",
 		ZOMBIECFG_GROANS,
 		menuhandlerZombiesToggle,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		// The knife's button, this menu's player's: a key and a controller
+		// button each (G and the right stick by default). The Key Bindings
+		// row the Extended Options had, moved here (optionsmenu.c's
+		// modMenuBinds[10])
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Knife Button\n",
+		10,
+		menuhandlerZombiesBind,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

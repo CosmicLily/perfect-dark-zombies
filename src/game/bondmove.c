@@ -1901,7 +1901,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								g_Vars.currentplayer->thirdperson = !g_Vars.currentplayer->thirdperson && modIsThirdPersonAllowed();
 							}
 
-							if (pressed & BUTTON_ROLL) {
+							// In Zombies a button that is the knife's as well
+							// (the controller's right stick) is the knife's
+							// alone: Call of Duty has no roll
+							if ((pressed & BUTTON_ROLL) && !((pressed & BUTTON_MELEE) && zombiesIsActive())) {
 								bwalkTryRoll();
 							}
 
