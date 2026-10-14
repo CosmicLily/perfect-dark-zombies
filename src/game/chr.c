@@ -64,6 +64,11 @@
 #include "gestan.h"
 #include "modloader.h"
 
+// Zombies: a perk drunk on the body (zombies.inc)
+void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model);
+bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop);
+Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model);
+
 /**
  * The floor under a chr. On a level converted from GoldenEye it is asked of
  * every room whose box holds the position and not only of the rooms the chr is
@@ -3552,6 +3557,13 @@ s32 chrTick(struct prop *prop)
 #endif
 			modelSetMatricesWithAnim(&sp210, model);
 
+#ifndef PLATFORM_N64
+			// Zombies: a perk drunk, the arm bent to it (zombies.inc)
+			if (!deferred) {
+				zombiesPoseDrinkArm(chr, model);
+			}
+#endif
+
 			if (restore) {
 				anim->frac = prevfrac;
 				anim->framea = prevframea;
@@ -4255,6 +4267,9 @@ void chrRenderAttachedObject(struct prop *prop, struct modelrenderdata *renderda
 		if (bothsides) {
 			gSPSetExtraGeometryModeEXT(renderdata->gdl++, G_NO_CULLING_EXT);
 		}
+
+		// Zombies: the gun put away while a perk is drunk (zombies.inc)
+		if (!zombiesBodyHidesHeld(chr, prop))
 #endif
 
 		modelRender(renderdata, model);
@@ -4726,7 +4741,9 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			modelRender(&renderdata, model);
 
 			for (child = prop->child; child; child = child->next) {
-				chrRenderAttachedDepth(child, &renderdata);
+				if (!zombiesBodyHidesHeld(chr, child)) {
+					chrRenderAttachedDepth(child, &renderdata);
+				}
 			}
 
 			gSPClearExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_PREPASS_EXT);
@@ -4742,6 +4759,13 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			chrRenderAttachedObject(child, &renderdata, xlupass, chr);
 			child = child->next;
 		}
+
+#ifndef PLATFORM_N64
+		// Zombies: a perk's bottle in the hand (zombies.inc)
+		if (!xlupass) {
+			renderdata.gdl = zombiesRenderBodyBottle(renderdata.gdl, chr, model);
+		}
+#endif
 
 #ifndef PLATFORM_N64
 		if (solidfade) {

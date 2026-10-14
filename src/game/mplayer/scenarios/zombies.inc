@@ -2140,6 +2140,64 @@ static struct {
 
 static struct zombiemesh g_ZombieBottleMeshes[ZOMBIEPERK_COUNT][ZOMBIE_DRINK_PARTS];
 
+// A bottle's stored vertex (zombiesMeshVertex(): x, z, -y at four to the
+// unit) back to its OBJ's own axes and units (vmbake.py: tenths of an inch,
+// the bottle up its z)
+static const f32 g_ZombieBottleObjAxes[3][3] = {
+	{ 1.0f / ZOMBIE_MESH_FIXED, 0, 0 },
+	{ 0, 0, -1.0f / ZOMBIE_MESH_FIXED },
+	{ 0, 1.0f / ZOMBIE_MESH_FIXED, 0 },
+};
+
+// A perk's bottle (part 0) or its cap (1), built the first time it is wanted;
+// NULL when its files are not there
+static struct zombiemesh *zombiesBottleMesh(s32 perk, s32 part)
+{
+	struct zombiemesh *zm;
+
+	if (perk < 0 || perk >= ZOMBIEPERK_COUNT || part < 0 || part >= ZOMBIE_DRINK_PARTS) {
+		return NULL;
+	}
+
+	zm = &g_ZombieBottleMeshes[perk][part];
+
+	if (!zm->tried) {
+		char rel[128];
+		char label[64];
+
+		snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/bottle_%s_%s.obj",
+				g_ZombieMeshNames[perk], part ? "top" : "body");
+		snprintf(label, sizeof(label), "%s's bottle%s", g_ZombieMeshNames[perk], part ? " cap" : "");
+		zombiesMeshBuildFrom(zm, rel, label);
+	}
+
+	return zm->gdl ? zm : NULL;
+}
+
+// The state a bottle is drawn in: its picture times its baked light times
+// prim, both ways round, the matrix a float one into the view
+static Gfx *zombiesBottleDraw(Gfx *gdl, struct zombiemesh *zm, Mtxf *mtx, u8 r, u8 g, u8 b)
+{
+	gDPPipeSync(gdl++);
+	gDPSetCycleType(gdl++, G_CYC_2CYCLE);
+	gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
+	gDPSetPrimColor(gdl++, 0, 0, r, g, b, 0xff);
+	gDPSetTextureFilter(gdl++, G_TF_BILERP);
+	gDPSetTexturePersp(gdl++, G_TP_PERSP);
+	gDPSetTextureLOD(gdl++, G_TL_TILE);
+	gDPSetTextureLUT(gdl++, G_TT_NONE);
+	gDPSetTextureConvert(gdl++, G_TC_FILT);
+	gDPSetAlphaCompare(gdl++, G_AC_NONE);
+	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+	gSPDisplayList(gdl++, zm->gdl);
+	gDPPipeSync(gdl++);
+	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+
+	return gdl;
+}
+
 static bool zombiesDrinkPoseLoad(void)
 {
 	const char *rel = "$E/zombies/viewmodel/drink.zpd";
@@ -2249,13 +2307,7 @@ bool zombiesDrinkViewmodelActive(s32 playernum)
 
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 {
-	// the OBJ's stored vertex (zombiesMeshVertex(): x, z, -y at four to the
-	// unit) back to the OBJ's own axes and units
-	static const f32 objaxes[3][3] = {
-		{ 1.0f / ZOMBIE_MESH_FIXED, 0, 0 },
-		{ 0, 0, -1.0f / ZOMBIE_MESH_FIXED },
-		{ 0, 1.0f / ZOMBIE_MESH_FIXED, 0 },
-	};
+	const f32 (*objaxes)[3] = g_ZombieBottleObjAxes;
 	const s32 playernum = g_Vars.currentplayernum;
 	struct player *player = g_Vars.currentplayer;
 	struct hand *hand;
@@ -2324,45 +2376,19 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 
 	if (perk >= 0 && perk < ZOMBIEPERK_COUNT) {
 		for (j = 0; j < ZOMBIE_DRINK_PARTS; j++) {
-			struct zombiemesh *zm = &g_ZombieBottleMeshes[perk][j];
+			struct zombiemesh *zm = zombiesBottleMesh(perk, j);
 			Mtxf *mtx;
 
-			if (!zm->tried) {
-				char rel[128];
-				char label[64];
-
-				snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/bottle_%s_%s.obj",
-						g_ZombieMeshNames[perk], j ? "top" : "body");
-				snprintf(label, sizeof(label), "%s's bottle%s", g_ZombieMeshNames[perk], j ? " cap" : "");
-				zombiesMeshBuildFrom(zm, rel, label);
-			}
-
-			if (!zm->gdl) {
+			if (!zm) {
 				continue;
 			}
 
 			mtx = gfxAllocateMatrix();
 			zombiesDrinkMtx(frame + (ZOMBIE_DRINK_JOINTS + j) * 12, objaxes, mtx);
 
-			gDPPipeSync(gdl++);
-			gDPSetCycleType(gdl++, G_CYC_2CYCLE);
-			gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
-			// the picture times its baked light, times the gun's light here
-			// the picture times its baked light (the gun's shade colour is
-			// nothing here: the hands are drawn in their own light)
-			gDPSetPrimColor(gdl++, 0, 0, 0xff, 0xff, 0xff, 0xff);
-			gDPSetTextureFilter(gdl++, G_TF_BILERP);
-			gDPSetTexturePersp(gdl++, G_TP_PERSP);
-			gDPSetTextureLOD(gdl++, G_TL_TILE);
-			gDPSetTextureLUT(gdl++, G_TT_NONE);
-			gDPSetTextureConvert(gdl++, G_TC_FILT);
-			gDPSetAlphaCompare(gdl++, G_AC_NONE);
-			gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
-			gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
-			gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
-			gSPDisplayList(gdl++, zm->gdl);
-			gDPPipeSync(gdl++);
-			gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+			// in full light: the gun's shade colour is nothing here, the
+			// hands being drawn in their own light
+			gdl = zombiesBottleDraw(gdl, zm, mtx, 0xff, 0xff, 0xff);
 		}
 	}
 
@@ -2371,6 +2397,544 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	mtx00016784();
 
 	gSPPerspNormalize(gdl++, viGetPerspScale());
+
+	return gdl;
+}
+
+/**
+ * The drink on the body, seen in third person or by anybody else: Perfect
+ * Dark has no drinking animation, so the right arm is bent to it after the
+ * body's own animation has posed it (chr.c, after modelSetMatricesWithAnim()),
+ * the gun put away and the bottle drawn in the hand.
+ *
+ * The arm is three joints: shoulder, elbow and the hand
+ * (MODELPART_CHR_RIGHTHAND), each a matrix of the model's into the view,
+ * found up the tree from the hand so any human body will do. The hand's place
+ * is worked out in the chest's frame (its matrix's axes carry the model's
+ * scale, so its own units are the model's), moved there from where the
+ * animation had it by two-bone IK - the forearm reaching on to the middle of
+ * the palm, where the bottle is held - and each joint below the one turned is
+ * turned about it. The elbow bends down and out.
+ *
+ * The timing is the first person drink's, in its 60ths from the bottle coming
+ * up: raised to the chest, to the mouth and tipped up, back down, thrown away
+ * as Black Ops II's is (its frame 57), and the arm back to the animation's.
+ */
+#define ZOMBIE_BODYDRINK_PALM   70.0f  // the wrist to the middle of the palm, model units
+#define ZOMBIE_BODYDRINK_THROW  114    // the bottle gone, in the drink's 60ths
+#define ZOMBIE_BODYDRINK_END    130
+
+struct zombiebodyarm {
+	s32 chest;
+	s32 shoulder;
+	s32 elbow[2];
+	s32 hand;
+	f32 side;       // the right arm's side of the chest, +1 or -1 along its x
+	f32 perinch;    // model units to Call of Duty's inch, by the arm's length
+};
+
+// a node's nearest position node above it, NULL for none
+static struct modelnode *zombiesPositionAbove(struct modelnode *node)
+{
+	for (node = node ? node->parent : NULL; node; node = node->parent) {
+		if ((node->type & 0xff) == MODELNODETYPE_POSITION) {
+			return node;
+		}
+	}
+
+	return NULL;
+}
+
+static bool zombiesBodyArm(struct model *model, struct zombiebodyarm *arm)
+{
+	struct modelnode *hand;
+	struct modelnode *elbow;
+	struct modelnode *shoulder;
+	struct modelnode *chest;
+	struct modelrodata_position *e;
+	struct modelrodata_position *h;
+	s32 n;
+
+	if (!model || !model->definition || !model->matrices || model->definition->skel != &g_SkelChr) {
+		return false;
+	}
+
+	hand = modelGetPart(model->definition, MODELPART_CHR_RIGHTHAND);
+
+	if (!hand || (hand->type & 0xff) != MODELNODETYPE_POSITION) {
+		return false;
+	}
+
+	elbow = zombiesPositionAbove(hand);
+	shoulder = zombiesPositionAbove(elbow);
+	chest = zombiesPositionAbove(shoulder);
+
+	if (!chest) {
+		return false;
+	}
+
+	n = model->definition->nummatrices;
+	arm->chest = chest->rodata->position.mtxindex0;
+	arm->shoulder = shoulder->rodata->position.mtxindex0;
+	arm->elbow[0] = elbow->rodata->position.mtxindex0;
+	arm->elbow[1] = elbow->rodata->position.mtxindex1;
+	arm->hand = hand->rodata->position.mtxindex0;
+
+	if (arm->chest < 0 || arm->chest >= n || arm->shoulder < 0 || arm->shoulder >= n
+			|| arm->elbow[0] < 0 || arm->elbow[0] >= n || arm->hand < 0 || arm->hand >= n
+			|| arm->elbow[1] >= n) {
+		return false;
+	}
+
+	arm->side = shoulder->rodata->position.pos.x >= 0 ? 1.0f : -1.0f;
+
+	// an upper arm and forearm are some 22 inches
+	e = &elbow->rodata->position;
+	h = &hand->rodata->position;
+	arm->perinch = (sqrtf(e->pos.x * e->pos.x + e->pos.y * e->pos.y + e->pos.z * e->pos.z)
+		+ sqrtf(h->pos.x * h->pos.x + h->pos.y * h->pos.y + h->pos.z * h->pos.z)) / 22.0f;
+
+	return arm->perinch > 0;
+}
+
+// The drink's 60ths from the bottle coming up, for the player this body is;
+// -1 when it is not drinking
+static s32 zombiesBodyDrinkT(struct chrdata *chr, s32 *perk)
+{
+	s32 playernum;
+	s32 t;
+
+	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER) {
+		return -1;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(chr->prop);
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieDrink60[playernum] < 0) {
+		return -1;
+	}
+
+	t = g_ZombieDrink60[playernum] - DRINK_GUNDOWN;
+
+	if (t < 0 || t >= ZOMBIE_BODYDRINK_END) {
+		return -1;
+	}
+
+	if (perk) {
+		*perk = g_ZombieDrinkPerk[playernum];
+	}
+
+	return t;
+}
+
+static f32 zombiesEase(f32 a, f32 b, f32 t)
+{
+	f32 f = (t - a) / (b - a);
+
+	f = f < 0 ? 0 : f > 1 ? 1 : f;
+
+	return f * f * (3 - 2 * f);
+}
+
+/**
+ * Where the palm is wanted at drink time t, in the chest's frame (x towards
+ * the right arm times side, y up, z forward), how far the bottle is tipped
+ * up towards the mouth (radians) and how much of the drink's pose there is
+ * against the animation's (0 to 1).
+ */
+static void zombiesBodyDrinkPose(s32 t, const struct zombiebodyarm *arm, f32 grip[3], f32 *tip, f32 *weight)
+{
+	// held in front of the chest, below the shoulder
+	const f32 hold[3] = { 70, 230, 290 };
+	// the mouth, and the bottle's length from the palm to its neck
+	const f32 mouth[3] = { 0, 450, 110 };
+	const f32 neck = 6.5f * arm->perinch;
+	const f32 maxtip = 1.95f;
+	f32 up = zombiesEase(28, 44, t) * (1 - zombiesEase(98, 110, t));
+	f32 a;
+	s32 i;
+
+	*tip = maxtip * up;
+	a = *tip;
+
+	for (i = 0; i < 3; i++) {
+		// at the mouth the palm is the bottle's length back down its line
+		const f32 axis[3] = { 0, cosf(a), -sinf(a) };
+		f32 drink = mouth[i] - axis[i] * neck;
+
+		grip[i] = hold[i] + (drink - hold[i]) * up;
+	}
+
+	grip[0] *= arm->side;
+
+	*weight = zombiesEase(0, 28, t) * (1 - zombiesEase(ZOMBIE_BODYDRINK_THROW, ZOMBIE_BODYDRINK_END - 2, t));
+}
+
+static void zombiesVec3Norm(f32 v[3])
+{
+	f32 len = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+
+	if (len > 0) {
+		v[0] /= len;
+		v[1] /= len;
+		v[2] /= len;
+	}
+}
+
+// The rotation taking unit vector a to unit vector b, the shortest way
+static void zombiesRotBetween(const f32 a[3], const f32 b[3], f32 r[3][3])
+{
+	f32 v[3] = { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+	f32 c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+	f32 k;
+	s32 i;
+	s32 j;
+
+	if (c < -0.9999f) {
+		// half a turn: about any line across a
+		f32 p[3] = { fabsf(a[0]) < 0.9f ? 1.0f : 0.0f, fabsf(a[0]) < 0.9f ? 0.0f : 1.0f, 0 };
+		f32 q[3] = { a[1] * p[2] - a[2] * p[1], a[2] * p[0] - a[0] * p[2], a[0] * p[1] - a[1] * p[0] };
+
+		zombiesVec3Norm(q);
+
+		for (i = 0; i < 3; i++) {
+			for (j = 0; j < 3; j++) {
+				r[i][j] = 2 * q[i] * q[j] - (i == j ? 1.0f : 0.0f);
+			}
+		}
+
+		return;
+	}
+
+	k = 1.0f / (1.0f + c);
+
+	r[0][0] = v[0] * v[0] * k + c;    r[0][1] = v[0] * v[1] * k - v[2]; r[0][2] = v[0] * v[2] * k + v[1];
+	r[1][0] = v[1] * v[0] * k + v[2]; r[1][1] = v[1] * v[1] * k + c;    r[1][2] = v[1] * v[2] * k - v[0];
+	r[2][0] = v[2] * v[0] * k - v[1]; r[2][1] = v[2] * v[1] * k + v[0]; r[2][2] = v[2] * v[2] * k + c;
+}
+
+// A joint's matrix turned by r about pivot p, all in the view
+static void zombiesMtxTurnAbout(Mtxf *m, f32 r[3][3], const f32 p[3])
+{
+	f32 col[3];
+	s32 c;
+	s32 i;
+
+	for (c = 0; c < 3; c++) {
+		for (i = 0; i < 3; i++) {
+			col[i] = r[i][0] * m->m[c][0] + r[i][1] * m->m[c][1] + r[i][2] * m->m[c][2];
+		}
+
+		m->m[c][0] = col[0];
+		m->m[c][1] = col[1];
+		m->m[c][2] = col[2];
+	}
+
+	for (i = 0; i < 3; i++) {
+		col[i] = m->m[3][i] - p[i];
+	}
+
+	for (i = 0; i < 3; i++) {
+		m->m[3][i] = p[i] + r[i][0] * col[0] + r[i][1] * col[1] + r[i][2] * col[2];
+	}
+}
+
+// A point in a joint's own units into the view
+static void zombiesMtxPoint(const Mtxf *m, const f32 local[3], f32 out[3])
+{
+	s32 i;
+
+	for (i = 0; i < 3; i++) {
+		out[i] = m->m[0][i] * local[0] + m->m[1][i] * local[1] + m->m[2][i] * local[2] + m->m[3][i];
+	}
+}
+
+void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model)
+{
+	struct zombiebodyarm arm;
+	Mtxf *mtx;
+	f32 grip[3];
+	f32 tip;
+	f32 weight;
+	f32 s[3];
+	f32 e[3];
+	f32 h[3];
+	f32 palm[3];
+	f32 target[3];
+	f32 pole[3];
+	f32 d[3];
+	f32 r[3][3];
+	f32 upper;
+	f32 lower;
+	f32 dist;
+	f32 cosa;
+	f32 sina;
+	f32 dot;
+	f32 newe[3];
+	f32 from[3];
+	f32 to[3];
+	s32 t;
+	s32 i;
+
+	t = zombiesBodyDrinkT(chr, NULL);
+
+	if (t < 0 || !zombiesBodyArm(model, &arm)) {
+		return;
+	}
+
+	zombiesBodyDrinkPose(t, &arm, grip, &tip, &weight);
+
+	if (weight <= 0) {
+		return;
+	}
+
+	mtx = model->matrices;
+
+	for (i = 0; i < 3; i++) {
+		s[i] = mtx[arm.shoulder].m[3][i];
+		e[i] = mtx[arm.elbow[0]].m[3][i];
+		h[i] = mtx[arm.hand].m[3][i];
+	}
+
+	upper = sqrtf((e[0] - s[0]) * (e[0] - s[0]) + (e[1] - s[1]) * (e[1] - s[1]) + (e[2] - s[2]) * (e[2] - s[2]));
+	lower = sqrtf((h[0] - e[0]) * (h[0] - e[0]) + (h[1] - e[1]) * (h[1] - e[1]) + (h[2] - e[2]) * (h[2] - e[2]));
+
+	if (upper <= 0 || lower <= 0) {
+		return;
+	}
+
+	// the palm, the forearm carried on past the wrist; the joints' own
+	// units are the model's, so the palm's length is too, made the view's
+	// by the chest's scale
+	{
+		f32 scale = sqrtf(mtx[arm.chest].m[1][0] * mtx[arm.chest].m[1][0]
+				+ mtx[arm.chest].m[1][1] * mtx[arm.chest].m[1][1]
+				+ mtx[arm.chest].m[1][2] * mtx[arm.chest].m[1][2]);
+		f32 reach = lower + ZOMBIE_BODYDRINK_PALM * scale;
+
+		for (i = 0; i < 3; i++) {
+			palm[i] = e[i] + (h[i] - e[i]) * reach / lower;
+		}
+
+		lower = reach;
+	}
+
+	// where the drink wants the palm, from where the animation has it
+	zombiesMtxPoint(&mtx[arm.chest], grip, target);
+
+	for (i = 0; i < 3; i++) {
+		target[i] = palm[i] + (target[i] - palm[i]) * weight;
+		d[i] = target[i] - s[i];
+	}
+
+	dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+
+	if (dist <= 0) {
+		return;
+	}
+
+	if (dist > (upper + lower) * 0.999f) {
+		dist = (upper + lower) * 0.999f;
+	}
+
+	if (dist < fabsf(upper - lower) * 1.001f + 0.001f) {
+		dist = fabsf(upper - lower) * 1.001f + 0.001f;
+	}
+
+	zombiesVec3Norm(d);
+
+	// The elbow: down and out from the chest, across the shoulder-to-palm line
+	{
+		const f32 local[3] = { 0.5f * arm.side, -1.0f, -0.3f };
+
+		for (i = 0; i < 3; i++) {
+			pole[i] = mtx[arm.chest].m[0][i] * local[0] + mtx[arm.chest].m[1][i] * local[1]
+				+ mtx[arm.chest].m[2][i] * local[2];
+		}
+	}
+
+	dot = pole[0] * d[0] + pole[1] * d[1] + pole[2] * d[2];
+
+	for (i = 0; i < 3; i++) {
+		pole[i] -= d[i] * dot;
+	}
+
+	zombiesVec3Norm(pole);
+
+	cosa = (upper * upper + dist * dist - lower * lower) / (2 * upper * dist);
+	cosa = cosa > 1 ? 1 : cosa < -1 ? -1 : cosa;
+	sina = sqrtf(1 - cosa * cosa);
+
+	for (i = 0; i < 3; i++) {
+		newe[i] = s[i] + upper * (d[i] * cosa + pole[i] * sina);
+	}
+
+	// The upper arm turned onto its new line, the elbow and hand with it
+	for (i = 0; i < 3; i++) {
+		from[i] = e[i] - s[i];
+		to[i] = newe[i] - s[i];
+	}
+
+	zombiesVec3Norm(from);
+	zombiesVec3Norm(to);
+	zombiesRotBetween(from, to, r);
+
+	zombiesMtxTurnAbout(&mtx[arm.shoulder], r, s);
+	zombiesMtxTurnAbout(&mtx[arm.elbow[0]], r, s);
+
+	if (arm.elbow[1] >= 0) {
+		zombiesMtxTurnAbout(&mtx[arm.elbow[1]], r, s);
+	}
+
+	zombiesMtxTurnAbout(&mtx[arm.hand], r, s);
+
+	// then the forearm onto the palm's place
+	for (i = 0; i < 3; i++) {
+		h[i] = mtx[arm.hand].m[3][i];
+		from[i] = h[i] - newe[i];
+		to[i] = s[i] + d[i] * dist - newe[i];
+	}
+
+	zombiesVec3Norm(from);
+	zombiesVec3Norm(to);
+	zombiesRotBetween(from, to, r);
+
+	zombiesMtxTurnAbout(&mtx[arm.elbow[0]], r, newe);
+	zombiesMtxTurnAbout(&mtx[arm.hand], r, newe);
+}
+
+// The drink on the player's body, seen from their third person camera, so the
+// HUD's bottle is not wanted
+static bool zombiesBodyDrinkSeen(s32 playernum)
+{
+	struct player *player;
+	struct zombiebodyarm arm;
+	s32 perk = -1;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || !g_Vars.players[playernum]) {
+		return false;
+	}
+
+	player = g_Vars.players[playernum];
+
+	if (player->thirdpersondist <= 0 || !player->prop || !player->prop->chr
+			|| zombiesBodyDrinkT(player->prop->chr, &perk) < 0) {
+		return false;
+	}
+
+	return zombiesBottleMesh(perk, 0) != NULL && zombiesBodyArm(player->prop->chr->model, &arm);
+}
+
+// chr.c's chrRenderAttachedObject(): the gun put away while the bottle is out
+bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop)
+{
+	s32 t = zombiesBodyDrinkT(chr, NULL);
+
+	if (t < 0 || !prop) {
+		return false;
+	}
+
+	return prop == chr->weapons_held[0] || prop == chr->weapons_held[1];
+}
+
+// chrRender()'s, after the body in its opaque pass: the bottle in the hand
+Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model)
+{
+	struct zombiebodyarm arm;
+	Mtxf *mtx;
+	Mtxf *out;
+	f32 grip[3];
+	f32 tip;
+	f32 weight;
+	f32 e[3];
+	f32 h[3];
+	f32 palm[3];
+	f32 lower;
+	f32 scale;
+	f32 rb[3][3];
+	s32 perk = -1;
+	s32 t;
+	s32 part;
+	s32 i;
+	s32 j;
+	s32 k;
+
+	t = zombiesBodyDrinkT(chr, &perk);
+
+	if (t < 0 || t >= ZOMBIE_BODYDRINK_THROW || !zombiesBodyArm(model, &arm)) {
+		return gdl;
+	}
+
+	zombiesBodyDrinkPose(t, &arm, grip, &tip, &weight);
+	mtx = model->matrices;
+
+	for (i = 0; i < 3; i++) {
+		e[i] = mtx[arm.elbow[0]].m[3][i];
+		h[i] = mtx[arm.hand].m[3][i];
+	}
+
+	lower = sqrtf((h[0] - e[0]) * (h[0] - e[0]) + (h[1] - e[1]) * (h[1] - e[1]) + (h[2] - e[2]) * (h[2] - e[2]));
+	scale = sqrtf(mtx[arm.chest].m[1][0] * mtx[arm.chest].m[1][0]
+			+ mtx[arm.chest].m[1][1] * mtx[arm.chest].m[1][1]
+			+ mtx[arm.chest].m[1][2] * mtx[arm.chest].m[1][2]);
+
+	if (lower <= 0 || scale <= 0) {
+		return gdl;
+	}
+
+	for (i = 0; i < 3; i++) {
+		palm[i] = h[i] + (h[i] - e[i]) * ZOMBIE_BODYDRINK_PALM * scale / lower;
+	}
+
+	// The bottle's own axes in the chest's frame: up its z, tipped back
+	// towards the mouth about the chest's x, its label to the side
+	// (columns x, y and z, y being z across x so it is not mirrored)
+	rb[0][0] = 1; rb[0][1] = 0;           rb[0][2] = 0;
+	rb[1][0] = 0; rb[1][1] = -sinf(tip);  rb[1][2] = cosf(tip);
+	rb[2][0] = 0; rb[2][1] = -cosf(tip);  rb[2][2] = -sinf(tip);
+
+	for (part = 0; part < ZOMBIE_DRINK_PARTS; part++) {
+		struct zombiemesh *zm = zombiesBottleMesh(perk, part);
+		f32 lin[3][3];
+
+		// the cap is off once it is opened (Black Ops II's frame 16)
+		if (!zm || (part == 1 && t >= 32)) {
+			continue;
+		}
+
+		// the stored vertex to its OBJ's tenths of an inch, to model units
+		// in the chest's frame, to the view
+		for (i = 0; i < 3; i++) {
+			for (j = 0; j < 3; j++) {
+				f32 v = 0;
+
+				for (k = 0; k < 3; k++) {
+					v += rb[i][k] * g_ZombieBottleObjAxes[k][j];
+				}
+
+				lin[i][j] = v * arm.perinch / 10.0f;
+			}
+		}
+
+		out = gfxAllocateMatrix();
+
+		for (j = 0; j < 3; j++) {
+			for (i = 0; i < 3; i++) {
+				out->m[j][i] = mtx[arm.chest].m[0][i] * lin[0][j] + mtx[arm.chest].m[1][i] * lin[1][j]
+					+ mtx[arm.chest].m[2][i] * lin[2][j];
+			}
+
+			out->m[j][3] = 0;
+		}
+
+		out->m[3][0] = palm[0];
+		out->m[3][1] = palm[1];
+		out->m[3][2] = palm[2];
+		out->m[3][3] = 1;
+
+		gdl = zombiesBottleDraw(gdl, zm, out,
+				0x80 + (chr->shadecol[0] >> 1), 0x80 + (chr->shadecol[1] >> 1), 0x80 + (chr->shadecol[2] >> 1));
+	}
 
 	return gdl;
 }
@@ -8474,8 +9038,9 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 				viGetViewTop() + viGetViewHeight() * 62 / 100, 0x40ff40e0,
 				g_CharsHandelGothicSm, g_FontHandelGothicSm);
 	} else if (g_ZombieDrink60[playernum] >= 0) {
-		// the HUD's bottle when there is no drink in the hands
-		if (!zombiesDrinkViewmodelActive(playernum)) {
+		// the HUD's bottle when there is no drink in the hands, in first
+		// person or on the body in third
+		if (!zombiesDrinkViewmodelActive(playernum) && !zombiesBodyDrinkSeen(playernum)) {
 			gdl = zombiesRenderBottle(gdl, g_ZombieDrink60[playernum], g_ZombieDrinkPerk[playernum]);
 		}
 	} else if (g_ZombieNearPerk[playernum] >= 0) {
