@@ -94,6 +94,7 @@ s32 zombiesPapClipMult(s32 weaponnum);
 const char *zombiesPapName(s32 weaponnum, const char *name);
 f32 zombiesPapPitch(s32 weaponnum);
 Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum);
+Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl);
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
@@ -13783,6 +13784,11 @@ void bgunRender(Gfx **gdlptr)
 			gSPPerspNormalize(gdl++, viGetPerspScale());
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies: a perk drunk in the player's own hands
+	gdl = zombiesRenderDrinkViewmodel(gdl);
+#endif
 
 	casingsRender(&gdl);
 	zbufSwap();

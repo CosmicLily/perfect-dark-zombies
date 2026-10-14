@@ -651,7 +651,7 @@ void zombiesAddSimulants(void)
 // The drink, in 60ths of a second, one stage after another
 #define DRINK_GUNDOWN    18 // the gun goes down
 #define DRINK_BOTTLEUP   16 // the bottle comes up
-#define DRINK_GULP       66 // it is drunk
+#define DRINK_GULP       98 // it is drunk: with the two either side, Black Ops II's drink (65 frames at 30)
 #define DRINK_BOTTLEDOWN 16 // it goes away
 #define DRINK_GUNUP      18 // the gun comes back
 #define DRINK_TOTAL      (DRINK_GUNDOWN + DRINK_BOTTLEUP + DRINK_GULP + DRINK_BOTTLEDOWN + DRINK_GUNUP)
@@ -1637,10 +1637,18 @@ static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 sl
 	c->a = 0xff;
 }
 
+static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const char *label);
+
 static void zombiesMeshBuild(s32 id)
 {
-	struct zombiemesh *zm = &g_ZombieMeshes[id];
 	char rel[128];
+
+	snprintf(rel, sizeof(rel), "$E/zombies/models/%s/%s.obj", g_ZombieMeshNames[id], g_ZombieMeshNames[id]);
+	zombiesMeshBuildFrom(&g_ZombieMeshes[id], rel, g_ZombieMeshNames[id]);
+}
+
+static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const char *label)
+{
 	char path[FS_MAXPATH + 1];
 	struct objmesh *m;
 	u32 maxgfx;
@@ -1653,7 +1661,6 @@ static void zombiesMeshBuild(s32 id)
 
 	zm->tried = true;
 
-	snprintf(rel, sizeof(rel), "$E/zombies/models/%s/%s.obj", g_ZombieMeshNames[id], g_ZombieMeshNames[id]);
 	snprintf(path, sizeof(path), "%s", fsFullPath(rel));
 
 	if (fsFileSize(path) <= 0) {
@@ -1849,7 +1856,7 @@ static void zombiesMeshBuild(s32 id)
 	zm->depth = hi[2] - lo[2];
 
 	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands",
-			g_ZombieMeshNames[id], m->numtris, numvtx, numgfx);
+			label, m->numtris, numvtx, numgfx);
 
 	objmeshFree(m);
 }
@@ -2013,6 +2020,272 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	gSPClearGeometryMode(renderdata->gdl++, G_CULL_BOTH);
 
 	return true;
+}
+
+/**
+ * The perk drink in the player's own hands: Black Ops II's drink (its arms'
+ * animation, its bottles) retargeted onto the first person hand model the
+ * player's character has, painted as handtint.c paints it. tools/zombies/
+ * vmbake.py bakes it a 60th at a time into the build's zombies/viewmodel/
+ * (drink.zpd, and each bottle as two OBJs, the bottle and its cap); the art
+ * stays on the player's disk. Without them the drink is the HUD's bottle
+ * (zombiesRenderBottle()).
+ *
+ * drink.zpd's matrices are into Call of Duty's view space: inches, x forward,
+ * y left, z up. The view model's is the game's camera space: x right, y up,
+ * looking down -z. A hand joint's matrix takes the hand model's own vertices
+ * (each joint's relative to its rest place, unturned); a bottle part's takes
+ * its OBJ's, which zombiesMeshVertex() has turned and stored at a quarter.
+ *
+ * The animation runs the bottle's part of the drink: up, open, drunk,
+ * thrown away, DRINK_BOTTLEUP + DRINK_GULP + DRINK_BOTTLEDOWN 60ths, which
+ * DRINK_GULP is set to make Call of Duty's 65 frames at 30.
+ */
+#define ZOMBIE_DRINK_JOINTS 33
+#define ZOMBIE_DRINK_PARTS  2
+#define ZOMBIE_DRINK_UNITS  2.54f // Call of Duty's inches to the view model's units
+
+static struct {
+	bool tried;
+	s32 ticks;
+	const f32 *mtx; // ticks x (joints + parts) x 12, rows of three by four
+} g_ZombieDrinkPose;
+
+static struct zombiemesh g_ZombieBottleMeshes[ZOMBIEPERK_COUNT][ZOMBIE_DRINK_PARTS];
+
+static bool zombiesDrinkPoseLoad(void)
+{
+	const char *rel = "$E/zombies/viewmodel/drink.zpd";
+	u8 *data;
+	u32 size = 0;
+	u16 hdr[4];
+
+	if (g_ZombieDrinkPose.tried) {
+		return g_ZombieDrinkPose.mtx != NULL;
+	}
+
+	g_ZombieDrinkPose.tried = true;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0) {
+		return false;
+	}
+
+	data = fsFileLoad(rel, &size);
+
+	if (!data || size < 12 || memcmp(data, "ZPD1", 4) != 0) {
+		return false;
+	}
+
+	memcpy(hdr, data + 4, sizeof(hdr));
+
+	if (hdr[1] != ZOMBIE_DRINK_JOINTS || hdr[2] != ZOMBIE_DRINK_PARTS || hdr[0] == 0
+			|| size < 12 + (u32)hdr[0] * (ZOMBIE_DRINK_JOINTS + ZOMBIE_DRINK_PARTS) * 12 * sizeof(f32)) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is not vmbake.py's", rel);
+		return false;
+	}
+
+	g_ZombieDrinkPose.ticks = hdr[0];
+	g_ZombieDrinkPose.mtx = (const f32 *)(data + 12);
+
+	sysLogPrintf(LOG_NOTE, "zombies: the perk drink in the player's own hands, %d 60ths", hdr[0]);
+
+	return true;
+}
+
+/**
+ * Into the view model's space: a 3x4 of drink.zpd's, after pre (a 3x3 taking
+ * the drawn vertices to the 3x4's), and Call of Duty's axes turned to the
+ * camera's.
+ */
+static void zombiesDrinkMtx(const f32 *rows, const f32 pre[3][3], Mtxf *out)
+{
+	const f32 u = ZOMBIE_DRINK_UNITS;
+	f32 a[3][4];
+	s32 r;
+	s32 c;
+	s32 k;
+
+	for (r = 0; r < 3; r++) {
+		for (c = 0; c < 3; c++) {
+			a[r][c] = 0;
+
+			for (k = 0; k < 3; k++) {
+				a[r][c] += rows[r * 4 + k] * (pre ? pre[k][c] : (k == c ? 1.0f : 0.0f));
+			}
+		}
+
+		a[r][3] = rows[r * 4 + 3];
+	}
+
+	// camera x is Call of Duty's -y, y its z, z its -x
+	for (c = 0; c < 4; c++) {
+		out->m[c][0] = -a[1][c] * u;
+		out->m[c][1] = a[2][c] * u;
+		out->m[c][2] = -a[0][c] * u;
+		out->m[c][3] = c == 3 ? 1.0f : 0.0f;
+	}
+}
+
+/**
+ * bgunRender()'s, after the guns: the drink in the hands of the player whose
+ * view is being drawn. True when it was drawn, so the HUD's bottle is not.
+ */
+bool zombiesDrinkViewmodelActive(s32 playernum)
+{
+	s32 t;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS) {
+		return false;
+	}
+
+	t = g_ZombieDrink60[playernum] - DRINK_GUNDOWN;
+
+	if (g_ZombieDrink60[playernum] < 0 || t < 0 || t >= DRINK_BOTTLEUP + DRINK_GULP + DRINK_BOTTLEDOWN) {
+		return false;
+	}
+
+	if (!zombiesDrinkPoseLoad()) {
+		return false;
+	}
+
+	// only where bgunRender() draws (player.c): not in third person, through
+	// the X-ray scanner, or behind GoldenEye's watch
+	if (g_Vars.players[playernum]->thirdpersondist > 0
+			|| g_Vars.players[playernum]->visionmode == VISIONMODE_XRAY
+			|| geWatchHidesGun()) {
+		return false;
+	}
+
+	return g_Vars.players[playernum]->gunctrl.handmodeldef != NULL
+		&& g_Vars.players[playernum]->hands[HAND_RIGHT].handmodel.definition != NULL;
+}
+
+Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
+{
+	// the OBJ's stored vertex (zombiesMeshVertex(): x, z, -y at four to the
+	// unit) back to the OBJ's own axes and units
+	static const f32 objaxes[3][3] = {
+		{ 1.0f / ZOMBIE_MESH_FIXED, 0, 0 },
+		{ 0, 0, -1.0f / ZOMBIE_MESH_FIXED },
+		{ 0, 1.0f / ZOMBIE_MESH_FIXED, 0 },
+	};
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	struct hand *hand;
+	struct modelrenderdata renderdata = {NULL, true, 3};
+	const f32 *frame;
+	Mtxf *matrices;
+	Mtxf *saved;
+	s32 perk;
+	s32 n;
+	s32 t;
+	s32 j;
+
+	if (!zombiesDrinkViewmodelActive(playernum)) {
+		return gdl;
+	}
+
+	t = g_ZombieDrink60[playernum] - DRINK_GUNDOWN;
+	t = t >= g_ZombieDrinkPose.ticks ? g_ZombieDrinkPose.ticks - 1 : t;
+	frame = g_ZombieDrinkPose.mtx + t * (ZOMBIE_DRINK_JOINTS + ZOMBIE_DRINK_PARTS) * 12;
+	hand = &player->hands[HAND_RIGHT];
+	n = hand->handmodel.definition->nummatrices;
+
+	if (n < ZOMBIE_DRINK_JOINTS) {
+		n = ZOMBIE_DRINK_JOINTS;
+	}
+
+	if (!gfxHasVtxSpace(n * sizeof(Mtxf))) {
+		return gdl;
+	}
+
+	matrices = gfxAllocate(n * sizeof(Mtxf));
+
+	for (j = 0; j < n; j++) {
+		zombiesDrinkMtx(frame + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
+	}
+
+	// in bgunRender()'s depth and projection, which the guns have set
+	gSPPerspNormalize(gdl++, mtx00016dcc(0, 300));
+
+	renderdata.gdl = gdl;
+	renderdata.unk30 = 4;
+	renderdata.envcolour = player->gunshadecol[0] << 24 | player->gunshadecol[1] << 16
+		| player->gunshadecol[2] << 8 | player->gunshadecol[3];
+	renderdata.zbufferenabled = true;
+
+	mtx00016760();
+
+	// The hands: the character's own, painted as theirs (handtint.c)
+	handtintTick();
+
+	saved = hand->handmodel.matrices;
+	hand->handmodel.matrices = matrices;
+	modelUpdateRelations(&hand->handmodel);
+
+	// the release's meshes keep a model's pose for the rest of the pass
+	// (xblamesh.c), and the hands may have been drawn on the gun already
+	xblaMeshPassBegin();
+	modelRender(&renderdata, &hand->handmodel);
+	xblaMeshPassBegin();
+
+	hand->handmodel.matrices = saved;
+	gdl = renderdata.gdl;
+
+	// The bottle and its cap, in the hands
+	perk = g_ZombieDrinkPerk[playernum];
+
+	if (perk >= 0 && perk < ZOMBIEPERK_COUNT) {
+		for (j = 0; j < ZOMBIE_DRINK_PARTS; j++) {
+			struct zombiemesh *zm = &g_ZombieBottleMeshes[perk][j];
+			Mtxf *mtx;
+
+			if (!zm->tried) {
+				char rel[128];
+				char label[64];
+
+				snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/bottle_%s_%s.obj",
+						g_ZombieMeshNames[perk], j ? "top" : "body");
+				snprintf(label, sizeof(label), "%s's bottle%s", g_ZombieMeshNames[perk], j ? " cap" : "");
+				zombiesMeshBuildFrom(zm, rel, label);
+			}
+
+			if (!zm->gdl) {
+				continue;
+			}
+
+			mtx = gfxAllocateMatrix();
+			zombiesDrinkMtx(frame + (ZOMBIE_DRINK_JOINTS + j) * 12, objaxes, mtx);
+
+			gDPPipeSync(gdl++);
+			gDPSetCycleType(gdl++, G_CYC_2CYCLE);
+			gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
+			// the picture times its baked light, times the gun's light here
+			// the picture times its baked light (the gun's shade colour is
+			// nothing here: the hands are drawn in their own light)
+			gDPSetPrimColor(gdl++, 0, 0, 0xff, 0xff, 0xff, 0xff);
+			gDPSetTextureFilter(gdl++, G_TF_BILERP);
+			gDPSetTexturePersp(gdl++, G_TP_PERSP);
+			gDPSetTextureLOD(gdl++, G_TL_TILE);
+			gDPSetTextureLUT(gdl++, G_TT_NONE);
+			gDPSetTextureConvert(gdl++, G_TC_FILT);
+			gDPSetAlphaCompare(gdl++, G_AC_NONE);
+			gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+			gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+			gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+			gSPDisplayList(gdl++, zm->gdl);
+			gDPPipeSync(gdl++);
+			gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+		}
+	}
+
+	// the lists read the hands' matrices in fixed point, as bgunRender()'s do
+	mtxF2LBulk(matrices, n);
+	mtx00016784();
+
+	gSPPerspNormalize(gdl++, viGetPerspScale());
+
+	return gdl;
 }
 
 static const char *zombiesMachineName(s32 id)
@@ -3467,11 +3740,18 @@ static void zombiesTickJuggernog(s32 playernum)
 		s32 prev = g_ZombieDrink60[playernum];
 		s32 now = prev + g_Vars.lvupdate60;
 
-		// three gulps while the bottle is up
-		if (zombiesCrossed(prev, now, DRINK_GULPSTART + 8)
-				|| zombiesCrossed(prev, now, DRINK_GULPSTART + 28)
-				|| zombiesCrossed(prev, now, DRINK_GULPSTART + 48)) {
+		// on the drink's notes (Black Ops II's frames 16, 29 and 57, two
+		// 60ths each, from the bottle coming up): the cap off, gulps, and the
+		// bottle thrown away
+		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 32)
+				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 58)
+				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 76)
+				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 94)) {
 			zombiesPlaySound(SFX_PICKUP_AMMO, 0.45f);
+		}
+
+		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 114)) {
+			zombiesPlaySound(SFX_BOTTLE_BREAK, 0.5f);
 		}
 
 		// the perk takes as the last of it goes down
@@ -8093,7 +8373,10 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 				viGetViewTop() + viGetViewHeight() * 62 / 100, 0x40ff40e0,
 				g_CharsHandelGothicSm, g_FontHandelGothicSm);
 	} else if (g_ZombieDrink60[playernum] >= 0) {
-		gdl = zombiesRenderBottle(gdl, g_ZombieDrink60[playernum], g_ZombieDrinkPerk[playernum]);
+		// the HUD's bottle when there is no drink in the hands
+		if (!zombiesDrinkViewmodelActive(playernum)) {
+			gdl = zombiesRenderBottle(gdl, g_ZombieDrink60[playernum], g_ZombieDrinkPerk[playernum]);
+		}
 	} else if (g_ZombieNearPerk[playernum] >= 0) {
 		s32 perk = g_ZombieNearPerk[playernum];
 		s32 textwidth;

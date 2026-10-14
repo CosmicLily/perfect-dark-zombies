@@ -62,6 +62,8 @@
 #include "xblatex.h"
 #include "objmesh.h"
 #include "modelpack.h"
+#include "handtint.h"
+#include "gewatch.h"
 #include "net/net.h"
 #endif
 
