@@ -1870,7 +1870,10 @@ struct zombiecornerpick {
 #define ZPICK_FLOOR  2 // standing free on the floor at corner, its front to from
 
 static const struct zombiecornerpick g_ZombieCornerPicks[] = {
-	{ 0x32, ZOMBIEPERK_STAMINUP,  { 2400, 160, 1000 },   { 2311, 109, 989 },     ZPICK_CORNER }, // Skedar
+	// Skedar's Stamin-Up in the corner the player stood in (1365, 0), the
+	// pyramid room's narrow end, the room opening out to +x; the corner
+	// itself, two walls at 45 degrees, measured 42 behind them
+	{ 0x32, ZOMBIEPERK_STAMINUP,  { 1700, 160, 0 },      { 1323, 109, 0 },       ZPICK_CORNER }, // Skedar
 	{ 0x32, ZOMBIEPERK_DOUBLETAP, { -2200, -255, 2200 }, { -1644, -255, 1656 },  ZPICK_WALL   }, // Skedar
 	// Skedar's Pack-a-Punch on the tiled platform at the sand room's back,
 	// facing out over the sand to the room's ceiling column (the spot stood on
@@ -4693,7 +4696,7 @@ static void zombiesReturnMuleGun(s32 playernum)
 #define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 + ZOMBIE_PAP_UP60)
 #define ZOMBIE_PAP_DAMAGE   2.0f
 #define ZOMBIE_PAP_CLIPMULT 2
-#define ZOMBIE_PAP_PITCH    1.35f // its shots' pitch
+#define ZOMBIE_PAP_PITCH    1.5f // its shots' pitch
 #define ZOMBIE_PAP_CLIPS    10
 #define ZOMBIE_PAP_MAX      8
 #define ZOMBIE_PAP_RADAR    0xb040ff00
@@ -6238,13 +6241,26 @@ static bool zombiesWallBuyOwned(s32 playernum, struct zombiewallbuy *buy)
 	return has;
 }
 
+// What its ammo costs the player: half the gun, or Call of Duty's 4500 for a
+// gun of it they have Pack-a-Punched
+#define ZOMBIE_PAP_AMMO_COST 4500
+
+static s32 zombiesWallBuyAmmoCost(s32 playernum, struct zombiewallbuy *buy)
+{
+	if (zombiesGunIsPapped(playernum, g_MpWeapons[buy->mpweaponnum].weaponnum)) {
+		return ZOMBIE_PAP_AMMO_COST;
+	}
+
+	return buy->cost / 2;
+}
+
 // The gun off wall buy w for the player, or its ammo if they have it already
 static void zombiesWallBuyPurchase(s32 playernum, s32 w)
 {
 	struct zombiewallbuy *buy = &g_ZombieWallBuys[w];
 	s32 weaponnum = g_MpWeapons[buy->mpweaponnum].weaponnum;
 	bool owned = zombiesWallBuyOwned(playernum, buy);
-	s32 cost = owned ? buy->cost / 2 : buy->cost;
+	s32 cost = owned ? zombiesWallBuyAmmoCost(playernum, buy) : buy->cost;
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	bool full = false;
 
@@ -6642,7 +6658,7 @@ static bool zombiesWallBuyPrompt(s32 playernum, char *text)
 	buy = &g_ZombieWallBuys[g_ZombieNearWall[playernum]];
 
 	if (zombiesWallBuyOwned(playernum, buy)) {
-		sprintf(text, "Hold %s for ammo [Cost: %d]", zombiesUseName(playernum), buy->cost / 2);
+		sprintf(text, "Hold %s for ammo [Cost: %d]", zombiesUseName(playernum), zombiesWallBuyAmmoCost(playernum, buy));
 		return true;
 	}
 
