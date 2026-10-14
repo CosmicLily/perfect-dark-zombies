@@ -9421,9 +9421,14 @@ void chrPunchInflictDamage(struct chrdata *chr, s32 damage, s32 range, u8 revers
 		gset.weaponnum = chr->aibot->weaponnum;
 		gset.weaponfunc = chr->aibot->gunfunc;
 
-		// Zombies hit much harder than the original game's fists
+		// Zombies hit much harder than the original game's fists: half a
+		// player's health a blow, Call of Duty's 50 of 100, so two put a
+		// player down and five do with Juggernog's 2.5 (zombies.inc). A fist's
+		// blow here is 0.06 of a player's health, so x8.5 is 0.51, just over
+		// the half so the second is the last; x8 was 0.48, which with a
+		// simulant's quick second punch (bot.c) landed 0.96 at once.
 		if (zombiesIsActive()) {
-			damage *= 8;
+			damage *= 8.5f;
 		}
 	}
 

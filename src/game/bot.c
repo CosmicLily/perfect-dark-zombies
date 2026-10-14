@@ -4004,12 +4004,14 @@ void botTickUnpaused(struct chrdata *chr)
 												aibot->punchtimer60[0] = TICKS(30);
 											}
 
-											// Zombies swing at one steady pace, whatever the round
+											// Zombies swing at one steady pace, whatever the
+											// round: Call of Duty's swipe, about a second and a
+											// half from one to the next, and never the quick
+											// second punch a simulant throws one time in three
+											// (it came 0.85 seconds after the first)
 											if (zombiesIsActive()) {
-												aibot->punchtimer60[0] = TICKS(60);
-											}
-
-											if (rngRandom() % 3 == 0) {
+												aibot->punchtimer60[0] = TICKS(90);
+											} else if (rngRandom() % 3 == 0) {
 												aibot->punchtimer60[1] = aibot->punchtimer60[0] - TICKS(20);
 											}
 											break;
