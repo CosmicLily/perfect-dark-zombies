@@ -62,6 +62,10 @@
 #include "game/options.h"
 #include "game/propobj.h"
 #include "game/wallhit.h"
+#ifndef PLATFORM_N64
+// zombies.inc: a Zombies machine drawn from a model of its own
+bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj);
+#endif
 #include "game/shards.h"
 #include "bss.h"
 #include "tvcmds.h"
@@ -15482,6 +15486,9 @@ void objRenderProp(struct prop *prop, struct modelrenderdata *renderdata, bool x
 			gSPClearExtraGeometryModeEXT(renderdata->gdl++, G_DEPTH_PREPASS_EXT);
 			gSPSetExtraGeometryModeEXT(renderdata->gdl++, G_DEPTH_FRONT_EXT);
 		}
+
+		// a Zombies machine with a model of its own draws that instead
+		if (!zombiesRenderMachine(renderdata, obj))
 #endif
 		modelRender(renderdata, model);
 #ifndef PLATFORM_N64

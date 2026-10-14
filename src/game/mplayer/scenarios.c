@@ -45,6 +45,7 @@
 #include "fs.h"
 #include "game/music.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "data.h"
 #include "types.h"
@@ -58,6 +59,9 @@
 #include "game/tex.h"
 #include "game/game_0b0fd0.h"
 #include "xblamesh.h"
+#include "xblatex.h"
+#include "objmesh.h"
+#include "modelpack.h"
 #include "net/net.h"
 #endif
 

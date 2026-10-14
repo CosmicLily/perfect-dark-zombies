@@ -1555,6 +1555,421 @@ static struct defaultobj *zombiesMachineObjAt(s32 id)
 	return g_ZombieBox;
 }
 
+/**
+ * A machine drawn from a model of its own in place of the mainframe that
+ * stands in for it: zombies/models/<name>/<name>.obj beside the executable,
+ * as tools/zombies/semodel2obj.py writes one from a Greyhound export (Call of
+ * Duty's own machines, which stay on the player's disk and out of the tree).
+ * A machine with no file there keeps the mainframe.
+ *
+ * The OBJ is Call of Duty's: centimetres, z up, the front of the machine
+ * towards -y. It is turned to the game's y up (its -y the game's +z) and
+ * built once into a display list of our own: a batch of up to sixteen
+ * vertices at a time, the game's G_COL table beside each, every material's
+ * picture bound as a stand-in tile the renderer swaps the PNG in against
+ * (modelpackBindMaterial(), as a model pack's is). The light is baked into
+ * the vertices from their normals, and the room's laid over it as the
+ * primitive colour as it is drawn. A sign's material is drawn lit whatever
+ * the room, as the machine's is with the power on. Its "..._off" material is
+ * drawn too: Quick Revive's sign has no face but its power-off one (Black Ops
+ * lights it with an effect laid over it), and left out the sign was a bare
+ * rim. A "power_off" one is a cover over a part, and is left out.
+ *
+ * The mainframe is still the machine as far as everything else goes - its
+ * box is what is solid and what the placement measures - and is only not
+ * drawn: objRender() asks zombiesRenderMachine() first.
+ */
+#define ZOMBIE_MESH_SCALE   0.9f // Call of Duty's centimetres to the game's units
+#define ZOMBIE_MESH_FIXED   4.0f // vertices are stored at four to the centimetre
+#define ZOMBIE_MESH_BATCH   16   // vertices a G_VTX loads
+#define ZOMBIE_MESH_MAXTRIS 64   // triangles a batch gathers
+
+struct zombiemesh {
+	bool tried;
+	Gfx *gdl;
+	Vtx *vtx;
+	Col *col;
+	f32 ymin;         // its foot, and the middle of its plan, in the game's axes
+	f32 midx;
+	f32 zmax;         // its back
+};
+
+static struct zombiemesh g_ZombieMeshes[ZOMBIE_PAP_ID + 1];
+
+static const char *g_ZombieMeshNames[ZOMBIE_PAP_ID + 1] = {
+	"juggernog", "quickrevive", "speedcola", "doubletap", "staminup", "mulekick", "packapunch",
+};
+
+// A white tile for a material whose picture will not bind
+static u16 g_ZombieMeshWhite[XBLATEX_TILE * XBLATEX_TILE] __attribute__((aligned(64)));
+
+static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 slot)
+{
+	// z up and front -y, to y up and front -z: the mainframe's back is its
+	// +z, the side placement puts against the wall. Call of Duty's axes are
+	// the other hand to the game's, so x stays as it is (turned 180 degrees
+	// as well it drew mirrored: the lettering backwards), and the triangles
+	// are wound the other way to keep their fronts (zombiesMeshBuild())
+	f32 x = ov->pos[0];
+	f32 y = ov->pos[2];
+	f32 z = ov->pos[1];
+	f32 nx = ov->nrm[0];
+	f32 ny = ov->nrm[2];
+	f32 nz = ov->nrm[1];
+	// a light from above, in front and to the left
+	f32 lit = nx * -0.35f + ny * 0.75f + nz * -0.56f;
+	f32 shade = 0.6f + 0.4f * (lit > 0 ? lit : 0);
+	u8 b = (u8)(shade * 255.0f);
+
+	v->x = (s16)(x * ZOMBIE_MESH_FIXED);
+	v->y = (s16)(y * ZOMBIE_MESH_FIXED);
+	v->z = (s16)(z * ZOMBIE_MESH_FIXED);
+	v->flags = 0;
+	v->colour = (u8)(slot * 4);
+	// in 10.5 texels of the 32 texel stand-in tile: a UV of one is 1024
+	v->s = (s16)(ov->uv[0] * (XBLATEX_TILE * 32));
+	v->t = (s16)(ov->uv[1] * (XBLATEX_TILE * 32));
+
+	c->r = c->g = c->b = b;
+	c->a = 0xff;
+}
+
+static void zombiesMeshBuild(s32 id)
+{
+	struct zombiemesh *zm = &g_ZombieMeshes[id];
+	char rel[128];
+	char path[FS_MAXPATH + 1];
+	struct objmesh *m;
+	u32 maxgfx;
+	u32 numgfx = 0;
+	u32 numvtx = 0;
+	f32 lo[3] = { 1e9f, 1e9f, 1e9f };
+	f32 hi[3] = { -1e9f, -1e9f, -1e9f };
+	u32 d;
+	u32 i;
+
+	zm->tried = true;
+
+	snprintf(rel, sizeof(rel), "$E/zombies/models/%s/%s.obj", g_ZombieMeshNames[id], g_ZombieMeshNames[id]);
+	snprintf(path, sizeof(path), "%s", fsFullPath(rel));
+
+	if (fsFileSize(path) <= 0) {
+		return;
+	}
+
+	m = objmeshRead(path);
+
+	if (!m || m->numtris == 0) {
+		objmeshFree(m);
+		return;
+	}
+
+	// at worst a batch a triangle: its three vertices, and the batch's head,
+	// one triangle command and a material's state before each
+	zm->vtx = malloc(sizeof(Vtx) * m->numtris * 3);
+	zm->col = malloc(sizeof(Col) * m->numtris * 3);
+	maxgfx = m->numtris * 3 + m->numdraws * 16 + 8;
+	zm->gdl = malloc(sizeof(Gfx) * maxgfx);
+
+	if (!zm->vtx || !zm->col || !zm->gdl) {
+		free(zm->vtx);
+		free(zm->col);
+		free(zm->gdl);
+		zm->vtx = NULL;
+		zm->col = NULL;
+		zm->gdl = NULL;
+		objmeshFree(m);
+		return;
+	}
+
+	for (d = 0; d < m->numdraws; d++) {
+		const struct objdraw *draw = &m->draws[d];
+		const struct objmaterial *mat = draw->material >= 0 && draw->material < (s32)m->nummaterials
+			? &m->materials[draw->material] : NULL;
+		const void *tile = NULL;
+		s32 alpha = 0;
+		s32 soft = 0;
+		s32 slots[ZOMBIE_MESH_BATCH];
+		u8 tris[ZOMBIE_MESH_MAXTRIS * 3];
+		s32 numslots = 0;
+		s32 numtris = 0;
+		u32 t;
+		Gfx *gdl;
+
+		// a cover over a part with the power off: these machines are on
+		if (mat && strstr(mat->name, "power_off")) {
+			continue;
+		}
+
+		if (mat && mat->kind == OBJMAT_IMAGE) {
+			tile = modelpackBindMaterial(mat, &alpha, &soft);
+		}
+
+		if (!tile) {
+			if (g_ZombieMeshWhite[0] != 0xffff) {
+				memset(g_ZombieMeshWhite, 0xff, sizeof(g_ZombieMeshWhite));
+			}
+
+			tile = g_ZombieMeshWhite;
+		}
+
+		gdl = &zm->gdl[numgfx];
+
+		gDPPipeSync(gdl++);
+
+		// A sign is lit, as the machine's is with the power on: not darkened
+		// by the room (the second cycle's primitive colour, set round the
+		// list, is the room's light)
+		if (mat && strstr(mat->name, "sign")) {
+			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, 0, 0, 0, 0, 1,
+					0, 0, 0, COMBINED, 0, 0, 0, 1);
+		} else {
+			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, 0, 0, 0, 0, 1,
+					COMBINED, 0, PRIMITIVE, 0, 0, 0, 0, 1);
+		}
+
+		gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
+		gDPLoadTextureBlock(gdl++, tile, G_IM_FMT_RGBA, G_IM_SIZ_16b,
+				XBLATEX_TILE, XBLATEX_TILE, 0,
+				G_TX_WRAP | G_TX_NOMIRROR, G_TX_WRAP | G_TX_NOMIRROR,
+				XBLATEX_TILE_MASK, XBLATEX_TILE_MASK, G_TX_NOLOD, G_TX_NOLOD);
+
+		numgfx = (u32)(gdl - zm->gdl);
+
+		// The triangles a batch at a time: as many as share sixteen vertices,
+		// gathered, then the batch's one load and its triangles four to a
+		// command
+		for (t = draw->firsttri; t <= draw->firsttri + draw->numtris; t++) {
+			const bool last = t == draw->firsttri + draw->numtris;
+			s32 corner[3] = { -1, -1, -1 };
+			s32 need = 0;
+			s32 k;
+			s32 j;
+
+			if (!last) {
+				for (k = 0; k < 3; k++) {
+					for (j = 0; j < numslots; j++) {
+						if (slots[j] == (s32)m->indices[t * 3 + k]) {
+							corner[k] = j;
+						}
+					}
+
+					if (corner[k] < 0) {
+						// the same new vertex twice in one triangle is one slot
+						for (j = 0; j < k; j++) {
+							if (m->indices[t * 3 + j] == m->indices[t * 3 + k] && corner[j] < 0) {
+								break;
+							}
+						}
+
+						if (j == k) {
+							need++;
+						}
+					}
+				}
+			}
+
+			// the batch out: before a triangle it has no room for, and at the end
+			if ((last || numslots + need > ZOMBIE_MESH_BATCH || numtris == ZOMBIE_MESH_MAXTRIS) && numtris > 0) {
+				gdl = &zm->gdl[numgfx];
+
+				for (j = 0; j < numslots; j++) {
+					zombiesMeshVertex(&m->vertices[slots[j]], &zm->vtx[numvtx + j], &zm->col[numvtx + j], j);
+				}
+
+				gSPColor(gdl++, &zm->col[numvtx], numslots);
+				gSPVertex(gdl++, &zm->vtx[numvtx], numslots, 0);
+
+				for (j = 0; j < numtris; j += 4) {
+					u8 *q = &tris[j * 3];
+					s32 n = numtris - j;
+
+					gSPTri4(gdl++, q[0], q[1], q[2],
+							n > 1 ? q[3] : 0, n > 1 ? q[4] : 0, n > 1 ? q[5] : 0,
+							n > 2 ? q[6] : 0, n > 2 ? q[7] : 0, n > 2 ? q[8] : 0,
+							n > 3 ? q[9] : 0, n > 3 ? q[10] : 0, n > 3 ? q[11] : 0);
+				}
+
+				numgfx = (u32)(gdl - zm->gdl);
+				numvtx += numslots;
+				numslots = 0;
+				numtris = 0;
+
+				for (k = 0; k < 3; k++) {
+					corner[k] = -1;
+				}
+			}
+
+			if (last) {
+				break;
+			}
+
+			for (k = 0; k < 3; k++) {
+				const u32 vi = m->indices[t * 3 + k];
+				const struct objvertex *ov = &m->vertices[vi];
+
+				for (j = 0; j < numslots && corner[k] < 0; j++) {
+					if (slots[j] == (s32)vi) {
+						corner[k] = j;
+					}
+				}
+
+				if (corner[k] < 0) {
+					corner[k] = numslots;
+					slots[numslots++] = (s32)vi;
+				}
+
+				// in the game's axes, as zombiesMeshVertex() turns them
+				lo[0] = MIN(lo[0], ov->pos[0]);
+				hi[0] = MAX(hi[0], ov->pos[0]);
+				lo[1] = MIN(lo[1], ov->pos[2]);
+				hi[2] = MAX(hi[2], ov->pos[1]);
+			}
+
+			// wound the other way: the axes changed hand (zombiesMeshVertex())
+			tris[numtris * 3 + 0] = (u8)corner[0];
+			tris[numtris * 3 + 1] = (u8)corner[2];
+			tris[numtris * 3 + 2] = (u8)corner[1];
+			numtris++;
+		}
+	}
+
+	gSPEndDisplayList(&zm->gdl[numgfx++]);
+
+	zm->ymin = lo[1];
+	zm->midx = (lo[0] + hi[0]) / 2;
+	zm->zmax = hi[2];
+
+	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands",
+			g_ZombieMeshNames[id], m->numtris, numvtx, numgfx);
+
+	objmeshFree(m);
+}
+
+/**
+ * propobj.c's objRender(), for each object before it draws its model: true
+ * when this is a machine with a model of its own, drawn here instead.
+ */
+bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	struct zombiemesh *zm = NULL;
+	struct modelrodata_bbox *bbox;
+	s32 id;
+	f32 len[3];
+	Mtxf world;
+	Mtxf *mtx;
+	struct coord base;
+	s32 i;
+	s32 j;
+
+	if (!zombiesIsActive()) {
+		return false;
+	}
+
+	for (id = 0; id <= ZOMBIE_PAP_ID; id++) {
+		if (obj == zombiesMachineObjAt(id)) {
+			break;
+		}
+	}
+
+	if (id > ZOMBIE_PAP_ID) {
+		return false;
+	}
+
+	zm = &g_ZombieMeshes[id];
+
+	if (!zm->tried) {
+		zombiesMeshBuild(id);
+	}
+
+	if (!zm->gdl) {
+		return false;
+	}
+
+	// drawn in the opaque pass; the translucent one has nothing of it
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	// The mainframe's turn without its size, which realrot carries
+	for (i = 0; i < 3; i++) {
+		len[i] = sqrtf(obj->realrot[i][0] * obj->realrot[i][0] + obj->realrot[i][1] * obj->realrot[i][1]
+				+ obj->realrot[i][2] * obj->realrot[i][2]);
+
+		if (len[i] <= 0) {
+			return false;
+		}
+	}
+
+	// Stood where the mainframe stands: its foot on the mainframe's, its
+	// back to the mainframe's back, the middles of their widths together
+	bbox = objFindBboxRodata(obj);
+	base = obj->prop->pos;
+
+	if (bbox) {
+		f32 lx = (objGetLocalXMin(bbox) + objGetLocalXMax(bbox)) / 2;
+		f32 ly = objGetLocalYMin(bbox);
+		f32 lz = objGetLocalZMax(bbox);
+
+		for (j = 0; j < 3; j++) {
+			(&base.x)[j] += obj->realrot[0][j] * lx + obj->realrot[1][j] * ly + obj->realrot[2][j] * lz;
+		}
+	}
+
+	mtx4LoadIdentity(&world);
+
+	for (i = 0; i < 3; i++) {
+		f32 s = ZOMBIE_MESH_SCALE / ZOMBIE_MESH_FIXED / len[i];
+
+		for (j = 0; j < 3; j++) {
+			world.m[i][j] = obj->realrot[i][j] * s;
+		}
+	}
+
+	// less its own foot, middle and back, at the mainframe's
+	for (j = 0; j < 3; j++) {
+		(&base.x)[j] -= (world.m[0][j] * zm->midx + world.m[1][j] * zm->ymin + world.m[2][j] * zm->zmax)
+			* ZOMBIE_MESH_FIXED;
+	}
+
+	world.m[3][0] = base.x;
+	world.m[3][1] = base.y;
+	world.m[3][2] = base.z;
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+	gDPPipeSync(renderdata->gdl++);
+	gDPSetCycleType(renderdata->gdl++, G_CYC_2CYCLE);
+	gDPSetRenderMode(renderdata->gdl++, G_RM_PASS,
+			renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF2 : G_RM_AA_OPA_SURF2);
+	// the picture times the baked light, times the room's (the shade colour
+	// objRender() hands the prop's own lists as their fog colour); each
+	// material's combiner is in the list
+	// Half of it: Call of Duty's machines carry lights of their own, and in
+	// one of Skedar's corners the room's alone (0x3e5c7f) was a navy machine
+	{
+		u32 room = (renderdata->fogcolour & 0xffffff00) ? renderdata->fogcolour : 0xffffffff;
+
+		gDPSetPrimColor(renderdata->gdl++, 0, 0,
+				0x80 + (((room >> 24) & 0xff) >> 1),
+				0x80 + (((room >> 16) & 0xff) >> 1),
+				0x80 + (((room >> 8) & 0xff) >> 1), 0xff);
+	}
+	gDPSetTextureFilter(renderdata->gdl++, G_TF_BILERP);
+	gDPSetTexturePersp(renderdata->gdl++, G_TP_PERSP);
+	gDPSetTextureLOD(renderdata->gdl++, G_TL_TILE);
+	gSPClearGeometryMode(renderdata->gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+	gSPSetGeometryMode(renderdata->gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH | G_CULL_BACK);
+	gSPMatrix(renderdata->gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+	gSPDisplayList(renderdata->gdl++, zm->gdl);
+	gDPPipeSync(renderdata->gdl++);
+	gDPSetCycleType(renderdata->gdl++, G_CYC_1CYCLE);
+	gSPClearGeometryMode(renderdata->gdl++, G_CULL_BOTH);
+
+	return true;
+}
+
 static const char *zombiesMachineName(s32 id)
 {
 	return id < ZOMBIEPERK_COUNT ? g_ZombiePerks[id].name : "Pack-a-Punch";
