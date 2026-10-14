@@ -685,7 +685,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
                     "texel.a, 0.0, 1.0));");
     }
 
-    if (cc_features.opt_grayscale) {
+    if (cc_features.opt_camo) {
+        const std::string camo = gfx_camo_fs(cc_features);
+        append_str(fs_buf, &fs_len, camo.c_str());
+    } else if (cc_features.opt_grayscale) {
         append_line(fs_buf, &fs_len, "    float intensity = (texel.r + texel.g + texel.b) / 3.0;");
         append_line(fs_buf, &fs_len, "    vec3 new_texel = vGrayscaleColor.rgb * intensity;");
         append_line(fs_buf, &fs_len, "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);");

@@ -2177,7 +2177,9 @@ static struct ShaderProgram *gfx_vk_create_and_load_new_shader(uint64_t shader_i
               "texel.a, 0.0, 1.0));\n";
     }
 
-    if (cc_features.opt_grayscale) {
+    if (cc_features.opt_camo) {
+        fs += gfx_camo_fs(cc_features);
+    } else if (cc_features.opt_grayscale) {
         fs += "    float intensity = (texel.r + texel.g + texel.b) / 3.0;\n"
               "    vec3 new_texel = vGrayscaleColor.rgb * intensity;\n"
               "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);\n";

@@ -50,6 +50,11 @@ enum {
 // fog rather than being mixed towards the fog colour, which would add the fog
 // colour on top of the surface it lands on.
 #define SHADER_OPT_FOG_FADE (1 << 15)
+// G_SETGRAYSCALE_EXT 2, with SHADER_OPT_GRAYSCALE: the colour is an animated
+// camo (Zombies' Pack-a-Punch) laid over the combined colour in the texture's
+// own coordinates; the grayscale colour carries its phase and strength.
+// Bit 16: kept by the clear of 16-27 for a draw without alpha.
+#define SHADER_OPT_CAMO (1 << 16)
 // G_SETFOGLINE_EXT's linear fog: the fog line is evaluated at the eye depth
 // (clip w) rather than at z/w - an HD level's fog, linear in distance as the
 // GoldenEye XBLA release draws it. Bit 28: 16-27 are cleared for a draw
@@ -90,6 +95,7 @@ struct CCFeatures {
     bool opt_text_outline;
     bool opt_envmap;
     bool opt_fog_fade;
+    bool opt_camo;
     bool opt_fog_linear;
     bool opt_alpha_core;
     bool opt_fog_vertex;
@@ -109,6 +115,8 @@ void gfx_cc_get_features(uint64_t shader_id0, uint32_t shader_id1, struct CCFeat
 #include <string>
 // The mesh vertex shader's functions and main(), for both backends (gfx_pc.cpp)
 std::string gfx_mesh_vs_main(const struct CCFeatures& cc, bool depth_clamp_hack, bool vulkan_depth);
+// SHADER_OPT_CAMO's fragment shader lines, for both backends (gfx_cc.cpp)
+std::string gfx_camo_fs(const struct CCFeatures& cc);
 #endif
 
 #endif

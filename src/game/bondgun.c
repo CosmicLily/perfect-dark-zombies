@@ -93,6 +93,8 @@ bool zombiesHidesHud(void);
 s32 zombiesPapClipMult(s32 weaponnum);
 const char *zombiesPapName(s32 weaponnum, const char *name);
 f32 zombiesPapPitch(s32 weaponnum);
+Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum);
+Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
 f32 zombiesHandRate(s32 handstate);
@@ -13713,11 +13715,15 @@ void bgunRender(Gfx **gdlptr)
 				gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_NO_CULLING_EXT);
 			}
 
+			// Zombies: a Pack-a-Punched gun in its animated camo
+			renderdata.gdl = zombiesCamoBegin(renderdata.gdl, weaponnum);
+
 			if (!geshown)
 #endif
 			modelRender(&renderdata, &hand->gunmodel);
 
 #ifndef PLATFORM_N64
+			renderdata.gdl = zombiesCamoEnd(renderdata.gdl, weaponnum);
 			g_ModelXluDecal = 0;
 
 			if (bothsides) {

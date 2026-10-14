@@ -4826,6 +4826,42 @@ f32 zombiesPapPitch(s32 weaponnum)
 	return 1.0f;
 }
 
+/**
+ * bondgun.c, round the first person gun's model: a Pack-a-Punched gun drawn in
+ * its animated camo, Call of Duty's (Black Ops 3's moving ones). The renderer
+ * draws it (SHADER_OPT_CAMO, port/fast3d/gfx_cc.cpp): G_SETGRAYSCALE_EXT 2,
+ * and the grayscale colour carrying the camo's phase, a 16 bit turn in r and
+ * g, and its strength in a. One loop every ZOMBIE_CAMO_LOOP60.
+ */
+#define ZOMBIE_CAMO_LOOP60 480 // eight seconds
+
+Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum)
+{
+	u32 phase;
+
+	if (!zombiesIsActive() || !zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return gdl;
+	}
+
+	phase = (u32)(g_Vars.lvframe60 % ZOMBIE_CAMO_LOOP60) * 65536 / ZOMBIE_CAMO_LOOP60;
+
+	gDPSetGrayscaleColorEXT(gdl++, (phase >> 8) & 0xff, phase & 0xff, 0, 0xff);
+	gDPGrayscaleEXT(gdl++, 2);
+
+	return gdl;
+}
+
+Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum)
+{
+	if (!zombiesIsActive() || !zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return gdl;
+	}
+
+	gDPGrayscaleEXT(gdl++, 0);
+
+	return gdl;
+}
+
 // The machine up: against the wall of the pad furthest from every other
 // machine and the box, for zombiesCornerMachine() to put in the openest
 // corner left. Called once the others are placed.

@@ -293,6 +293,7 @@ static struct RDP {
     uint32_t other_mode_l, other_mode_h;
     uint64_t combine_mode;
     bool grayscale;
+    bool camo; // G_SETGRAYSCALE_EXT 2: the grayscale colour is a camo's (SHADER_OPT_CAMO)
     bool tex_lod;
     bool tex_detail;
 
@@ -2716,7 +2717,8 @@ static void gfx_derive_batch_state(void) {
     const bool use_2cyc = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
     const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD;
     bool invisible = (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) && (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20);
-    const bool use_grayscale = rdp.grayscale;
+    // a camo is laid over the surface once: not over a sheen added to it
+    const bool use_grayscale = rdp.grayscale && !(rdp.camo && (rsp.extra_geometry_mode & G_ADDITIVE_EXT));
     const bool use_blur = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BLUR_EXT;
     const bool use_envmap = (rsp.extra_geometry_mode & G_ENVMAP_EXT) != 0;
 
@@ -2789,6 +2791,10 @@ static void gfx_derive_batch_state(void) {
     }
     if (use_grayscale) {
         cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
+
+        if (rdp.camo) {
+            cc_options |= (uint64_t)SHADER_OPT_CAMO;
+        }
     }
     if (use_blur) {
         cc_options |= (uint64_t)SHADER_OPT_BLUR;
@@ -2815,8 +2821,9 @@ static void gfx_derive_batch_state(void) {
     }
 
     // If we are not using alpha, clear the alpha components of the combiner as they have no effect
+    // (but not bit 16, SHADER_OPT_CAMO)
     if (!use_alpha) {
-        cc_options &= ~((0xfff << 16) | ((uint64_t)0xfff << 44));
+        cc_options &= ~((0xffe << 16) | ((uint64_t)0xfff << 44));
     }
 
     ColorCombinerKey key;
@@ -8278,6 +8285,7 @@ static void gfx_run_dl(Gfx* cmd) {
                 break;
             case G_SETGRAYSCALE_EXT:
                 rdp.grayscale = cmd->words.w1;
+                rdp.camo = cmd->words.w1 == 2;
                 gfx_mark_state_dirty();
                 break;
             case G_LOADBLOCK:
