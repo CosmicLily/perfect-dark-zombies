@@ -4693,7 +4693,7 @@ static void zombiesReturnMuleGun(s32 playernum)
 #define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 + ZOMBIE_PAP_UP60)
 #define ZOMBIE_PAP_DAMAGE   2.0f
 #define ZOMBIE_PAP_CLIPMULT 2
-#define ZOMBIE_PAP_PITCH    1.2f // its shots' pitch
+#define ZOMBIE_PAP_PITCH    1.35f // its shots' pitch
 #define ZOMBIE_PAP_CLIPS    10
 #define ZOMBIE_PAP_MAX      8
 #define ZOMBIE_PAP_RADAR    0xb040ff00
@@ -6691,17 +6691,17 @@ static bool zombiesBoxPrompt(s32 playernum, char *text)
 }
 
 /**
- * The atmosphere, as Call of Duty's: a sting of music as a round is cleared
- * and another as the next one starts, the level's music paused under them
- * (musicStartSting()); the zombies groaning as they come; and a game over
- * that holds the screen - GAME OVER, the rounds survived, the points and the
- * arena's best - before the match's own end screens.
+ * The atmosphere, as Call of Duty's: a sting of music as a round is cleared,
+ * the level's music paused under it (musicStartSting()); the zombies
+ * groaning as they come; and a game over that holds the screen - GAME OVER,
+ * the rounds survived, the points and the arena's best - before the match's
+ * own end screens.
  *
  * Perfect Dark has no music of its own for these, so they are borrowed: the
- * beta's multiplayer death sting (in the ROM, never played by the final game)
- * for the end of a round, the multiplayer death sting for the start of the
- * next, and the failed mission's end screen music for the game over (the solo
- * mission's death music was too much a death, and not the end of a game). The groans are
+ * opening of Skedar Mystery for the end of a round (the death stings tried
+ * there and at a round's start sounded like a death), and the failed
+ * mission's end screen music for the game over (the solo mission's death
+ * music was too much a death, and not the end of a game). The groans are
  * its pained men, its death gurgles and the Skedar's roars, pitched down.
  */
 #define ZOMBIE_STING240        TICKS(1200) // a sting's length: the round break's five seconds
@@ -6799,15 +6799,17 @@ static void zombiesWriteBest(s32 stagenum, s32 round)
 	fsFileFree(f);
 }
 
-// The music under a round changing: the end of one, then the start of the next
-static void zombiesRoundSting(bool start)
+// The music under a round being cleared, while the counter blinks. Not
+// MUSIC_DEATH_BETA: that is the solo game over's tune. A round's start has
+// none (MUSIC_DEATH_MP was there, and was not liked): the level's own comes
+// back.
+static void zombiesRoundSting(void)
 {
 	if (!g_ZombieCfgRoundMusic) {
 		return;
 	}
 
-	// not MUSIC_DEATH_BETA at the end: that is the solo game over's tune
-	musicStartSting(start ? MUSIC_DEATH_MP : MUSIC_SKEDAR_MYSTERY, ZOMBIE_STING240);
+	musicStartSting(MUSIC_SKEDAR_MYSTERY, ZOMBIE_STING240);
 }
 
 // bondgun.c and radar.c: GAME OVER has the screen to itself, no ammo or radar
@@ -7080,7 +7082,6 @@ void zombiesTick(void)
 		if (g_Vars.lvframenum >= 120) {
 			// the Zombies Options page's Starting Round
 			g_ZombieRound = g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1;
-			zombiesRoundSting(true);
 			g_ZombieRoundStartFrame = g_Vars.lvframenum;
 			g_ZombieGraceUntil = g_Vars.lvframenum + 120;
 			g_ZombieNextSpawnFrame = g_Vars.lvframenum + 120;
@@ -7146,10 +7147,9 @@ void zombiesTick(void)
 	// the round is cleared: wait a few seconds, then start the next one
 	if (g_ZombieNextWaveFrame < 0) {
 		g_ZombieNextWaveFrame = g_Vars.lvframenum + ZOMBIE_ROUND_BREAK;
-		zombiesRoundSting(false);
+		zombiesRoundSting();
 	} else if (g_Vars.lvframenum >= g_ZombieNextWaveFrame) {
 		g_ZombieRound++;
-		zombiesRoundSting(true);
 		zombiesRespawnTheDead();
 		g_ZombieDropsThisRound = 0;
 		g_ZombieRoundStartFrame = g_Vars.lvframenum;
