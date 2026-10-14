@@ -86,7 +86,8 @@ def write_bottle(d, perk, bottle):
         for p, n, uv, js, ws in verts:
             out.append("v %.4f %.4f %.4f" % tuple(c * OBJ_UNITS for c in p))
         for p, n, uv, js, ws in verts:
-            out.append("vt %.6f %.6f" % (uv[0], 1.0 - uv[1]))
+            # vmconv.py's v is already OBJ's way up, as glb2obj.py writes it
+            out.append("vt %.6f %.6f" % (uv[0], uv[1]))
         for p, n, uv, js, ws in verts:
             out.append("vn %.5f %.5f %.5f" % tuple(n))
         numtris = 0

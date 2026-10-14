@@ -1597,6 +1597,12 @@ struct zombiemesh {
 	f32 zmin;         // its back
 	f32 width;        // across, and front to back, in its own centimetres
 	f32 depth;
+	// a "_moving" material's vertices (Pack-a-Punch's drums), each run's
+	// first and count in vtx, and their t as built, for zombiesMeshSpin()
+	s32 numruns;
+	s32 runfirst[4];
+	s32 runcount[4];
+	s16 *runt;
 };
 
 static struct zombiemesh g_ZombieMeshes[ZOMBIE_PAP_ID + 1];
@@ -1705,6 +1711,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 		s32 numtris = 0;
 		u32 t;
 		Gfx *gdl;
+		const u32 drawfirstvtx = numvtx;
 
 		// a cover over a part with the power off: these machines are on
 		if (mat && strstr(mat->name, "power_off")) {
@@ -1845,9 +1852,40 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 			tris[numtris * 3 + 2] = (u8)corner[1];
 			numtris++;
 		}
+
+		// the draw's vertices, a run of their own, when they turn
+		if (mat && strstr(mat->name, "_moving") && numvtx > drawfirstvtx && zm->numruns < 4) {
+			zm->runfirst[zm->numruns] = drawfirstvtx;
+			zm->runcount[zm->numruns] = numvtx - drawfirstvtx;
+			zm->numruns++;
+		}
 	}
 
 	gSPEndDisplayList(&zm->gdl[numgfx++]);
+
+	if (zm->numruns > 0) {
+		s32 total = 0;
+		s32 r;
+		s32 k;
+
+		for (r = 0; r < zm->numruns; r++) {
+			total += zm->runcount[r];
+		}
+
+		zm->runt = malloc(sizeof(s16) * total);
+
+		if (zm->runt) {
+			total = 0;
+
+			for (r = 0; r < zm->numruns; r++) {
+				for (k = 0; k < zm->runcount[r]; k++) {
+					zm->runt[total++] = zm->vtx[zm->runfirst[r] + k].t;
+				}
+			}
+		} else {
+			zm->numruns = 0;
+		}
+	}
 
 	zm->ymin = lo[1];
 	zm->midx = (lo[0] + hi[0]) / 2;
@@ -1855,8 +1893,8 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 	zm->width = hi[0] - lo[0];
 	zm->depth = hi[2] - lo[2];
 
-	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands",
-			label, m->numtris, numvtx, numgfx);
+	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands%s",
+			label, m->numtris, numvtx, numgfx, zm->numruns ? ", its drums turning" : "");
 
 	objmeshFree(m);
 }
@@ -1892,6 +1930,53 @@ static s32 zombiesMachineExtrascale(s32 id)
 	side = (zm->width + zm->depth) * 0.5f * ZOMBIE_MESH_SCALE;
 
 	return (s32)(side * 256.0f / 1000.0f + 0.5f);
+}
+
+/**
+ * Pack-a-Punch's drums turning, as Black Ops II's do. Each drum's picture
+ * wraps once round it down its t, so sliding t turns it: the vertices are
+ * rewritten in place before the list is drawn, as bgunRender() slides the
+ * laser's liquid. A turn every ZOMBIE_PAP_SPIN60, three times as fast while
+ * a gun is in the machine. The phase is the game's own time, the same for
+ * every view drawn in a frame.
+ */
+#define ZOMBIE_PAP_SPIN60 150
+
+static bool zombiesPapInUse(void);
+
+static void zombiesMeshSpin(struct zombiemesh *zm)
+{
+	static s32 lastframe60 = -1;
+	static f32 phase = 0;
+	s32 shift;
+	s32 total = 0;
+	s32 r;
+	s32 k;
+
+	if (zm->numruns == 0 || !zm->runt) {
+		return;
+	}
+
+	if (lastframe60 != g_Vars.lvframe60) {
+		s32 dt = g_Vars.lvframe60 - lastframe60;
+
+		if (dt < 0 || dt > 10 || lastframe60 < 0) {
+			dt = 0;
+		}
+
+		phase += (f32)dt / ZOMBIE_PAP_SPIN60 * (zombiesPapInUse() ? 3.0f : 1.0f);
+		phase -= (s32)phase;
+		lastframe60 = g_Vars.lvframe60;
+	}
+
+	// a t of one round is XBLATEX_TILE * 32 (zombiesMeshVertex())
+	shift = (s32)(phase * (XBLATEX_TILE * 32));
+
+	for (r = 0; r < zm->numruns; r++) {
+		for (k = 0; k < zm->runcount[r]; k++) {
+			zm->vtx[zm->runfirst[r] + k].t = zm->runt[total++] + shift;
+		}
+	}
 }
 
 /**
@@ -1938,6 +2023,8 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
 		return true;
 	}
+
+	zombiesMeshSpin(zm);
 
 	// The mainframe's turn without its size, which realrot carries
 	for (i = 0; i < 3; i++) {
@@ -5443,6 +5530,20 @@ static void zombiesReturnMuleGun(s32 playernum)
 
 static s32 g_ZombiePap60[MAX_PLAYERS];         // into the machine, -1 for not
 static s32 g_ZombiePapGun[MAX_PLAYERS];        // the gun in it
+
+// a gun in the machine, anybody's: its drums turn faster (zombiesMeshSpin())
+static bool zombiesPapInUse(void)
+{
+	s32 i;
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		if (g_ZombiePap60[i] >= 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
 static s32 g_ZombiePapped[MAX_PLAYERS][ZOMBIE_PAP_MAX];
 static s32 g_ZombiePapCount[MAX_PLAYERS];
 static bool g_ZombieNearPap[MAX_PLAYERS];
