@@ -953,6 +953,19 @@ bool aiChrDamageChr(void)
 			guNormalize(&vector.x, &vector.y, &vector.z);
 			weapon = prop->weapon;
 			damage = gsetGetDamage(&weapon->gset);
+
+#ifndef PLATFORM_N64
+			// GoldenEye's ChrHitChr hands the part to handles_shot_actors()
+			// as written. chrDamageByImpact() works the part out again from
+			// the victim's own position (chrCalculateShieldHit(), cshield 0
+			// on every chr), which finds the pelvis: Knox's ending's head
+			// shot (part 8, 4x) took 1.5 of 4 and the guard stood on
+			// (F3 20261013-174215)
+			if (modloaderStageIsRemake(g_Vars.stagenum)) {
+				chrDamage(chr2, damage, &vector, &weapon->gset, chr1->prop, (s8)cmd[4],
+						true, chr2->prop, NULL, NULL, 0, NULL, false, NULL);
+			} else
+#endif
 			chrDamageByImpact(chr2, damage, &vector, &weapon->gset, chr1->prop, (s8)cmd[4]);
 		}
 	}
@@ -4513,6 +4526,14 @@ bool aiTryEquipWeapon(void)
 			prop = chrGiveWeapon(g_Vars.chrdata, model, cmd[4], flags);
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// A GoldenEye scientist who draws his hidden pistol (its global list
+	// 0x10, TRYGiveMeItem) has turned on Bond: no longer blue in the sight
+	if (prop && g_Vars.chrdata && gexPlusRomRowIsCivilian(g_Vars.chrdata->bodynum)) {
+		g_Vars.chrdata->hidden2 &= ~CHRH2FLAG_BLUESIGHT;
+	}
+#endif
 
 	if (prop) {
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd[9]);

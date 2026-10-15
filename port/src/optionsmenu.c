@@ -4586,6 +4586,21 @@ static const struct menubind modMenuBinds[] = {
 	{ CK_0200,   LANG_N("Interact [+]\n"), LANG_N("N64 Ext 0200\n") },
 };
 
+/**
+ * Akimbo Triggers' rows under its checkbox (Fire Left/Right, Fire Mode
+ * Left/Right, Right and Left Hand Menu) are only on the page while it is
+ * on. They are not binds of its own: Fire Right and the left hand's menu
+ * are the Key Bindings page's Fire and Radial Menu under the names Akimbo
+ * Triggers gives them, so with it off they showed the radial menu's Q as
+ * "Left Hand Menu", and a player who cleared it as an akimbo bind they
+ * never set took Q off the radial menu itself (F3 20261012-232939). Aim
+ * Mode (7) is COD Style Aiming's row and stays.
+ */
+static bool modBindRowIsAkimbo(s32 idx)
+{
+	return (idx >= 3 && idx <= 6) || idx == 8 || idx == 9;
+}
+
 static const char *menutextModBind(struct menuitem *item)
 {
 	return g_PlayerExtCfg[g_ExtMenuPlayer].extcontrols ?
@@ -4601,6 +4616,8 @@ static MenuItemHandlerResult menuhandlerModBind(s32 operation, struct menuitem *
 	static char keyname[128];
 
 	switch (operation) {
+	case MENUOP_CHECKHIDDEN:
+		return modBindRowIsAkimbo(idx) && !g_ModOptions.akimbotriggers;
 	case MENUOP_GETOPTIONCOUNT:
 		data->dropdown.value = INPUT_MAX_BINDS;
 		break;

@@ -17,6 +17,8 @@
 #   - corrections a minute (at most MAXCPM), and the mean and largest
 #     position error at N;
 #   - no snaps (corrections too large to ease) but respawns and teleports;
+#   - no correction in the opening swirl (the host's blocks there are its
+#     third person's body root, not comparable: F3 20261013-103159);
 #   - no block refused for a future command or a bad head animation;
 #   - at once: on the first tick of each walk in the script the client
 #     moves its player as far as the host moves it for the same command
@@ -64,6 +66,16 @@
 #           it at every stable stretch: a reload for good. Now the block
 #           carries the left hand's gun (protocol 28): the client must hold
 #           the host's hands, no left magazine put in, the ammo sets few.
+#   chase   Sewers with 8 sims at 68 ms, the client invincible, running at
+#           whichever chr it draws nearest (--net-test-aimat nearest): the
+#           owner's own matches (2026-10-13), a correction burst at every sim
+#           met - chasing one, the client ran into where it was drawn while
+#           the host's walk ran free. The host walks the client among the
+#           chrs where its view had them (netLagCompWalkBegin), the client's
+#           replays stand them where each tick met them; bump corrections
+#           (the walk's speed cut on one machine and not the other, or a place
+#           off with the speeds the same; hits and lifts left out) at most
+#           MAXBUMPS (40) - 141-300 a run without, 8-21 with
 #   cheats  a client's own cheats (F3 20261010-050642): the client has All
 #           Guns and the host Unlimited Ammo (--net-test-cheats): the
 #           client must play the host's (RULES, protocol 28), and its
@@ -80,6 +92,13 @@
 #           value and its own by its own, the client its seat by its own, no
 #           "settings changed mid-match" with nothing changed, and the
 #           prediction gated as clean's
+#   pitchkeep  a client's own Reverse Pitch changed mid-match (F3
+#           20261012-225041: "randomly untick reverse tilt"): the client
+#           (forward pitch 0) turns its seat's round at tick 600 as the pause
+#           menu does (--net-test-flip-pitch), then the host quits and the
+#           client goes back to its menus; its player 1 must come back from
+#           the host's rules with forward pitch 1 (the restore had put the
+#           old 0 back)
 #   skipdeath  Skip Death Screen is the host's (the owner, pass 37: a
 #           desync with it set on one machine only): host 1, client 0; the
 #           host kills the client's seat at tick 600 (--net-test-kill) and the
@@ -95,7 +114,7 @@
 #
 #   netpredicttest.sh [BIN]   BIN a file name in build/ (pd.x86_64) or a path
 #
-# Env: OUT (build/netpredict-out), PORT (27300; uses PORT..PORT+7), MODDIR
+# Env: OUT (build/netpredict-out), PORT (27300; uses PORT..PORT+15), MODDIR
 # (mod_allinone), CASES (clean lag loss wine sims time hands cheats), FRAMES (3000),
 # WINEEXE (build-win/pd.x86_64.exe), MINMATCH (99, the matched share,
 # percent; the lossy, wine and sims runs are reported against it too),
@@ -107,7 +126,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BUILD=${BUILD:-$ROOT/build}
 OUT=${OUT:-$BUILD/netpredict-out}; PORT=${PORT:-27300}
 MODDIR=${MODDIR:-mod_allinone}
-CASES=${CASES:-clean lag relay loss wine sims time teamlimit hands cheats pitch skipdeath views views3p}
+CASES=${CASES:-clean lag relay loss wine sims chase time teamlimit hands cheats pitch pitchkeep skipdeath views views3p}
 MAXCPM=${MAXCPM:-10}
 FRAMES=${FRAMES:-3000}
 MINMATCH=${MINMATCH:-99}
@@ -325,6 +344,15 @@ if share < minmatch:
     print("FAIL %s: %.2f%% of blocks matched in all state, under %g%%" % (label, share, minmatch)); ok = False
 if cpm > maxcpm:
     print("FAIL %s: %.1f corrections a minute, over %g" % (label, cpm, maxcpm)); ok = False
+# the start-of-match swirl (no control, to about tick 114): the host's blocks
+# have the player at its body's root there (third person), not the eye, and
+# were "off" every one - 55 units eased, or snaps that flicked the circling
+# camera between two places (F3 20261013-103159). None in it now
+early = [r for r in corr if r[0] < 110]
+if early:
+    print("FAIL %s: %d corrections in the opening swirl (commands %s)" % (label, len(early), ", ".join(str(r[0]) for r in early[:8]))); ok = False
+else:
+    print("     %s: no correction in the opening swirl" % label)
 # after each respawn (an abs R line) the client's blocks agree at once: any
 # correction in the 60 commands after one is reported, more than one fails
 for r in R:
@@ -411,6 +439,27 @@ run_time() {
 	wait "$client"; wait "$host"
 }
 
+# pitchkeep: the client's seat's Reverse Pitch turned round mid-match, then
+# the host goes and the client's match stops (H12)
+run_pitchkeep() {
+	local port=$1 label=pitchkeep
+	game "$label-host" 120 --moddir "$MODDIR" --host "$port" --net-test-host 1 --net-test-stage 0x32 \
+		--rng-seed 1 --endless --exit-frame 5000 &
+	local host=$!
+	waitfor "$OUT/$label-host.log" "net: hosting on UDP port" 60 || { echo "FAIL: $label host did not start"; kill -TERM $host; exit 2; }
+	# (no --net-test-join, which exits as the session ends)
+	game "$label-client" 110 --moddir "$MODDIR" --connect "127.0.0.1:$port" \
+		--net-test-forward-pitch 0 --net-test-flip-pitch 600 --exit-frame 5000 &
+	local client=$!
+	waitfor "$OUT/$label-client.log" "net-test-flip-pitch: tick" 90
+	sleep 2
+	kill -TERM "$host" 2>/dev/null
+	waitfor "$OUT/$label-client.log" "net: rules restored" 30
+	sleep 1
+	kill -TERM "$client" 2>/dev/null
+	wait "$client"; wait "$host"
+}
+
 check_time() {
 	local label=${1:-time} h c ht hl ct
 	h=$(grep -h "net: match clock at the end" "$OUT/$label-host.log" | tail -1)
@@ -440,6 +489,66 @@ run_lp() {
 	wait "$client"
 	kill -TERM "$host" 2>/dev/null
 	wait "$host"
+}
+
+# the chase run: run_chase PORT (a stage of its own, so not run's)
+run_chase() {
+	local port=$1
+	echo "300 5400 8 0 0 0 0 0 0" > "$OUT/chase.script"
+	# the walk among the chrs as seen is off by default since notes 66 (players
+	# walked into each other and stuck): turned on here, past the revision that
+	# turns it off
+	INI="[Mod]\nStartArmed=1\nSettingsRevision=3\n[Net]\nLagCompWalk=1\n" game chase-host 300 --moddir "$MODDIR" --host "$port" --net-test-host 1 --net-test-stage 0x42 \
+		--net-test-sims 8 --rng-seed 4 --mp-weapons 1,4,7,9,10,1 --endless --net-test-invincible-pad 1 --net-sim 0,34 --exit-frame 5800 &
+	local host=$!
+	waitfor "$OUT/chase-host.log" "net: hosting on UDP port" 60 || { echo "FAIL: chase host did not start"; kill -TERM $host; exit 2; }
+	INI="[Mod]\nStartArmed=1\nSettingsRevision=3\n[Net]\nLagCompWalk=1\n" game chase-client 290 --moddir "$MODDIR" --connect "127.0.0.1:$port" --net-test-join --net-sim 0,34 \
+		--net-test-input "$OUT/chase.script" --net-test-aimat nearest,0,0.5 --net-predict-log "$OUT/chase-client.plog" --net-predict-diff \
+		--exit-frame 5400 &
+	local client=$!
+	wait "$client"
+	kill -TERM "$host" 2>/dev/null
+	wait "$host"
+}
+
+# the bump corrections in a prediction log: the walk's speed cut by a blocked
+# move on one machine alone, or a place off with the speeds the same; a lift
+# (liftground) or a hit's knock back (shotspeed) is not one
+chase_bumps() {
+	python3 -I -c '
+import sys
+lines = open(sys.argv[1]).read().split("\n")
+n = 0
+for i, l in enumerate(lines):
+    if not l.startswith("C "):
+        continue
+    f = l.split()
+    if (f[4], f[5], f[6]) == ("0", "0", "0") or int(f[1]) < 200:
+        continue
+    d = lines[i + 1] if i + 1 < len(lines) and lines[i + 1].startswith("D ") else "D"
+    offs = {}
+    for w in d.split()[2:]:
+        o, v = w.split(":", 1)
+        a, b = v.split("/")
+        offs[int(o)] = (float(a), float(b))
+    if 176 in offs or 36 in offs or 44 in offs:
+        continue
+    cut = any(o in offs and abs(abs(offs[o][0]) - abs(offs[o][1])) > 0.05 for o in (12, 16, 28))
+    if cut or float(f[3]) > 3:
+        n += 1
+print(n)
+' "$1"
+}
+
+check_chase() {
+	local walks moved bumps
+	walks=$(grep -o "guest walks among the chrs as seen [0-9]*" "$OUT/chase-host.log" | tail -1 | awk '{print $NF}')
+	moved=$(grep -o "chrs moved for them [0-9]*" "$OUT/chase-host.log" | tail -1 | awk '{print $NF}')
+	[ "${walks:-0}" -gt 0 ] && [ "${moved:-0}" -gt 0 ] && pass "chase: the host walked the client among the chrs as seen ($walks walks, $moved chrs moved)" \
+		|| fail "chase: no walk among the chrs as seen (walks ${walks:-none}, moved ${moved:-none})"
+	bumps=$(chase_bumps "$OUT/chase-client.plog")
+	[ -n "$bumps" ] && [ "$bumps" -le "${MAXBUMPS:-40}" ] && pass "chase: $bumps bump corrections (at most ${MAXBUMPS:-40})" \
+		|| fail "chase: ${bumps:-no} bump corrections (at most ${MAXBUMPS:-40})"
 }
 
 # rules runs: run_rules LABEL PORT HINI CINI SCRIPTLINES HARGS CARGS (the
@@ -527,6 +636,16 @@ check_pitch() {
 	measure pitch && pass "pitch: prediction" || fail "pitch: prediction"
 }
 
+check_pitchkeep() {
+	local C=$OUT/pitchkeep-client.log
+	grep -q 'net: --net-test-flip-pitch: tick [0-9]*: seat 1 forward pitch now 1' "$C" \
+		&& pass "pitchkeep: the client turned its seat's Reverse Pitch round mid-match" || fail "pitchkeep: the flip never happened"
+	grep -q 'net: rules: the match changed this machine.s options .* kept for its own player 1 (options 0x[0-9a-f]*, forward pitch 1)' "$C" \
+		&& pass "pitchkeep: the change was kept for its own player 1" || fail "pitchkeep: not kept: $(grep -o 'net: rules: the match changed.*' "$C")"
+	grep -q 'net: rules restored: .*forward pitch 1)' "$C" \
+		&& pass "pitchkeep: after the match its player 1 has forward pitch 1" || fail "pitchkeep: after the match: $(grep -o 'net: rules restored.*' "$C")"
+}
+
 check_cheats() {
 	local sets inv
 	check_run cheats || return
@@ -549,8 +668,10 @@ for c in $CASES; do
 		loss)  run loss $((PORT + i)) "$FRAMES" 0 "2,75" ;;
 		relay) run relay $((PORT + i)) "$FRAMES" 0 "0,110,10,0,3000,300" ;;
 		sims)  SIMS=6 run sims $((PORT + i)) "$FRAMES" 0 "0,75" ;;
+		chase) run_chase $((PORT + i)) ;;
 		wine)  if [ -x "$(command -v wine)" ] && [ -e "$WINEEXE" ]; then run wine $((PORT + i)) "$FRAMES" 1 "${WINESIM-0,75}"; else echo "skip wine: no wine or no $WINEEXE"; fi ;;
 		time)  run_time $((PORT + i)) ;;
+		pitchkeep) run_pitchkeep $((PORT + i)) ;;
 		teamlimit) run_time $((PORT + i)) teamlimit --net-test-teamscorelimit 2 --net-test-givekills 1,600,4 ;;
 		hands) run_lp hands $((PORT + i)) "[Mod]\nAkimbo=1\n" "[Mod]\nAkimboTriggers=1\nQuickWeaponSwap=1\n" \
 				"--net-test-stage 0x17 --net-sim 0,72 --net-test-give 600,0x6d,-0x08/1200,0x08" "--net-sim 0,72" ;;
@@ -580,6 +701,8 @@ for c in $CASES; do
 			snaps "$c"
 			;;
 		pitch) [ -e "$OUT/pitch-client.log" ] && check_pitch ;;
+		pitchkeep) [ -e "$OUT/pitchkeep-client.log" ] && check_pitchkeep ;;
+		chase) [ -e "$OUT/chase-client.log" ] && check_chase ;;
 		skipdeath) [ -e "$OUT/skipdeath-client.log" ] && check_skipdeath ;;
 		views) [ -e "$OUT/views-client.log" ] && check_views views 0 ;;
 		views3p) [ -e "$OUT/views3p-client.log" ] && check_views views3p 1 ;;

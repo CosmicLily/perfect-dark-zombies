@@ -15303,3 +15303,61 @@ built-in had swapped for the release's headneil (curly hair, goatee, glasses) on
   GoldenEye arena sim as BODYFILE/HEADFILE. `RUNDIR=` picks a run dir (one with the CE zip, one without the ROM).
   `Video.DefaultWidth/Height` in the save's pd.ini sets the offscreen size; a relative `--savedir` resolves under
   the base dir (data/), so give it absolute.
+
+## Mission armour, the watch at 120 fps, the tank under Camera Tilt, Jungle's tower roof (39th F3 pass, 2026-10-13, fix/f3-1013-geplay)
+
+- **Body armour in a mission is not MODEL_BODYARMOUR.** The arenas' converted setup (geconvert.c `objects()`)
+  lays GoldenEye's armour in 0x182; a mission's (`writeSoloProps()`) keeps GoldenEye's own vest models
+  (0x200 + 0x73/0x74, 0x273/0x274 on Facility). e20e83002 keyed the pickup sound and words on 0x182, so
+  every mission's armour said "Picked up a shield." with Perfect Dark's sound (F3 20261013-012701,
+  -130450, -184351). `geObjIsBodyArmour()` (gesfx.c): on a converted stage any shield that is not
+  MODEL_CHRSHIELD (a Perfect Dark weapon set's) is armour.
+- **The watch's clock read whole sixtieths.** `watchDelta()` took `diffframe60freal`, which over 60 fps is
+  0 on some frames and 1 on others, and treated the 0 as one sixtieth: at 120 fps the inventory gun turned
+  300 degrees a second (cartridge: options.c adds D_80040B1C 2.5 degrees times speedgraphframes, 150 a
+  second), at 240 four times. It reads `diffframe240freal / 4` now (F3 20261013-014504). Any port clock on
+  "the real frame" should read the 240ths for the same reason.
+- **Camera Tilt's bob followed the tank.** `playerTiltCamera()` bobs the eye by ground speed and leans it
+  by look speed; the tank is driven through the walk, so Heavy tilt bounced the driver -4.8..+12 units (60
+  and 120 fps alike). Retired while `geTankPlayerDriving()` (F3 20261013-011655).
+- **A pad on a rounded tile edge.** Converted tiles have whole-unit corners, which moves an edge by up to
+  about half a unit. Jungle's palm on pad 52 stands 0.39 inside room 22's tile where GoldenEye names a
+  room 21 tile for the pad, so `geRoomObjRooms()` walked from room 22 and the palm's rooms came out
+  [22, 21] against the cartridge's [21, 22]; drawn with room 22 (after the watchtower's translucent roof,
+  which writes no depth), its leaves showed through the roof (F3 20261013-014221; ares spot capture at
+  Jungle 5795.6,762.8,-10395.5 heading 223 pitch 37). `stanPadTile()` (gestan.c) takes the pad-room tile
+  across an edge within one unit. Finding a "drawn through translucent X" fault: hide props by room in
+  gdb (`break propRender if ... return gdl`), then compare prop room order with an ares world dump.
+
+## F3 pass 39 (gechars, 2026-10-13, fix/f3-1013-gechars): side caps, Doak's spawn, Natalya blue
+
+- **A side cap lifted off a full head of hair (F3 20261013-001948, 002134, Facility HD).** The capped guards were
+  Alan (Cgx043Z, moustache; Ken 67 is the same mesh) and Karl (Cgx042Z). `xblaMeshHatSeat()` sized the side cap
+  1.24 / 1.23 and then lifted it 8.3 / 5.7 to clear the crown hair still through it; the lift stood the cap over
+  the hair with its lining and a band of hair showing from below (the tester's low, close view). A side cap is now
+  lifted at most 2 (`XBLAMESH_HAT_SIDECAP_MAXLIFT`, xblamesh.h; helmets and peaked caps keep 14), passed by
+  chrRender() as `maxlift`; the size is still measured. Dave 51 1.17 lifts 2 instead of 5.5; a head with
+  nothing through (52) is unchanged. Probe `~/wt/f3-1013-gechars-run/probe/hats.py` + `heads4.sh BIN TAG`: setup
+  chr slot 5 (a clear spot) wears each of 42 43 51 52 in turn (`FORCE` rewrites `g_ActiveMaleHeads` after
+  `gexPlusMissionHeads()`, the head at index 1 goes to slot 5), every other chr idled, orbit `PTHS`, `EYE`, `VERTA`.
+- **Doak and the decoder (F3 20261013-015322, 015435).** GoldenEye's own setup (decomp `UsetuparkZ.c`): the
+  decoder (tag 0) lies on the catwalk of room 32 from the start; background list 0x1004 (`ai_45`) waits for Bond
+  in pad 11's room (room 12, the vent past the start), then spawns Doak (body 35, head 51, list 0x425 = `ai_36`)
+  at one of seven pads by random seed (238-244; a refused pad falls through to the next), and `ai_36`'s
+  `chr_equip_object(0, self)` takes the decoder off the catwalk into his hand - so a decoder alone on the floor
+  means the spawn has not run. On every difficulty. Verified in the build: Bond put in room 12 -> Doak at pad 239
+  holding the decoder, all seven pads spawn (`probe/doakspawn.py`, `padspawn.py`). The converted 0x200 objective
+  bit reads as stage flag 0x20000 in a trace: `00000000` = the spawn list never got past its room test. The
+  tester's second attempt never spawned him (65 chrs at frame 1200 against 66 in the first).
+- **Natalya red in the Farsight (F3 20261012-220653, Archives).** Perfect Dark's sight is blue by team or
+  `CHRH2FLAG_BLUESIGHT` (`sightIsPropFriendly()`, the Farsight's target box and the crosshair); a converted setup
+  puts every chr on team 0 beside the guards (GoldenEye has no sides). `gexPlusRomRowIsAlly()`: GoldenEye's own
+  character 16 (Natalya) on its own missions, not a ROM hack's 16th, not a match - set at `bodyAllocateChr()` and
+  `chrSpawnAtCoord()`. Sight only; teams and AI untouched. Owner 2026-10-13, "yes make them blue too": also
+  Trevelyan while he is 006 (character 9, the boiler suit, Facility only - `modloaderStageMission() == 1`), the
+  scientists (35) and Dr. Doak (who wears the scientist's body). A scientist who draws his hidden pistol
+  (GoldenEye's global list 0x10's TRYGiveMeItem = `aiTryEquipWeapon()`) loses the flag: `gexPlusRomRowIsCivilian()`.
+  Doak's decoder comes by `chr_equip_object` (`aiGiveObjectToChr()`), so he stays blue. Probe `probe/allies.py`.
+- **Scientists' pistols (F3 20261013-002654)**: GoldenEye's global list 0x10 (`m_DrawPistolAndAttackBond`, ours
+  0x810) plays `ANIM_fire_standing_draw_one_handed_weapon_fast` frames 0-20 at 0.5 and gives the TT33 only after it
+  ends; ours does the same (traced: anim 1272 for 40 ticks, gun in hand the tick after). GoldenEye's own.

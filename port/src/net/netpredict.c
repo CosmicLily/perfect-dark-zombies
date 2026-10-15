@@ -82,7 +82,11 @@
  *
  * A lift moves the player between ticks (platformDisplaceProps): that move
  * is kept per tick and made again in a replay, so the replay does not fight
- * the lift. Doors and other props stand where they are now in a replay. A
+ * the lift. The chrs near the player (sims, guards, other players: puppets
+ * the pose step drew at the tick's view) are kept per tick as the walk met
+ * them and stood there again for its replay; the host walks the player
+ * among them as that view had them too (netLagCompWalkBegin), so a bump
+ * agrees on both. Doors and other props stand where they are now in a replay. A
  * jump is pressed after the walk (lv.c's use press, bwalkTryJump): the tick
  * that tried one tries it again after its replayed walk.
  *
@@ -111,6 +115,9 @@
 #define NETPRED_EASE    0.8465f   // exp(-16.67 ms / 100 ms): the eased offset left after a tick
 #define NETPRED_EXTMAX  40.f      // a move between ticks past this is a respawn or warp, not a lift
 #define NETPRED_SANE    1000000.f
+#define NETPRED_CHRS    8         // the chrs nearest the player a live tick keeps as its walk met them
+#define NETPRED_CHRNEAR 600.f     // ... from within this of it
+#define NETPRED_CHRSAVE 32        // chrs one replay may move, put back after it
 
 s32 g_NetReplaying = 0;
 
@@ -123,6 +130,19 @@ struct netpredcmd {
 	f32 mdx;
 	f32 mdy;
 	u8 flags;
+};
+
+// A chr near the player as a live tick's walk met it: a replay of the tick
+// stands it there again
+struct netpredchr {
+	struct prop *prop;
+	u16 gen;                 // the prop's generation then (netEntsPropGen): never another's body
+	u8 isplayer;
+	f32 pos[3];
+	f32 ground;
+	f32 manground;
+	RoomNum rooms[8];
+	struct geocyl perim;     // another player's collision cylinder (periminfo)
 };
 
 struct netpredtick {
@@ -157,6 +177,8 @@ struct netpredtick {
 	struct netlptank tank;   // GoldenEye's tank, which the walk drives (getank.c)
 	u8 ride;                 // standing on a tank somebody else drives, as the live tick left it ...
 	f32 ridepose[4];         // ... that tank's place and heading here then (x y z yaw)
+	u8 numchrs;
+	struct netpredchr chrs[NETPRED_CHRS];
 	u8 rich[NETPRED_RICHMAX];
 };
 
@@ -228,6 +250,10 @@ static f32 s_ShiftMax = 0;
 static u32 s_Snaps = 0;       // corrections too large to ease (not respawns)
 static u32 s_AbsSnaps = 0;    // respawns and teleports
 static u32 s_CutsceneLeft = 0; // blocks left unapplied during a cutscene (online co-op: the host holds the player where the opening put it)
+#define NETPRED_SWIRLTAIL 30 // ticks after this machine's swirl ended whose blocks are still the host's swirl
+static s32 s_InSwirl = 0;      // this machine was in the swirl at the last block
+static u32 s_SwirlEnd = 0;     // the tick it saw the swirl over (0 not yet)
+static u32 s_SwirlLeft = 0;    // ... and in the start-of-match swirl (third person on the host: the body's root, not the eye)
 static u32 s_WatchLeft = 0;    // ... and while GoldenEye's watch is up here (gewatch.c: the view tilted to the wrist, the commands neutral)
 static s32 s_ForceSnap = 0;    // the next block is taken outright (a cutscene ended: the host's place from here)
 static u32 s_Missing = 0;     // no state in the ring for the block's command
@@ -249,6 +275,21 @@ static u32 s_DeathSeen = 0;     // the last tick a block had the player dead, or
 #define NETPRED_DEATHWIN 120    // ticks a death head may come before or after one of those
 static u32 s_RespawnFloor = 0; // blocks for commands before this (a respawn taken here) are not compared
 static f32 s_AngOff[2];       // the eased view's angle offset (theta, verta), as s_EyeOff
+
+// what a replay moved, put back after it
+struct netpredchrsave {
+	struct prop *prop;
+	struct player *player;
+	f32 pos[3];
+	f32 ground;
+	f32 manground;
+	RoomNum rooms[8];
+	struct geocyl perim;
+};
+
+static struct netpredchrsave s_ChrSave[NETPRED_CHRSAVE];
+static s32 s_NumChrSave = 0;
+static u32 s_ChrPosed = 0;   // chrs stood where a replayed tick's walk met them
 
 void netPredictArgs(void)
 {
@@ -322,6 +363,9 @@ void netPredictStageStart(void)
 	s_RideBlocks = 0;
 	s_CutsceneLeft = 0;
 	s_WatchLeft = 0;
+	s_SwirlLeft = 0;
+	s_InSwirl = 0;
+	s_SwirlEnd = 0;
 	s_ForceSnap = 0;
 	s_DiscreteOff = s_AngleOff = 0;
 	s_StartTick = 0;
@@ -329,6 +373,8 @@ void netPredictStageStart(void)
 	s_DeathSeen = 0;
 	s_RespawnFloor = 0;
 	s_AngOff[0] = s_AngOff[1] = 0;
+	s_ChrPosed = 0;
+	s_NumChrSave = 0;
 
 	if (s_LogPath[0] && !s_Log) {
 		s_Log = fopen(s_LogPath, "w");
@@ -359,11 +405,11 @@ void netPredictMatchStopped(void)
 
 void netPredictLog(const char *why)
 {
-	sysLogPrintf(LOG_NOTE, "net: prediction %s (tick %u): compared %u, matched %u (%.2f%%), corrections %u (position error at the command mean %.2f max %.2f; moved now mean %.2f max %.2f; angles only %u, discrete only %u), ticks replayed %u, snaps %u, respawn/teleport snaps %u, no state %u, too old %u, blocks refused %u, future commands %u, head data refused %u, death heads kept %u (%u awaiting a death or respawn), cutscene blocks left %u, watch blocks left %u, tank rider blocks %u",
+	sysLogPrintf(LOG_NOTE, "net: prediction %s (tick %u): compared %u, matched %u (%.2f%%), corrections %u (position error at the command mean %.2f max %.2f; moved now mean %.2f max %.2f; angles only %u, discrete only %u), ticks replayed %u, snaps %u, respawn/teleport snaps %u, no state %u, too old %u, blocks refused %u, future commands %u, head data refused %u, death heads kept %u (%u awaiting a death or respawn), cutscene blocks left %u, watch blocks left %u, tank rider blocks %u, chrs stood where a replayed tick met them %u, swirl blocks left %u",
 			why, g_NetTick, s_Compared, s_Matched, s_Compared ? 100.0 * s_Matched / s_Compared : 0.0, s_Corrections,
 			s_Corrections ? (f32)(s_ErrSum / s_Corrections) : 0.f, s_ErrMax,
 			s_Corrections ? (f32)(s_ShiftSum / s_Corrections) : 0.f, s_ShiftMax, s_AngleOff, s_DiscreteOff,
-			s_Replayed, s_Snaps, s_AbsSnaps, s_Missing, s_Overrun, s_Refused, s_Future, s_AnimRefused, s_HeadDeath, s_HeadDeathWait, s_CutsceneLeft, s_WatchLeft, s_RideBlocks);
+			s_Replayed, s_Snaps, s_AbsSnaps, s_Missing, s_Overrun, s_Refused, s_Future, s_AnimRefused, s_HeadDeath, s_HeadDeathWait, s_CutsceneLeft, s_WatchLeft, s_RideBlocks, s_ChrPosed, s_SwirlLeft);
 }
 
 // netcoop.c: a cutscene ended here; the host's place is taken outright at the next block
@@ -403,6 +449,7 @@ static struct netpredtick *netPredSlot(u32 tick)
 		e->hasstate = 0;
 		e->jumptry = 0;
 		e->replayable = 0;
+		e->numchrs = 0;
 	}
 
 	return e;
@@ -1010,6 +1057,211 @@ void netPredictReplayMouse(f32 *dx, f32 *dy)
 }
 
 /**
+ * The chrs nearest the player as this live tick's walk meets them: the
+ * puppets where the pose step drew them, at the view the tick's command
+ * carries (the host walks the player among them as they were then)
+ */
+static void netPredRecordChrs(struct netpredtick *e, const struct player *p)
+{
+	s32 i;
+	s32 k;
+
+	e->numchrs = 0;
+
+	// with Net.LagCompWalk off the replays walk among the puppets as the
+	// last pose step left them, as before notes 65
+	if (!netLagCompWalkOn()) {
+		return;
+	}
+
+	if (!g_ChrSlots) {
+		return;
+	}
+
+	for (i = 0; i < g_NumChrSlots; i++) {
+		struct chrdata *chr = &g_ChrSlots[i];
+		struct prop *prop = chr->prop;
+		struct netpredchr *c;
+		const s32 idx = prop ? netEntsPropIndex(prop) : -1;
+		f32 dx;
+		f32 dz;
+		f32 d2;
+
+		if (chr->chrnum < 0 || !prop || prop == p->prop || prop->chr != chr || idx < 0
+				|| (prop->type != PROPTYPE_CHR && prop->type != PROPTYPE_PLAYER)) {
+			continue;
+		}
+
+		dx = prop->pos.x - p->prop->pos.x;
+		dz = prop->pos.z - p->prop->pos.z;
+		d2 = dx * dx + dz * dz;
+
+		if (d2 > NETPRED_CHRNEAR * NETPRED_CHRNEAR) {
+			continue;
+		}
+
+		if (e->numchrs < NETPRED_CHRS) {
+			k = e->numchrs++;
+		} else {
+			// full: in place of the farthest, if this one is nearer
+			f32 far = -1;
+			s32 j;
+
+			k = -1;
+
+			for (j = 0; j < NETPRED_CHRS; j++) {
+				const f32 ex = e->chrs[j].pos[0] - p->prop->pos.x;
+				const f32 ez = e->chrs[j].pos[2] - p->prop->pos.z;
+
+				if (ex * ex + ez * ez > far) {
+					far = ex * ex + ez * ez;
+					k = j;
+				}
+			}
+
+			if (k < 0 || d2 >= far) {
+				continue;
+			}
+		}
+
+		c = &e->chrs[k];
+		c->prop = prop;
+		c->gen = netEntsPropGen(idx);
+		c->isplayer = prop->type == PROPTYPE_PLAYER;
+		c->pos[0] = prop->pos.x;
+		c->pos[1] = prop->pos.y;
+		c->pos[2] = prop->pos.z;
+		c->ground = chr->ground;
+		c->manground = chr->manground;
+		memcpy(c->rooms, prop->rooms, sizeof(c->rooms));
+
+		if (c->isplayer) {
+			const s32 pn = playermgrGetPlayerNumByProp(prop);
+
+			c->isplayer = pn >= 0 && pn < MAX_PLAYERS && g_Vars.players[pn];
+
+			if (c->isplayer) {
+				c->perim = g_Vars.players[pn]->periminfo;
+			}
+		}
+	}
+}
+
+static void netPredRoomsTo(struct prop *prop, const RoomNum *rooms)
+{
+	s32 k;
+
+	for (k = 0; k < 8 && rooms[k] == prop->rooms[k] && rooms[k] != -1; k++);
+
+	if (k < 8 && rooms[k] != prop->rooms[k] && rooms[0] != -1) {
+		propDeregisterRooms(prop);
+		memcpy(prop->rooms, rooms, sizeof(prop->rooms));
+		propRegisterRooms(prop);
+	}
+}
+
+/**
+ * A replayed tick's chrs where its live walk met them (netPredRecordChrs);
+ * each one's state before the replay kept the first time it is moved
+ */
+static void netPredPoseChrs(const struct netpredtick *e)
+{
+	s32 i;
+
+	for (i = 0; i < e->numchrs; i++) {
+		const struct netpredchr *c = &e->chrs[i];
+		struct prop *prop = c->prop;
+		struct chrdata *chr = prop ? prop->chr : NULL;
+		struct player *player = NULL;
+		const s32 idx = prop ? netEntsPropIndex(prop) : -1;
+		struct netpredchrsave *sv = NULL;
+		s32 j;
+
+		// the same body as then, still a chr
+		if (!chr || chr->prop != prop || idx < 0 || netEntsPropGen(idx) != c->gen
+				|| (prop->type != PROPTYPE_CHR && prop->type != PROPTYPE_PLAYER)) {
+			continue;
+		}
+
+		if (c->isplayer) {
+			const s32 pn = playermgrGetPlayerNumByProp(prop);
+
+			if (pn < 0 || pn >= MAX_PLAYERS || !g_Vars.players[pn]) {
+				continue;
+			}
+
+			player = g_Vars.players[pn];
+		}
+
+		for (j = 0; j < s_NumChrSave; j++) {
+			if (s_ChrSave[j].prop == prop) {
+				sv = &s_ChrSave[j];
+				break;
+			}
+		}
+
+		if (!sv) {
+			if (s_NumChrSave >= NETPRED_CHRSAVE) {
+				continue;
+			}
+
+			sv = &s_ChrSave[s_NumChrSave++];
+			sv->prop = prop;
+			sv->player = player;
+			sv->pos[0] = prop->pos.x;
+			sv->pos[1] = prop->pos.y;
+			sv->pos[2] = prop->pos.z;
+			sv->ground = chr->ground;
+			sv->manground = chr->manground;
+			memcpy(sv->rooms, prop->rooms, sizeof(sv->rooms));
+
+			if (player) {
+				sv->perim = player->periminfo;
+			}
+		}
+
+		prop->pos.x = c->pos[0];
+		prop->pos.y = c->pos[1];
+		prop->pos.z = c->pos[2];
+		chr->ground = c->ground;
+		chr->manground = c->manground;
+		netPredRoomsTo(prop, c->rooms);
+
+		if (player) {
+			player->periminfo = c->perim;
+		}
+
+		s_ChrPosed++;
+	}
+}
+
+static void netPredRestoreChrs(void)
+{
+	s32 i;
+
+	for (i = s_NumChrSave - 1; i >= 0; i--) {
+		struct netpredchrsave *sv = &s_ChrSave[i];
+		struct prop *prop = sv->prop;
+
+		netPredRoomsTo(prop, sv->rooms);
+		prop->pos.x = sv->pos[0];
+		prop->pos.y = sv->pos[1];
+		prop->pos.z = sv->pos[2];
+
+		if (prop->chr) {
+			prop->chr->ground = sv->ground;
+			prop->chr->manground = sv->manground;
+		}
+
+		if (sv->player) {
+			sv->player->periminfo = sv->perim;
+		}
+	}
+
+	s_NumChrSave = 0;
+}
+
+/**
  * bmoveTick's head on the client: the local player's tick's movement, as a
  * replay must make it again
  */
@@ -1039,7 +1291,10 @@ void netPredictMoveBegin(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ign
 	e->replayable = g_Vars.tickmode == TICKMODE_NORMAL
 		&& p->bondmovemode == MOVEMODE_WALK
 		&& p->visionmode != VISIONMODE_SLAYERROCKET
-		&& p->eyespy == NULL
+		// a CamSpy flown, not one carried: eyespy is there from the load
+		// for anyone with a CamSpy, and a mission that gives one had no
+		// tick a correction could replay (F3 20261013-052532)
+		&& !(p->eyespy && p->eyespy->active)
 		&& !p->walkinitmove;
 	e->moved = e->replayable && !p->isdead;
 
@@ -1062,6 +1317,8 @@ void netPredictMoveBegin(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ign
 			e->ext[0] = e->ext[1] = e->ext[2] = 0;
 		}
 	}
+
+	netPredRecordChrs(e, p);
 }
 
 /**
@@ -1365,6 +1622,7 @@ static s32 netPredReplay(struct player *p, const struct netlpstate *lp, u32 n, s
 			}
 
 			s_ReplayCmd = &e->cmd;
+			netPredPoseChrs(e);
 
 			if (e->moved) {
 				bmoveTick(e->args[0], e->args[1], e->args[2], e->args[3]);
@@ -1394,6 +1652,7 @@ static s32 netPredReplay(struct player *p, const struct netlpstate *lp, u32 n, s
 	g_NetReplaying = 0;
 	g_NetRemotePass = remotepass;
 	g_NetPassPlayer = passplayer;
+	netPredRestoreChrs();
 
 	// everything but the movement as it was: the gun, the HUD, the hands
 	// never saw the replay
@@ -1517,6 +1776,30 @@ s32 netPredictReconcile(struct player *p, const struct netlpstate *lp, u32 cmd, 
 	// level under the watch. Compared again once it is down
 	if (geWatchHoldsPlayer(g_NetLocalSlot) && !abs) {
 		s_WatchLeft++;
+		s_HaveLast = 1;
+		s_LastCmd = cmd;
+		return 0;
+	}
+
+	// the start-of-match swirl (TICKMODE_MPSWIRL): no control for the player
+	// while the camera circles it, and the host's blocks are not comparable
+	// with this machine's: the swirl is third person there, its chrTick puts
+	// the player at its body's root, while the walk here has the eye. Every
+	// block was "off" - 55 units at best, eased; on F3 20261013-103159's host
+	// 1336, sixteen snaps in the swirl, and the circling camera jumped
+	// between two places and back. Compared again once the swirl is over.
+	// The swirl here runs ahead of the host's (it moves on while this
+	// machine waits for the host's first ticks), so the host's blocks are
+	// the swirl's for a while after this one's ended: NETPRED_SWIRLTAIL more
+	if (g_Vars.tickmode == TICKMODE_MPSWIRL) {
+		s_InSwirl = 1;
+	} else if (s_InSwirl) {
+		s_InSwirl = 0;
+		s_SwirlEnd = g_NetTick;
+	}
+
+	if ((g_Vars.tickmode == TICKMODE_MPSWIRL || (s_SwirlEnd && cmd < s_SwirlEnd + NETPRED_SWIRLTAIL)) && !abs) {
+		s_SwirlLeft++;
 		s_HaveLast = 1;
 		s_LastCmd = cmd;
 		return 0;

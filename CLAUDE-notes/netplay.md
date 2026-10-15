@@ -3683,6 +3683,16 @@ there anyway. Packed commands grew from 32 to 36 bytes. Gate:
   a spectator's saved own (netRulesOwnPlayer), else [0]. Wire unchanged.
 - Gate: netpredicttest `pitch` (--net-test-forward-pitch: host 1, client 0;
   each seat's value logged at tick 600).
+- **The pause menu's changes outlive the match** (F3 20261012-225041, pass 39:
+  "randomly untick reverse tilt"). A client's pause menu edits its seat's
+  config (ingame.c sets g_MpPlayerNum to the seat), and H12's restore put the
+  pre-match player 1 back over everything, so a Reverse Pitch ticked mid-match
+  was gone the next match. `netRulesKeepSeatOptions` (netStageStopped, before
+  netRulesRestore) carries the option bits that changed since netRulesPut put
+  them into the saved player 1 - only those, since in GoldenEye mode the
+  seat's pitch bit is GoldenEye's LOOK UP/DOWN. Gate: netpredicttest
+  `pitchkeep` (--net-test-flip-pitch 600, then the host quits; the client
+  without --net-test-join, which exits as the session ends).
 
 ### Host rules for the death screen, third person and the free camera (pass 37, the owner)
 
@@ -4053,3 +4063,53 @@ sims?".
   Raising the default is the owner's call (a cutoff by design: past it a laggy shooter is no longer
   fully favoured over the victim). **The owner raised it to 300 (2026-10-12, fix/f3-1012-lagcomp300):
   the default and Mod.SettingsRevision 2 (main.c), which moves a pd.ini still at 200 to 300 once.**
+
+## F3 pass 39: explosions, the swirl, paint and sims (2026-10-13, no wire change)
+
+- **An explosion that bursts on a floor reached no client** (F3 20261013-101330/101544, Temple,
+  Devastator). `explosionCreateComplex` passes the floor's normal straight from
+  `cdFindFloorRoomYColourNormalPropAtPos`: the tile's unnormalised cross product, (0 1350000 0) on
+  Temple's floors. E3 wrote it as a position and the client's `netReadF` (anything past +-1048576 is
+  refused) failed the whole event: "malformed" in the client's events line, and every grenade or
+  rocket that made a scorch was missing (48 of the host's 48 in a Temple run now; 33 malformed of
+  ~50 before). `netEvExplosion` writes it as a unit vector (wallhitCreate normalises it anyway); the
+  layout is the same. neteventtest stages such a blast (`floorboom`, the normal given as Temple's,
+  since Skedar's smaller tiles stayed in range) and its malformed and counts checks fail on the old
+  build. Look at the events line's `malformed` first when a client misses something the host sent.
+- **The opening swirl's corrections** (F3 20261013-103159: "swirl flickers between chars"). The
+  swirl is third person on the host: its chrTick leaves the player's prop at the body's root, while
+  the client's walk has the eye, so every block of the swirl was off - 54.74 units eased in a loopback
+  run, 1336-unit snaps every eight ticks on the report's host, and the circling camera jumped between
+  two places. The client compares no block in `TICKMODE_MPSWIRL` nor for `NETPRED_SWIRLTAIL` (30)
+  ticks after (its swirl runs ahead of the host's); a respawn/teleport (abs) is still taken. A spawn
+  that differs between the two is taken in one snap after the swirl. netpredicttest fails any
+  correction before command 110 (the lag case had one on the old build). Not found: why that host's
+  root was 1336 from the client's eye (a spawn mismatch alone, simulated with gdb, corrects once).
+- **Paintball marks on walls do reach a client** (MARKS: the host's paint record, texnum 8, 9 of 9 in
+  a run with the host's player's OPTION_PAINTBALL set by gdb). Marks on props and chrs (a gun on the
+  floor, doors, crates) are still not replicated (see "Left" under the protocol 29 section).
+- **Sims' heads are the host's numbers on a client** (RULES' head rows; 8 profile sims with random
+  heads, the client in the HD look: every headnum/bodynum equal). A look difference is each machine's
+  own look.
+
+## F3 pass 39: a remote player's gun (2026-10-13, no wire change, protocol stays 32)
+
+- **Every second Quick Weapon Swap left the body empty handed.** `weaponDeleteFromChr()` only marks
+  the old gun `OBJHFLAG_DELETING`; the chr's next tick (`chr0f022214`) frees it and empties the hand.
+  Quick swap lowers and raises on one tick, so `playermgrCreateWeapon()` found the hand still full
+  and made nothing; the hand then emptied, and the next swap worked (alternating). Online the host's
+  body of a client is what every machine sees (the snapshot's held weapon), so "rcp120 / pp9i /
+  phoenix invisible to host" (F3 20261013-102408 and four more, owner dab with QuickWeaponSwap=1).
+  Offline split-screen had the same. A gun on its way out now counts as none (either hand, so a
+  new gun never pairs with one being freed). netpuppettest `held` gates it (Grid, quick swap on).
+- **The host heard no client's gun.** A player's shot sound is the first person `sndStart` in
+  bondgun.c, which a remote pass mutes (`g_NetRemotePass`); clients hear a remote shot through
+  PLAYERSHOT on the puppet (`chrUpdateFireslot`), the host had nothing (F3 20261013-053505, "other
+  players guns don't make sounds. Simulants are fine"). `netEvPlayerShot` now sounds a remote
+  shooter's fireslot on the host the same way (its E1 left out: `s_HostOwnFireslot`), GoldenEye guns
+  and the rocket launcher's launch included; "clients' shots heard here N of M" in the host's events
+  summary.
+- **A deployed Laptop Gun's kill read "RC-P45"**: `autogunTick` fires the RC-P45's gset (stock);
+  the kill feed is told around the match branch's hit (`killfeedSetSentry`).
+- **The Mauler's charge** reaches the host (same charge and magazine as the client, traced); Perfect
+  Dark draws the charge only on the first person gun, so other players never see it (notabug).

@@ -126,6 +126,7 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 #include "gexfront.h"
 #include "gecinema.h"
 #include "net/net.h"
+#include "killfeed.h"
 #endif
 #endif
 
@@ -10551,7 +10552,15 @@ void autogunTickShoot(struct prop *autogunprop)
 								}
 
 								chrEmitSparks(hitchr, hitprop, hitpart, &hitpos, &dir, ownerchr);
+#ifndef PLATFORM_N64
+								// the kill feed names a sentry's kill for the Laptop Gun,
+								// not the RC-P45 its rounds are (killfeed.c)
+								killfeedSetSentry(g_Vars.normmplayerisrunning);
+#endif
 								func0f0341dc(hitchr, damage, &dir, &gset, ownerprop, HITPART_GENERAL, hitprop, hitnode, hitmodel, hitside, NULL);
+#ifndef PLATFORM_N64
+								killfeedSetSentry(false);
+#endif
 							}
 						} else {
 							missed = true;
@@ -19989,7 +19998,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 					// and more). F3 20260926-203211/225220. Perfect Dark's own
 					// shield, a Perfect Dark weapon set's on a converted level,
 					// is a shield (F3 20261012-123523)
-					if (geRoomActive() && obj->modelnum == MODEL_BODYARMOUR) {
+					if (geRoomActive() && geObjIsBodyArmour(obj)) {
 						const char *getext = geHudPropobjString(playercount < 3 ? 0x3d : 0x3e);
 
 						if (getext) {
