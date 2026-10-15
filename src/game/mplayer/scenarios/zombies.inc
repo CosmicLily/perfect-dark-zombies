@@ -2939,6 +2939,82 @@ Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model)
 	return gdl;
 }
 
+/**
+ * A point on machine id's own model (in its OBJ's centimetres, z up and the
+ * front -y, as the file has it) where zombiesRenderMachine() draws it, into
+ * the world; and the machine's front, flat. False when the machine has no
+ * model of its own.
+ */
+static bool zombiesMachineMeshPoint(s32 id, struct defaultobj *obj, const f32 objpos[3],
+		struct coord *out, struct coord *front)
+{
+	struct zombiemesh *zm;
+	struct modelrodata_bbox *bbox;
+	f32 local[3];
+	f32 len[3];
+	f32 m[3];
+	s32 i;
+	s32 j;
+
+	if (id < 0 || id > ZOMBIE_PAP_ID || !obj || !obj->prop) {
+		return false;
+	}
+
+	zm = &g_ZombieMeshes[id];
+
+	if (!zm->tried) {
+		zombiesMeshBuild(id);
+	}
+
+	if (!zm->gdl) {
+		return false;
+	}
+
+	for (i = 0; i < 3; i++) {
+		len[i] = sqrtf(obj->realrot[i][0] * obj->realrot[i][0] + obj->realrot[i][1] * obj->realrot[i][1]
+				+ obj->realrot[i][2] * obj->realrot[i][2]);
+
+		if (len[i] <= 0) {
+			return false;
+		}
+	}
+
+	// the OBJ's axes turned as zombiesMeshVertex() turns them, less the
+	// model's own foot, middle and back
+	local[0] = objpos[0] - zm->midx;
+	local[1] = objpos[2] - zm->ymin;
+	local[2] = -objpos[1] - zm->zmin;
+
+	*out = obj->prop->pos;
+	bbox = objFindBboxRodata(obj);
+
+	if (bbox) {
+		m[0] = (objGetLocalXMin(bbox) + objGetLocalXMax(bbox)) / 2;
+		m[1] = objGetLocalYMin(bbox);
+		m[2] = objGetLocalZMin(bbox);
+
+		for (j = 0; j < 3; j++) {
+			(&out->x)[j] += obj->realrot[0][j] * m[0] + obj->realrot[1][j] * m[1] + obj->realrot[2][j] * m[2];
+		}
+	}
+
+	for (j = 0; j < 3; j++) {
+		for (i = 0; i < 3; i++) {
+			(&out->x)[j] += obj->realrot[i][j] / len[i] * ZOMBIE_MESH_SCALE * local[i];
+		}
+	}
+
+	if (front) {
+		f32 flat = sqrtf(obj->realrot[2][0] * obj->realrot[2][0] + obj->realrot[2][2] * obj->realrot[2][2]);
+
+		front->x = flat > 0 ? obj->realrot[2][0] / flat : 0;
+		front->y = 0;
+		front->z = flat > 0 ? obj->realrot[2][2] / flat : 1;
+	}
+
+	return true;
+}
+
 static const char *zombiesMachineName(s32 id)
 {
 	return id < ZOMBIEPERK_COUNT ? g_ZombiePerks[id].name : "Pack-a-Punch";
@@ -6077,14 +6153,22 @@ static void zombiesReturnMuleGun(s32 playernum)
  *   the wall buys fill it to that from then on (zombiesFillGun()).
  *
  * A gun is upgraded once. The upgrade is the player's gun's, and goes with
- * it: a gun traded away or lost and had again is a plain one. The look - an
- * animated camo - is for later.
+ * it: a gun traded away or lost and had again is a plain one. Its look is
+ * an animated camo (zombiesCamoBegin()).
+ *
+ * As Call of Duty's, the gun is the machine's while it works: it goes out of
+ * the hands (the next gun comes up, or none) and slides into the machine,
+ * then slides back out of it upgraded and waits there, sinking back in, for
+ * its owner to hold B (E) and take it. Not taken in ZOMBIE_PAP_OFFER60 it is
+ * gone. One gun at a time is in the machine, and only its owner takes it.
  */
 #define ZOMBIE_PAP_COST     5000
-#define ZOMBIE_PAP_DOWN60   18   // the gun goes down into the machine
-#define ZOMBIE_PAP_WORK60   180  // in it
-#define ZOMBIE_PAP_UP60     18   // and comes back up
-#define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 + ZOMBIE_PAP_UP60)
+#define ZOMBIE_PAP_DOWN60   18   // the gun goes down out of the hands
+#define ZOMBIE_PAP_WORK60   180  // in the machine
+#define ZOMBIE_PAP_OFFER60  900  // out of it, upgraded, to be taken: Black Ops II's fifteen seconds
+#define ZOMBIE_PAP_SLIDE60  30   // sliding in or out
+#define ZOMBIE_PAP_OFFERAT  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60)
+#define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_OFFERAT + ZOMBIE_PAP_OFFER60)
 #define ZOMBIE_PAP_DAMAGE   2.0f
 #define ZOMBIE_PAP_CLIPMULT 2
 #define ZOMBIE_PAP_PITCH    1.5f // its shots' pitch
@@ -6160,6 +6244,10 @@ static const struct zombiepapname g_ZombiePapNames[] = {
 	{ WEAPON_RCP45,            "RC-P4500\n" },
 };
 
+// The gun in the machine, shown as the box shows its (zombiesBoxShowGun())
+static struct defaultobj g_ZombiePapGunObj;
+static bool g_ZombiePapGunUp = false;
+
 static void zombiesResetPap(void)
 {
 	s32 i;
@@ -6172,6 +6260,174 @@ static void zombiesResetPap(void)
 		g_ZombiePapHeld60[i] = 0;
 		g_ZombiePapNeedsRelease[i] = false;
 	}
+
+	// a new match's stage has none of the last one's props
+	bzero(&g_ZombiePapGunObj, sizeof(g_ZombiePapGunObj));
+	g_ZombiePapGunUp = false;
+}
+
+static void zombiesPapHideGun(void)
+{
+	if (g_ZombiePapGunUp && g_ZombiePapGunObj.prop) {
+		g_ZombiePapGunObj.hidden |= OBJHFLAG_DELETING;
+	}
+
+	g_ZombiePapGunUp = false;
+}
+
+/**
+ * The gun in the machine where it is at t (g_ZombiePap60): sliding in out of
+ * the front of the middle drum's mouth, hidden inside while it works, sliding
+ * back out, and sinking slowly back in while it waits to be taken, so the
+ * time left shows as the box's gun shows it. Side on, as the box holds its.
+ */
+static void zombiesPapPlaceGun(s32 t)
+{
+	// Buried's machine: its middle drum's mouth, a metre up, and the gun out
+	// in front of it (the OBJ's centimetres, the front -y)
+	static const f32 inside[3] = { 0, -5, 100 };
+	static const f32 outside[3] = { 0, -52, 100 };
+	struct defaultobj *obj = &g_ZombiePapGunObj;
+	struct coord pos;
+	struct coord front;
+	f32 at[3];
+	f32 out;
+	Mtxf mtx;
+	s32 i;
+
+	if (!g_ZombiePapGunUp || !obj->prop || !obj->model || !g_ZombiePapPlaced) {
+		return;
+	}
+
+	if (t < ZOMBIE_PAP_OFFERAT) {
+		f32 f = (f32)(t - ZOMBIE_PAP_DOWN60) / ZOMBIE_PAP_SLIDE60;
+
+		out = f >= 1 ? 0 : 1 - f;
+	} else {
+		s32 u = t - ZOMBIE_PAP_OFFERAT;
+
+		if (u < ZOMBIE_PAP_SLIDE60) {
+			out = (f32)u / ZOMBIE_PAP_SLIDE60;
+		} else {
+			out = 1 - 0.75f * (u - ZOMBIE_PAP_SLIDE60) / (f32)(ZOMBIE_PAP_OFFER60 - ZOMBIE_PAP_SLIDE60);
+		}
+	}
+
+	out = out < 0 ? 0 : out > 1 ? 1 : out;
+
+	for (i = 0; i < 3; i++) {
+		at[i] = inside[i] + (outside[i] - inside[i]) * out;
+	}
+
+	if (!zombiesMachineMeshPoint(ZOMBIE_PAP_ID, &g_ZombiePapObj, at, &pos, &front)) {
+		// the stock mainframe: in front of it, at waist height
+		front.x = g_ZombiePapObj.realrot[2][0];
+		front.y = 0;
+		front.z = g_ZombiePapObj.realrot[2][2];
+
+		{
+			f32 len = sqrtf(front.x * front.x + front.z * front.z);
+
+			front.x = len > 0 ? front.x / len : 0;
+			front.z = len > 0 ? front.z / len : 1;
+		}
+
+		pos = g_ZombiePapObj.prop->pos;
+		pos.x += front.x * 60 * out;
+		pos.y += 100;
+		pos.z += front.z * 60 * out;
+	}
+
+	// inside the machine there is nothing to see
+	if (out <= 0.05f) {
+		obj->flags2 |= OBJFLAG2_INVISIBLE;
+	} else {
+		obj->flags2 &= ~OBJFLAG2_INVISIBLE;
+	}
+
+	// stood up, its barrel across the machine's front (zombiesWallBuyShowGun()
+	// turns its gun along the wall the same way)
+	{
+		Mtxf yaw;
+		Mtxf roll;
+
+		mtx4LoadYRotation(atan2f(-front.z, front.x) + M_BADPI / 2, &yaw);
+		mtx4LoadXRotation(-M_BADPI / 2, &roll);
+		mtx4MultMtx4(&yaw, &roll, &mtx);
+	}
+
+	mtx00015f04(obj->model->scale, &mtx);
+	func0f06a580(obj, &pos, &mtx, g_ZombiePapObj.prop->rooms);
+}
+
+// The gun weaponnum into the machine, to be seen going in and coming out
+static void zombiesPapShowGun(s32 weaponnum)
+{
+	struct defaultobj *obj = &g_ZombiePapGunObj;
+	struct prop *prop;
+	s32 index;
+
+	zombiesPapHideGun();
+
+	// one still being taken away is not taken again yet
+	if (obj->prop || !g_ZombiePapPlaced || !g_ZombiePapObj.prop) {
+		return;
+	}
+
+	for (index = 0; index < NUM_MPWEAPONS; index++) {
+		if (g_MpWeapons[index].weaponnum == weaponnum && g_MpWeapons[index].model > 0) {
+			break;
+		}
+	}
+
+	if (index >= NUM_MPWEAPONS) {
+		return;
+	}
+
+	bzero(obj, sizeof(*obj));
+	obj->extrascale = 256;
+	obj->type = OBJTYPE_BASIC;
+	obj->modelnum = g_MpWeapons[index].model;
+	obj->flags = OBJFLAG_INVINCIBLE | OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_UNCOLLECTABLE;
+	obj->flags2 = OBJFLAG2_IMMUNETOGUNFIRE | OBJFLAG2_IMMUNETOEXPLOSIONS | OBJFLAG2_SHOOTTHROUGH
+		| OBJFLAG2_THROWTHROUGH | OBJFLAG2_NOFALL;
+	obj->flags3 = OBJFLAG3_WALKTHROUGH;
+	obj->realrot[0][0] = obj->realrot[1][1] = obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+	obj->pad = -1;
+
+	if (g_ModelStates[obj->modelnum].modeldef == NULL) {
+		if (mempGetStageFreeTotal() < ZOMBIE_BOX_POOLFLOOR) {
+			return;
+		}
+
+		setupLoadModeldef(obj->modelnum);
+
+		if (g_ModelStates[obj->modelnum].modeldef == NULL) {
+			return;
+		}
+	}
+
+	prop = objInitWithAutoModel(obj);
+
+	if (prop == NULL || obj->model == NULL) {
+		return;
+	}
+
+	modelSetScale(obj->model, obj->model->scale * ZOMBIE_BOX_GUNSCALE
+			* (g_MpWeapons[index].extrascale * (1.0f / 256.0f)));
+	zombiesHideGunFlash(obj);
+
+	g_ZombiePapGunUp = true;
+	zombiesPapPlaceGun(ZOMBIE_PAP_DOWN60);
+
+	propActivate(prop);
+	propEnable(prop);
+
+	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
 }
 
 static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum)
@@ -6404,6 +6660,67 @@ static void zombiesPapUpgrade(s32 playernum, s32 weaponnum)
 	sysLogPrintf(LOG_NOTE, "zombies: player %d Pack-a-Punched weapon %d", playernum + 1, weaponnum);
 }
 
+// The gun down out of the hands and into the machine: the next gun had comes
+// up, or the bare hands when there is none
+static void zombiesPapTakeGun(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	s32 weaponnum = g_ZombiePapGun[playernum];
+	s32 next = WEAPON_UNARMED;
+	s32 i;
+
+	setCurrentPlayerNum(playernum);
+
+	zombiesKnifeCancel(playernum);
+	zombiesSyncGuns(playernum);
+	zombiesDropListedGun(playernum, weaponnum);
+
+	for (i = 0; i < g_ZombieGunCount[playernum]; i++) {
+		if (g_ZombieGuns[playernum][i] != weaponnum) {
+			next = g_ZombieGuns[playernum][i];
+			break;
+		}
+	}
+
+	bgunEquipWeapon(next);
+
+	setCurrentPlayerNum(prevplayernum);
+
+	zombiesPapShowGun(weaponnum);
+}
+
+// The gun taken back out of the machine by its owner: into the hands,
+// upgraded and full; with the hands full again, the gun in them gives way
+static void zombiesPapGiveGun(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	s32 weaponnum = g_ZombiePapGun[playernum];
+
+	setCurrentPlayerNum(playernum);
+
+	if (!invHasSingleWeaponIncAllGuns(weaponnum)) {
+		zombiesMakeRoomForGun(playernum);
+	}
+
+	invGiveSingleWeapon(weaponnum);
+	zombiesSyncGuns(playernum);
+
+	setCurrentPlayerNum(prevplayernum);
+
+	zombiesPapUpgrade(playernum, weaponnum);
+
+	setCurrentPlayerNum(playernum);
+
+	// its clip to load, of the bigger magazine
+	zombiesFillGun(weaponnum, ZOMBIE_PAP_CLIPS, true);
+	bgunEquipWeapon(weaponnum);
+	zombiesKnifeCancel(playernum);
+
+	setCurrentPlayerNum(prevplayernum);
+
+	zombiesPapHideGun();
+}
+
 static void zombiesTickPap(s32 playernum)
 {
 	struct player *player = g_Vars.players[playernum];
@@ -6426,26 +6743,83 @@ static void zombiesTickPap(s32 playernum)
 	held = zombiesHeldGun(playernum);
 	setCurrentPlayerNum(prevplayernum);
 
+	g_ZombieNearPap[playernum] = false;
+
 	// in the machine
 	if (g_ZombiePap60[playernum] >= 0) {
 		s32 prev = g_ZombiePap60[playernum];
 		s32 now = prev + g_Vars.lvupdate60;
 
-		if (!zombiesPlayerIsUp(playernum)) {
+		// down before the gun had gone in: it stays in the hands
+		if (prev < ZOMBIE_PAP_DOWN60 && !zombiesPlayerIsUp(playernum)) {
 			g_ZombiePap60[playernum] = -1;
 			return;
 		}
 
-		if (prev < ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60 && now >= ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60) {
-			zombiesPapUpgrade(playernum, g_ZombiePapGun[playernum]);
+		if (prev < ZOMBIE_PAP_DOWN60 && now >= ZOMBIE_PAP_DOWN60) {
+			zombiesPapTakeGun(playernum);
+		}
+
+		// out of the machine, upgraded, to be taken
+		if (prev < ZOMBIE_PAP_OFFERAT && now >= ZOMBIE_PAP_OFFERAT) {
 			zombiesPlaySound(SFX_PICKUP_SHIELD, 0.8f);
 		}
 
-		g_ZombiePap60[playernum] = now >= ZOMBIE_PAP_TOTAL60 ? -1 : now;
+		// not taken in time: gone, as Call of Duty's is
+		if (now >= ZOMBIE_PAP_TOTAL60) {
+			g_ZombiePap60[playernum] = -1;
+			zombiesPapHideGun();
+			zombiesPlaySound(SFX_MENU_ERROR, 0.6f);
+			sysLogPrintf(LOG_NOTE, "zombies: player %d left weapon %d in Pack-a-Punch", playernum + 1, g_ZombiePapGun[playernum]);
+			return;
+		}
+
+		g_ZombiePap60[playernum] = now;
+		zombiesPapPlaceGun(now);
+
+		if (now < ZOMBIE_PAP_OFFERAT + ZOMBIE_PAP_SLIDE60 / 2 || !zombiesPlayerIsUp(playernum)
+				|| g_ZombieDrink60[playernum] >= 0 || g_ZombieNearDowned[playernum] >= 0 || machine == NULL) {
+			g_ZombiePapHeld60[playernum] = 0;
+			return;
+		}
+
+		// near the machine, holding B (E) for it
+		{
+			f32 dx = player->prop->pos.x - machine->pos.x;
+			f32 dy = player->prop->pos.y - machine->pos.y;
+			f32 dz = player->prop->pos.z - machine->pos.z;
+
+			if (dx * dx + dz * dz >= ZOMBIE_JUGG_RANGE * ZOMBIE_JUGG_RANGE || dy > 250 || dy < -250) {
+				g_ZombiePapHeld60[playernum] = 0;
+				g_ZombiePapNeedsRelease[playernum] = false;
+				return;
+			}
+		}
+
+		g_ZombieNearPap[playernum] = true;
+
+		if (!zombiesHoldingUse(playernum)) {
+			g_ZombiePapHeld60[playernum] = 0;
+			g_ZombiePapNeedsRelease[playernum] = false;
+			return;
+		}
+
+		if (g_ZombiePapNeedsRelease[playernum]) {
+			return;
+		}
+
+		g_ZombiePapHeld60[playernum] += g_Vars.lvupdate60;
+
+		if (g_ZombiePapHeld60[playernum] >= ZOMBIE_JUGG_HOLD60) {
+			g_ZombiePapNeedsRelease[playernum] = true;
+			g_ZombiePapHeld60[playernum] = 0;
+			g_ZombiePap60[playernum] = -1;
+			zombiesPapGiveGun(playernum);
+			zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+		}
+
 		return;
 	}
-
-	g_ZombieNearPap[playernum] = false;
 
 	if (machine == NULL || g_ZombieMarking || !zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0
 			|| g_ZombieNearDowned[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE) {
@@ -6486,7 +6860,8 @@ static void zombiesTickPap(s32 playernum)
 	g_ZombiePapNeedsRelease[playernum] = true;
 	g_ZombiePapHeld60[playernum] = 0;
 
-	if (!zombiesIsSlotGun(held) || zombiesGunIsPapped(playernum, held) || g_ZombiePoints[playernum] < ZOMBIE_PAP_COST) {
+	if (!zombiesIsSlotGun(held) || zombiesGunIsPapped(playernum, held) || g_ZombiePoints[playernum] < ZOMBIE_PAP_COST
+			|| zombiesPapInUse()) {
 		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
 		return;
 	}
@@ -6506,17 +6881,13 @@ static f32 zombiesPapLowerFrac(s32 playernum)
 	s32 t = g_ZombiePap60[playernum];
 	f32 f;
 
-	if (t < 0) {
+	// down until it goes into the machine; the next gun then comes up as any
+	// gun drawn does
+	if (t < 0 || t >= ZOMBIE_PAP_DOWN60) {
 		return 0;
 	}
 
-	if (t < ZOMBIE_PAP_DOWN60) {
-		f = (f32)t / ZOMBIE_PAP_DOWN60;
-	} else if (t < ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60) {
-		f = 1;
-	} else {
-		f = (f32)(ZOMBIE_PAP_TOTAL60 - t) / ZOMBIE_PAP_UP60;
-	}
+	f = (f32)t / ZOMBIE_PAP_DOWN60;
 
 	return f * f * (3 - 2 * f);
 }
@@ -6527,8 +6898,38 @@ static bool zombiesPapPrompt(s32 playernum, char *text)
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	s32 held;
 
-	if (!g_ZombieNearPap[playernum] || g_ZombiePap60[playernum] >= 0) {
+	if (!g_ZombieNearPap[playernum]) {
 		return false;
+	}
+
+	// its own gun out of the machine, waiting: its upgraded name
+	if (g_ZombiePap60[playernum] >= 0) {
+		const char *name = NULL;
+		s32 i;
+		s32 n;
+
+		for (i = 0; i < ARRAYCOUNT(g_ZombiePapNames); i++) {
+			if (g_ZombiePapNames[i].weaponnum == g_ZombiePapGun[playernum]) {
+				name = g_ZombiePapNames[i].name;
+			}
+		}
+
+		if (name == NULL) {
+			name = "Pack-a-Punched\n";
+		}
+
+		// without the name's own newline
+		n = (s32)strlen(name);
+		n = n > 0 && name[n - 1] == '\n' ? n - 1 : n;
+
+		sprintf(text, "Hold %s for %.*s", zombiesUseName(playernum), n, name);
+
+		return true;
+	}
+
+	if (zombiesPapInUse()) {
+		strcpy(text, "Pack-a-Punch is in use");
+		return true;
 	}
 
 	setCurrentPlayerNum(playernum);
