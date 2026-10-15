@@ -34,7 +34,7 @@ static const u32 *zombiesInteractBind(s32 playernum)
 	const s32 mpindex = g_Vars.playerstats[playernum].mpindex;
 	const s32 cont = optionsGetContpadNum1(mpindex);
 	const bool keyboard = playernum == 0 && inputLastPressWasKeyboard();
-	const u32 *binds = inputKeyGetBinds(cont, CK_0200);
+	const u32 *binds = inputKeyGetLiveBinds(cont, CK_0200);
 	s32 b;
 
 	if (binds == NULL) {
@@ -9370,6 +9370,13 @@ bool zombiesIsActive(void)
 	return g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES;
 }
 
+// input.c: Zombies' own controls in force (inputLiveBinds()); an s32, as
+// bool is not the same size on both sides
+s32 zombiesLayoutWanted(void)
+{
+	return zombiesIsActive() ? 1 : 0;
+}
+
 // A player's points (zombiesAwardHit() adds them up), all of them: the
 // rankings sort on sixteen bits of it (mpRankKeyScore()) and show the whole
 static s32 zombiesGetPoints(struct mpchrconfig *mpchr, s32 chrnum)
@@ -10883,6 +10890,58 @@ MenuItemHandlerResult menuhandlerZombiesToggle(s32 operation, struct menuitem *i
 
 extern struct menudialogdef g_ExtGameOptionsMenuDialog;
 
+/**
+ * The Zombies Controls page: Zombies' own buttons, in force in a Zombies
+ * match and nowhere else (port/src/input.c, inputLiveBinds()). A row is one
+ * of the layout's slots (input.c's zlayout[], in this order), a key and a
+ * controller button each; one left alone keeps the normal controls' keys,
+ * less any the layout gives to something else. As it comes: Space and A to
+ * jump, F and X to interact, R and X to reload, X and the D-pad left for the
+ * secondary function.
+ */
+MenuItemHandlerResult menuhandlerZombiesLayoutBind(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult menuhandlerZombiesLayoutReset(s32 operation, struct menuitem *item, union handlerdata *data);
+
+#define ZOMBIE_LAYOUT_ROW(name, slot) \
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)(name), (slot), menuhandlerZombiesLayoutBind }
+
+struct menuitem g_ZombiesControlsMenuItems[] = {
+	ZOMBIE_LAYOUT_ROW("Jump\n", 0),
+	ZOMBIE_LAYOUT_ROW("Fire\n", 1),
+	ZOMBIE_LAYOUT_ROW("Aim\n", 2),
+	ZOMBIE_LAYOUT_ROW("Reload\n", 3),
+	ZOMBIE_LAYOUT_ROW("Knife\n", 4),
+	ZOMBIE_LAYOUT_ROW("Interact\n", 5),
+	ZOMBIE_LAYOUT_ROW("Secondary Function\n", 6),
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Reset Zombies Controls\n",
+		0,
+		menuhandlerZombiesLayoutReset,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_MPMENU_239, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesControlsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Zombies Controls",
+	g_ZombiesControlsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
 struct menuitem g_ZombiesOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -10957,24 +11016,13 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 		NULL,
 	},
 	{
-		// The knife's button, this menu's player's: a key and a controller
-		// button each (G and the right stick by default). The Key Bindings
-		// row the Extended Options had, moved here (optionsmenu.c's
-		// modMenuBinds[10])
-		MENUITEMTYPE_DROPDOWN,
+		// Zombies' own controls, a page of their own
+		MENUITEMTYPE_SELECTABLE,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Knife Button\n",
-		10,
-		menuhandlerZombiesBind,
-	},
-	{
-		MENUITEMTYPE_DROPDOWN,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Zombies Controls...\n",
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Interact Button\n",
-		11,
-		menuhandlerZombiesBind,
+		(void *)&g_ZombiesControlsMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

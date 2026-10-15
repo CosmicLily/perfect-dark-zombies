@@ -74,6 +74,81 @@ static u32 binds[MAXCONTROLLERS][CK_TOTAL_COUNT][INPUT_MAX_BINDS];
 static char bindStrs[MAXCONTROLLERS][CK_TOTAL_COUNT][MAX_BIND_STR];
 static s32 bindsLoaded = 0;
 
+/**
+ * Zombies' own controls (the Zombies Controls page, zombies.inc), in force
+ * while a Zombies match runs (zombiesLayoutWanted()) and nowhere else. Each
+ * of a handful of actions may have keys of its own there; an action the
+ * layout leaves alone keeps the normal ones. A key the layout gives an action
+ * is taken out of every action it does not set, so Space as Zombies' jump is
+ * no longer the normal fire too, and the D-pad left as the secondary function
+ * no longer strafes. Accept, cancel and Start keep all theirs, for the menus.
+ *
+ * Jump is the use button, A (bondmove.c: with nothing of the level's to use,
+ * use jumps), and in the PC controls the keyboard has nothing on A, so Space
+ * on it is a jump of its own.
+ *
+ * pd.ini's [Input.PlayerN.ZombiesBinds]: INHERIT for an action left to the
+ * normal keys, NONE for one with none, else its keys; no line at all is the
+ * default below.
+ */
+#define ZLAYOUT_COUNT 7
+
+static const struct {
+	u32 ck;
+	const char *key;
+} zlayout[ZLAYOUT_COUNT] = {
+	{ CK_A,     "Jump" },
+	{ CK_ZTRIG, "Fire" },
+	{ CK_RTRIG, "Aim" },
+	{ CK_X,     "Reload" },
+	{ CK_0100,  "Knife" },
+	{ CK_0200,  "Interact" },
+	{ CK_LTRIG, "SecondaryFunction" },
+};
+
+static u32 zbinds[MAXCONTROLLERS][ZLAYOUT_COUNT][INPUT_MAX_BINDS];
+static s32 zover[MAXCONTROLLERS][ZLAYOUT_COUNT];
+static char zbindStrs[MAXCONTROLLERS][ZLAYOUT_COUNT][MAX_BIND_STR];
+
+s32 zombiesLayoutWanted(void);
+
+static s32 inputZombiesOn(void)
+{
+	return bindsLoaded && zombiesLayoutWanted();
+}
+
+static s32 inputZombiesSlot(u32 ck)
+{
+	for (s32 z = 0; z < ZLAYOUT_COUNT; ++z) {
+		if (zlayout[z].ck == ck) {
+			return z;
+		}
+	}
+
+	return -1;
+}
+
+static s32 inputZombiesClaimed(s32 idx, u32 vk)
+{
+	for (s32 z = 0; z < ZLAYOUT_COUNT; ++z) {
+		if (!zover[idx][z]) {
+			continue;
+		}
+
+		for (s32 b = 0; b < INPUT_MAX_BINDS; ++b) {
+			if (zbinds[idx][z][b] == vk) {
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+// The keys of action ck in force for idx now: the normal ones, or Zombies'
+static const u32 *inputLiveBinds(s32 idx, u32 ck, u32 out[INPUT_MAX_BINDS]);
+static void inputZombiesLayoutSave(s32 ctrl);
+
 static s32 fakeControllers = 0;
 static s32 firstController = 0;
 static s32 connectedMask = 0;
@@ -700,6 +775,8 @@ void inputSaveBinds(void)
 				strcpy(bindstr, "NONE");
 			}
 		}
+
+		inputZombiesLayoutSave(i);
 	}
 }
 
@@ -858,6 +935,166 @@ static void inputMigrateMeleeBind(s32 ctrl)
 
 static s32 inputHasBind(s32 ctrl, u32 ck, u32 vk);
 static void inputRemoveBind(s32 ctrl, u32 ck, u32 vk);
+
+/**
+ * Zombies' layout as it comes: Space and A to jump, R and X to reload, F and X
+ * to interact (Call of Duty's controller has use and reload on one button),
+ * and the secondary function on X and the D-pad left. Fire, aim and the knife
+ * are the normal ones. Reload has a line of its own so the X it shares with
+ * interact is not taken from it.
+ */
+static void inputZombiesLayoutDefaults(s32 ctrl)
+{
+	const u32 pad = VK_JOY_BEGIN + ctrl * INPUT_MAX_CONTROLLER_BUTTONS;
+	const s32 kb = ctrl == 0;
+
+	memset(zbinds[ctrl], 0, sizeof(zbinds[ctrl]));
+	memset(zover[ctrl], 0, sizeof(zover[ctrl]));
+
+	zover[ctrl][0] = 1; // jump
+	zbinds[ctrl][0][0] = kb ? SDL_SCANCODE_SPACE : pad + SDL_CONTROLLER_BUTTON_A;
+	zbinds[ctrl][0][1] = kb ? pad + SDL_CONTROLLER_BUTTON_A : 0;
+
+	zover[ctrl][3] = 1; // reload
+	zbinds[ctrl][3][0] = kb ? SDL_SCANCODE_R : pad + SDL_CONTROLLER_BUTTON_X;
+	zbinds[ctrl][3][1] = kb ? pad + SDL_CONTROLLER_BUTTON_X : 0;
+
+	zover[ctrl][5] = 1; // interact
+	zbinds[ctrl][5][0] = kb ? SDL_SCANCODE_F : pad + SDL_CONTROLLER_BUTTON_X;
+	zbinds[ctrl][5][1] = kb ? pad + SDL_CONTROLLER_BUTTON_X : 0;
+
+	zover[ctrl][6] = 1; // secondary function
+	zbinds[ctrl][6][0] = kb ? SDL_SCANCODE_X : pad + SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+	zbinds[ctrl][6][1] = kb ? pad + SDL_CONTROLLER_BUTTON_DPAD_LEFT : 0;
+}
+
+static void inputZombiesLayoutLoad(s32 ctrl)
+{
+	inputZombiesLayoutDefaults(ctrl);
+
+	for (s32 z = 0; z < ZLAYOUT_COUNT; ++z) {
+		char str[MAX_BIND_STR];
+		s32 n = 0;
+
+		if (!zbindStrs[ctrl][z][0]) {
+			continue; // no line: the default
+		}
+
+		strncpy(str, zbindStrs[ctrl][z], sizeof(str) - 1);
+		str[sizeof(str) - 1] = '\0';
+		memset(zbinds[ctrl][z], 0, sizeof(zbinds[ctrl][z]));
+
+		if (!strcasecmp(str, "INHERIT")) {
+			zover[ctrl][z] = 0;
+			continue;
+		}
+
+		zover[ctrl][z] = 1;
+
+		if (!strcasecmp(str, "NONE")) {
+			continue;
+		}
+
+		for (const char *tok = strtok(str, ", "); tok && n < INPUT_MAX_BINDS; tok = strtok(NULL, ", ")) {
+			const s32 vk = tok[0] ? inputGetKeyByName(tok) : 0;
+
+			if (vk > 0) {
+				zbinds[ctrl][z][n++] = vk;
+			}
+		}
+	}
+}
+
+static void inputZombiesLayoutSave(s32 ctrl)
+{
+	for (s32 z = 0; z < ZLAYOUT_COUNT; ++z) {
+		char *str = zbindStrs[ctrl][z];
+
+		str[0] = '\0';
+
+		if (!zover[ctrl][z]) {
+			strcpy(str, "INHERIT");
+			continue;
+		}
+
+		for (s32 b = 0; b < INPUT_MAX_BINDS; ++b) {
+			if (zbinds[ctrl][z][b]) {
+				if (str[0]) {
+					strncat(str, ", ", MAX_BIND_STR - 1 - strlen(str));
+				}
+
+				strncat(str, inputGetKeyName(zbinds[ctrl][z][b]), MAX_BIND_STR - 1 - strlen(str));
+			}
+		}
+
+		if (!str[0]) {
+			strcpy(str, "NONE");
+		}
+	}
+}
+
+s32 inputZombiesLayoutCount(void)
+{
+	return ZLAYOUT_COUNT;
+}
+
+u32 inputZombiesLayoutCk(s32 slot)
+{
+	return slot >= 0 && slot < ZLAYOUT_COUNT ? zlayout[slot].ck : 0;
+}
+
+// What the Zombies Controls page shows for slot: its own keys, or the normal
+// ones it keeps
+const u32 *inputZombiesLayoutBinds(s32 idx, s32 slot)
+{
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || slot < 0 || slot >= ZLAYOUT_COUNT) {
+		return NULL;
+	}
+
+	return zover[idx][slot] ? zbinds[idx][slot] : binds[idx][zlayout[slot].ck];
+}
+
+// A key set from the page: the slot takes keys of its own from here on,
+// starting from the ones it showed; vk 0 clears that place
+void inputZombiesLayoutBind(s32 idx, s32 slot, s32 bind, u32 vk)
+{
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || slot < 0 || slot >= ZLAYOUT_COUNT || bind >= INPUT_MAX_BINDS) {
+		return;
+	}
+
+	if (!zover[idx][slot]) {
+		memcpy(zbinds[idx][slot], binds[idx][zlayout[slot].ck], sizeof(zbinds[idx][slot]));
+		zover[idx][slot] = 1;
+	}
+
+	if (bind < 0) {
+		for (bind = 0; bind < INPUT_MAX_BINDS - 1 && zbinds[idx][slot][bind]; ++bind);
+	}
+
+	zbinds[idx][slot][bind] = vk;
+	inputZombiesLayoutSave(idx);
+}
+
+void inputZombiesLayoutReset(s32 idx)
+{
+	if (idx >= 0 && idx < INPUT_MAX_CONTROLLERS) {
+		inputZombiesLayoutDefaults(idx);
+		inputZombiesLayoutSave(idx);
+	}
+}
+
+// The keys of ck in force now, Zombies' while a Zombies match runs (the
+// buy prompts name its interact key, zombies.inc)
+const u32 *inputKeyGetLiveBinds(s32 idx, u32 ck)
+{
+	static u32 out[INPUT_MAX_BINDS];
+
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || ck >= CK_TOTAL_COUNT) {
+		return NULL;
+	}
+
+	return inputLiveBinds(idx, ck, out);
+}
 
 /**
  * Zombies' interact (CK_0200, BUTTON_INTERACT) on F, for a config written
@@ -1132,6 +1369,7 @@ static inline void inputLoadBinds(void)
 		inputMigrateRollBind(i);
 		inputMigrateMeleeBind(i);
 		inputMigrateInteractBind(i);
+		inputZombiesLayoutLoad(i);
 
 		if (i == 0) {
 			inputMendCutPadBinds(i);
@@ -1234,11 +1472,38 @@ s32 inputInit(void)
 	return connectedMask;
 }
 
+static const u32 *inputLiveBinds(s32 idx, u32 ck, u32 out[INPUT_MAX_BINDS])
+{
+	s32 z;
+
+	if (!inputZombiesOn() || ck == CK_ACCEPT || ck == CK_CANCEL || ck == CK_START) {
+		return binds[idx][ck];
+	}
+
+	z = inputZombiesSlot(ck);
+
+	if (z >= 0 && zover[idx][z]) {
+		return zbinds[idx][z];
+	}
+
+	// the normal keys, less those the layout has given to something else
+	for (s32 b = 0; b < INPUT_MAX_BINDS; ++b) {
+		const u32 vk = binds[idx][ck][b];
+
+		out[b] = vk && !inputZombiesClaimed(idx, vk) ? vk : 0;
+	}
+
+	return out;
+}
+
 static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 {
+	u32 buf[INPUT_MAX_BINDS];
+	const u32 *live = inputLiveBinds(idx, ck, buf);
+
 	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
-		if (binds[idx][ck][i]) {
-			if (inputKeyPressed(binds[idx][ck][i])) {
+		if (live[i]) {
+			if (inputKeyPressed(live[i])) {
 				return 1;
 			}
 		}
@@ -1250,8 +1515,11 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 // on they type, and a controller or the mouse still works the menus
 static s32 inputBindPressedNotKeys(const s32 idx, const u32 ck)
 {
+	u32 buf[INPUT_MAX_BINDS];
+	const u32 *live = inputLiveBinds(idx, ck, buf);
+
 	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
-		const u32 vk = binds[idx][ck][i];
+		const u32 vk = live[i];
 
 		if (vk >= VK_MOUSE_BEGIN && inputKeyPressed(vk)) {
 			return 1;
@@ -1298,8 +1566,11 @@ static s32 inputCancelKeyHeld(const s32 idx)
 // as inputBindPressed(), leaving out the keys bound to cancel
 static s32 inputBindPressedNotCancel(const s32 idx, const u32 ck)
 {
+	u32 buf[INPUT_MAX_BINDS];
+	const u32 *live = inputLiveBinds(idx, ck, buf);
+
 	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
-		const u32 vk = binds[idx][ck][i];
+		const u32 vk = live[i];
 
 		if (vk && !inputIsCancelKey(idx, vk) && inputKeyPressed(vk)) {
 			return 1;
@@ -2255,6 +2526,10 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 		for (u32 ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
 			snprintf(keyname, sizeof(keyname), "%s.%s", secname, inputGetContKeyName(ck));
 			configRegisterString(keyname, bindStrs[c][ck], MAX_BIND_STR);
+		}
+		for (s32 z = 0; z < ZLAYOUT_COUNT; ++z) {
+			snprintf(keyname, sizeof(keyname), "Input.Player%d.ZombiesBinds.%s", c + 1, zlayout[z].key);
+			configRegisterString(keyname, zbindStrs[c][z], MAX_BIND_STR);
 		}
 	}
 }

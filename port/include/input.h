@@ -206,6 +206,17 @@ void inputKeyBind(s32 idx, u32 ck, s32 bind, u32 vk);
 
 const u32 *inputKeyGetBinds(s32 idx, u32 ck);
 
+// the keys of ck in force now: Zombies' own during a Zombies match
+const u32 *inputKeyGetLiveBinds(s32 idx, u32 ck);
+
+// Zombies' own controls (the Zombies Controls page): slot by slot, each one
+// action (inputZombiesLayoutCk()) with keys of its own or the normal ones
+s32 inputZombiesLayoutCount(void);
+u32 inputZombiesLayoutCk(s32 slot);
+const u32 *inputZombiesLayoutBinds(s32 idx, s32 slot);
+void inputZombiesLayoutBind(s32 idx, s32 slot, s32 bind, u32 vk);
+void inputZombiesLayoutReset(s32 idx);
+
 // get VK_ value from human-readable name
 s32 inputGetKeyByName(const char *name);
 

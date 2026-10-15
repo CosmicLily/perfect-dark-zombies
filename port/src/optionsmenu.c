@@ -4644,6 +4644,73 @@ MenuItemHandlerResult menuhandlerZombiesBind(s32 operation, struct menuitem *ite
 }
 
 /**
+ * The Zombies Controls page (zombies.inc): Zombies' own layout, in force only
+ * in a Zombies match (input.c's inputLiveBinds()). A row is one of its slots,
+ * item->param3; a slot not set yet shows the normal keys it keeps, and the
+ * first key set on it gives it keys of its own.
+ */
+static s32 g_ZombiesLayoutSlot = 0;
+
+static void menuZombiesLayoutSetKey(s32 vk)
+{
+	inputZombiesLayoutBind(g_ExtMenuPlayer, g_ZombiesLayoutSlot, g_BindIndex, vk);
+}
+
+MenuItemHandlerResult menuhandlerZombiesLayoutBind(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	const s32 slot = item->param3;
+	const u32 *binds;
+
+	static char keyname[128];
+
+	if (g_MpPlayerNum >= 0 && g_MpPlayerNum < MAX_LOCAL_PLAYERS) {
+		g_ExtMenuPlayer = g_MpPlayerNum;
+	}
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = INPUT_MAX_BINDS;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		binds = inputZombiesLayoutBinds(g_ExtMenuPlayer, slot);
+		if (binds && binds[data->dropdown.value]) {
+			strncpy(keyname, inputGetKeyName(binds[data->dropdown.value]), sizeof(keyname) - 1);
+			for (char *p = keyname; *p; ++p) {
+				if (*p == '_') *p = ' ';
+			}
+			return (intptr_t)keyname;
+		}
+		return (intptr_t)"NONE";
+	case MENUOP_SET:
+		g_ExtendedBindKeyMenuItems[0].param2 = item->param2;
+		g_BindIndex = data->dropdown.value;
+		g_BindContKey = inputZombiesLayoutCk(slot);
+		g_ZombiesLayoutSlot = slot;
+		g_BindKeySetter = menuZombiesLayoutSetKey;
+		inputClearLastKey();
+		menuPushDialog(&g_ExtendedBindKeyMenuDialog);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = 0;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerZombiesLayoutReset(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		if (g_MpPlayerNum >= 0 && g_MpPlayerNum < MAX_LOCAL_PLAYERS) {
+			g_ExtMenuPlayer = g_MpPlayerNum;
+		}
+
+		inputZombiesLayoutReset(g_ExtMenuPlayer);
+	}
+
+	return 0;
+}
+
+/**
  * Recording: the key, what it writes, and whether the red dot goes on screen.
  *
  * Frame Rate, Quality and Encoder get a row each. The preset and the container
