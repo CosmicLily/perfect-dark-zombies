@@ -175,6 +175,26 @@ extern s32 g_ZombieCfgGroans;
 
 static s32 g_ZombiePoints[MAX_PLAYERS];
 
+// Online, a seat nobody plays: a host that takes joins in progress has every
+// seat a player from the start, the open ones dead and hidden. Not a player
+// for the HUD's rows, the rules for playing alone, or the next round's
+// respawn (the host's from netPlayerOutOfPlay(), a client's from the block)
+static bool g_ZombieOutOfPlay[MAX_PLAYERS];
+
+// The players in play: alone, Quick Revive and going down are Call of Duty's
+// solo rules
+static s32 zombiesPlayersInPlay(void)
+{
+	s32 n = 0;
+	s32 i;
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		n += g_ZombieOutOfPlay[i] ? 0 : 1;
+	}
+
+	return n;
+}
+
 // When the current round began, for the counter fading in
 static s32 g_ZombieRoundStartFrame = 0;
 
@@ -1297,7 +1317,7 @@ static void zombiesResetPerks(void)
 // What a perk costs this match: Quick Revive is cheap alone
 static s32 zombiesPerkCost(s32 perk)
 {
-	if (perk == ZOMBIEPERK_QUICKREVIVE && PLAYERCOUNT() < 2) {
+	if (perk == ZOMBIEPERK_QUICKREVIVE && zombiesPlayersInPlay() < 2) {
 		return ZOMBIE_QR_SOLO_COST;
 	}
 
@@ -4175,7 +4195,7 @@ static void zombiesTickPerkMachines(s32 playernum)
 		}
 
 		// alone, Quick Revive runs out
-		if (perk == ZOMBIEPERK_QUICKREVIVE && PLAYERCOUNT() < 2 && g_ZombieQrSoloBuys >= ZOMBIE_QR_SOLO_BUYS) {
+		if (perk == ZOMBIEPERK_QUICKREVIVE && zombiesPlayersInPlay() < 2 && g_ZombieQrSoloBuys >= ZOMBIE_QR_SOLO_BUYS) {
 			continue;
 		}
 
@@ -4221,7 +4241,7 @@ static void zombiesTickPerkMachines(s32 playernum)
 	zombiesAddPopup(playernum, -cost);
 	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
 
-	if (near == ZOMBIEPERK_QUICKREVIVE && PLAYERCOUNT() < 2) {
+	if (near == ZOMBIEPERK_QUICKREVIVE && zombiesPlayersInPlay() < 2) {
 		g_ZombieQrSoloBuys++;
 	}
 
@@ -4229,8 +4249,22 @@ static void zombiesTickPerkMachines(s32 playernum)
 	g_ZombieDrink60[playernum] = 0;
 }
 
+static void zombiesGivePerkEx(s32 playernum, s32 perk, bool quiet);
+
 // A drink finished: the perk is the player's
 static void zombiesGivePerk(s32 playernum, s32 perk)
+{
+	zombiesGivePerkEx(playernum, perk, false);
+}
+
+// ... or had back with no drink (a match carried on under a new host): no
+// sound, and Mule Kick's gun is the player's own record's
+static void zombiesGivePerkQuietly(s32 playernum, s32 perk)
+{
+	zombiesGivePerkEx(playernum, perk, true);
+}
+
+static void zombiesGivePerkEx(s32 playernum, s32 perk, bool quiet)
 {
 	// on the end of the row: any lost since (not by going down, which clears
 	// the row) come off first, so one bought again goes on the end too
@@ -4255,12 +4289,14 @@ static void zombiesGivePerk(s32 playernum, s32 perk)
 	} else if (perk > 0 && perk < ZOMBIEPERK_COUNT) {
 		g_ZombieHasPerk[playernum][perk] = true;
 
-		if (perk == ZOMBIEPERK_MULEKICK) {
+		if (perk == ZOMBIEPERK_MULEKICK && !quiet) {
 			zombiesReturnMuleGun(playernum);
 		}
 	}
 
-	zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
+	if (!quiet) {
+		zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
+	}
 }
 
 /**
@@ -5131,7 +5167,7 @@ bool zombiesPlayerGoesDown(s32 playernum, bool force)
 	}
 
 	// alone, only Quick Revive lets a player go down rather than die
-	solo = PLAYERCOUNT() < 2;
+	solo = zombiesPlayersInPlay() < 2;
 
 	if (force || (solo && !g_ZombieHasPerk[playernum][ZOMBIEPERK_QUICKREVIVE])
 			|| g_ZombieRound < 1 || player->invincible) {
@@ -5189,7 +5225,7 @@ static void zombiesRespawnTheDead(void)
 	s32 i;
 
 	for (i = 0; i < PLAYERCOUNT(); i++) {
-		if (g_Vars.players[i]->isdead) {
+		if (g_Vars.players[i]->isdead && !g_ZombieOutOfPlay[i]) {
 			g_ZombieRespawnDue[i] = true;
 		}
 	}
@@ -5212,7 +5248,7 @@ static bool zombiesCanWatch(s32 me, s32 playernum, bool standingonly)
 {
 	struct player *player;
 
-	if (playernum < 0 || playernum >= PLAYERCOUNT() || playernum == me) {
+	if (playernum < 0 || playernum >= PLAYERCOUNT() || playernum == me || g_ZombieOutOfPlay[playernum]) {
 		return false;
 	}
 
@@ -5481,7 +5517,7 @@ s32 zombiesDeadCameraTick(void)
 	struct player *player = g_Vars.currentplayer;
 	s32 prevwatch;
 
-	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS || PLAYERCOUNT() < 2) {
+	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS || zombiesPlayersInPlay() < 2) {
 		return 0;
 	}
 
@@ -5818,6 +5854,11 @@ static bool zombiesEveryoneIsDown(void)
 
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		struct player *player = g_Vars.players[i];
+
+		// an open seat online is nobody's to go down
+		if (g_ZombieOutOfPlay[i]) {
+			continue;
+		}
 
 		// up, or coming back up on their own (Quick Revive alone)
 		if (zombiesPlayerIsUp(i) || (g_ZombieDowned[i] && g_ZombieSelfRevive60[i] > 0)) {
@@ -9285,6 +9326,8 @@ static void zombiesTickGroans(void)
 	}
 }
 
+static void zombiesNetResumeTake(void);
+
 void zombiesTick(void)
 {
 	s32 i;
@@ -9294,6 +9337,10 @@ void zombiesTick(void)
 	lvSetMpTimeLimit60(0);
 	lvSetMpScoreLimit(0);
 	lvSetMpTeamScoreLimit(0);
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		g_ZombieOutOfPlay[i] = i < PLAYERCOUNT() && netPlayerOutOfPlay(i);
+	}
 
 	zombiesTickPopups();
 
@@ -9444,6 +9491,8 @@ void zombiesTick(void)
 		if (g_Vars.lvframenum >= 120) {
 			// the Zombies Options page's Starting Round
 			g_ZombieRound = g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1;
+			// a match carried on under a new host: its round, and what each had
+			zombiesNetResumeTake();
 			g_ZombieRoundStartFrame = g_Vars.lvframenum;
 			g_ZombieGraceUntil = g_Vars.lvframenum + 120;
 			g_ZombieNextSpawnFrame = g_Vars.lvframenum + 120;
@@ -10914,7 +10963,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 		s32 i;
 
 		for (i = 0; i < PLAYERCOUNT(); i++) {
-			if (i != g_Vars.currentplayernum) {
+			if (i != g_Vars.currentplayernum && !g_ZombieOutOfPlay[i]) {
 				zombiesRenderPointsRow(&gdl, i, right, rowbottom,
 						g_CharsHandelGothicXs, g_FontHandelGothicXs);
 				rowbottom -= rowheight;
@@ -11080,6 +11129,157 @@ static f32 znGetF(struct zombienetbuf *b)
 	return f == f && f < 1e7f && f > -1e7f ? f : 0;
 }
 
+// Where the players start in the block (zombiesNetCapture()'s order): a
+// resumed match reads them alone (zombiesNetResume())
+#define ZOMBIE_NET_WALLS_AT   28  // the wall buys' mask, past the round's, the power-ups' and the box's
+#define ZOMBIE_NET_PLAYERS_AT 285
+
+// A player's part of the block, as zombiesNetCapture() writes it
+struct zombienetplayer {
+	s32 points;
+	u32 perks;   // bit k: perk k (Juggernog's bit 0)
+	s32 count;
+	s32 order[ZOMBIEPERK_COUNT];
+	s32 drink;
+	s32 drinkperk;
+	u32 flags;   // 1 down, 2 respawn due, 4/8/16 near Juggernog/the box/Pack-a-Punch, 32 where, 64 out of play
+	s32 nearperk;
+	s32 nearwall;
+	s32 neardowned;
+	s32 reviver;
+	s32 bleed;
+	s32 revive;
+	s32 selfrevive;
+	s32 pap60;
+	s32 papgun;
+	s32 papcount;
+	s32 papped[ZOMBIE_PAP_MAX];
+};
+
+static void zombiesNetReadPlayer(struct zombienetbuf *b, struct zombienetplayer *pl)
+{
+	s32 k;
+
+	pl->points = (s32)znGet(b, 4);
+	pl->perks = znGet(b, 1);
+	pl->count = znClamp(znGet(b, 1), 0, ZOMBIEPERK_COUNT);
+
+	for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
+		pl->order[k] = znClamp(znGet(b, 1), 0, ZOMBIEPERK_COUNT - 1);
+	}
+
+	pl->drink = (s16)znGet(b, 2);
+	pl->drinkperk = znClamp(znGet(b, 1), 0, ZOMBIEPERK_COUNT - 1);
+	pl->flags = znGet(b, 1);
+	pl->nearperk = (s8)znGet(b, 1);
+	pl->nearwall = (s8)znGet(b, 1);
+	pl->neardowned = (s8)znGet(b, 1);
+	pl->reviver = (s8)znGet(b, 1);
+	pl->bleed = znGet(b, 2);
+	pl->revive = znGet(b, 2);
+	pl->selfrevive = znGet(b, 2);
+	pl->pap60 = (s16)znGet(b, 2);
+	pl->papgun = znGet(b, 1);
+	pl->papcount = znClamp(znGet(b, 1), 0, ZOMBIE_PAP_MAX);
+
+	for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
+		pl->papped[k] = znGet(b, 1);
+	}
+}
+
+/**
+ * Host migration (netmigrate.c), a Zombies match carried on under a new host:
+ * the stage starts again (its frames from 0, so Zombies' own start runs), and
+ * what the players had - the round, each one's points, perks and upgraded
+ * guns, the wall buys put up - is the old host's last block, given back as the
+ * new round starts (zombiesTick()). Its guns are the players' own records
+ * (RESUME). Seats 0 and swap are exchanged, as the kill table's rows are.
+ */
+static bool g_ZombieResumePending = false;
+static s32 g_ZombieResumeRound = 0;
+static u32 g_ZombieResumeWalls = 0;
+static struct zombienetplayer g_ZombieResumePlayers[MAX_PLAYERS]; // by this match's playernum
+
+void zombiesNetResume(const u8 *in, s32 size, s32 swap)
+{
+	struct zombienetbuf b = { NULL, in, 0, size };
+	struct zombienetplayer old[MAX_PLAYERS];
+	s32 i;
+
+	if (znGet(&b, 1) != ZOMBIE_NET_VERSION) {
+		return;
+	}
+
+	g_ZombieResumeRound = znGet(&b, 2);
+	b.at = ZOMBIE_NET_WALLS_AT;
+	g_ZombieResumeWalls = znGet(&b, 1);
+	b.at = ZOMBIE_NET_PLAYERS_AT;
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		zombiesNetReadPlayer(&b, &old[i]);
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		// the seat this player had before: 0 and swap exchanged
+		s32 slot = i < PLAYERCOUNT() ? g_Vars.playerstats[i].mpindex : i;
+
+		slot = slot == 0 ? swap : slot == swap ? 0 : slot;
+		g_ZombieResumePlayers[i] = slot >= 0 && slot < MAX_PLAYERS ? old[slot] : old[i];
+	}
+
+	g_ZombieResumePending = g_ZombieResumeRound > 0;
+
+	sysLogPrintf(LOG_NOTE, "zombies: migrate: the match carries on from round %d when its round starts", g_ZombieResumeRound);
+}
+
+// zombiesTick(), the first round's start: a resumed match's round and what the
+// players had under the old host, when there is one
+static void zombiesNetResumeTake(void)
+{
+	s32 i;
+	s32 k;
+
+	if (!g_ZombieResumePending) {
+		return;
+	}
+
+	g_ZombieResumePending = false;
+	g_ZombieRound = g_ZombieResumeRound;
+
+	for (k = 0; k < g_ZombieNumWallBuys; k++) {
+		if (g_ZombieResumeWalls & (1 << k)) {
+			zombiesWallBuyShowGun(&g_ZombieWallBuys[k]);
+		}
+	}
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		const struct zombienetplayer *pl = &g_ZombieResumePlayers[i];
+
+		if (g_ZombieOutOfPlay[i] || g_Vars.players[i] == NULL) {
+			continue;
+		}
+
+		g_ZombiePoints[i] = pl->points;
+
+		for (k = 0; k < pl->count; k++) {
+			const s32 perk = pl->order[k];
+
+			if (pl->perks & (1 << perk)) {
+				zombiesGivePerkQuietly(i, perk);
+			}
+		}
+
+		g_ZombiePapCount[i] = pl->papcount;
+
+		for (k = 0; k < pl->papcount; k++) {
+			g_ZombiePapped[i][k] = pl->papped[k];
+		}
+
+		sysLogPrintf(LOG_NOTE, "zombies: migrate: player %d back with %d points, perks 0x%02x, %d upgraded gun%s",
+				i + 1, pl->points, pl->perks, pl->papcount, pl->papcount == 1 ? "" : "s");
+	}
+}
+
 /**
  * netents.c, the host's capture: one of Zombies' own objects, which each
  * machine makes for itself (an s32: bool is not the same size on both sides)
@@ -11171,6 +11371,10 @@ void zombiesNetCapture(u8 *out, s32 size)
 		}
 	}
 
+	if (b.at != ZOMBIE_NET_WALLS_AT) {
+		sysLogPrintf(LOG_WARNING, "zombies: the online block's wall buys are at %d, not ZOMBIE_NET_WALLS_AT", b.at);
+	}
+
 	znPut(&b, mask, 1);
 
 	// the rings
@@ -11215,7 +11419,16 @@ void zombiesNetCapture(u8 *out, s32 size)
 		znPut(&b, (u16)(s16)(up ? znClamp((s32)obj->prop->pos.z, -32767, 32767) : -32768), 2);
 	}
 
-	// each player, by playernum
+	// each player, by playernum, where zombiesNetResume() looks for them
+	if (b.at != ZOMBIE_NET_PLAYERS_AT) {
+		static bool warned = false;
+
+		if (!warned) {
+			warned = true;
+			sysLogPrintf(LOG_WARNING, "zombies: the online block's players start at %d, not ZOMBIE_NET_PLAYERS_AT %d", b.at, ZOMBIE_NET_PLAYERS_AT);
+		}
+	}
+
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		const bool in = i < PLAYERCOUNT() && g_Vars.players[i] != NULL;
 		u32 perks = 0;
@@ -11236,6 +11449,7 @@ void zombiesNetCapture(u8 *out, s32 size)
 			flags |= g_ZombieNearBox[i] ? 0x08 : 0;
 			flags |= g_ZombieNearPap[i] ? 0x10 : 0;
 			flags |= g_ZombieWhere[i] ? 0x20 : 0;
+			flags |= g_ZombieOutOfPlay[i] ? 0x40 : 0;
 		}
 
 		znPut(&b, in ? (u32)g_ZombiePoints[i] : 0, 4);
@@ -11467,47 +11681,28 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 	// each player
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		const bool here = i < PLAYERCOUNT() && g_Vars.players[i] != NULL;
-		const s32 points = (s32)znGet(&b, 4);
-		const u32 perks = znGet(&b, 1);
-		const s32 count = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT);
-		s32 order[ZOMBIEPERK_COUNT];
-		s32 drink;
-		s32 drinkperk;
-		u32 flags;
-		s32 nearperk;
-		s32 nearwall;
-		s32 neardowned;
-		s32 reviver;
-		s32 bleed;
-		s32 revive;
-		s32 selfrevive;
-		s32 pap60;
-		s32 papgun;
-		s32 papcount;
-		s32 papped[ZOMBIE_PAP_MAX];
+		struct zombienetplayer pl;
 
-		for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
-			order[k] = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT - 1);
-		}
+		zombiesNetReadPlayer(&b, &pl);
 
-		drink = (s16)znGet(&b, 2);
-		drinkperk = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT - 1);
-		flags = znGet(&b, 1);
-		nearperk = (s8)znGet(&b, 1);
-		nearwall = (s8)znGet(&b, 1);
-		neardowned = (s8)znGet(&b, 1);
-		reviver = (s8)znGet(&b, 1);
-		bleed = znGet(&b, 2);
-		revive = znGet(&b, 2);
-		selfrevive = znGet(&b, 2);
-		pap60 = (s16)znGet(&b, 2);
-		papgun = znGet(&b, 1);
-		papcount = znClamp(znGet(&b, 1), 0, ZOMBIE_PAP_MAX);
-
-		for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
-			papped[k] = znGet(&b, 1);
-		}
-
+		const u32 perks = pl.perks;
+		const s32 points = pl.points;
+		const s32 count = pl.count;
+		const s32 *order = pl.order;
+		const s32 drink = pl.drink;
+		const s32 drinkperk = pl.drinkperk;
+		const u32 flags = pl.flags;
+		const s32 nearperk = pl.nearperk;
+		const s32 nearwall = pl.nearwall;
+		const s32 neardowned = pl.neardowned;
+		const s32 reviver = pl.reviver;
+		const s32 bleed = pl.bleed;
+		const s32 revive = pl.revive;
+		const s32 selfrevive = pl.selfrevive;
+		const s32 pap60 = pl.pap60;
+		const s32 papgun = pl.papgun;
+		const s32 papcount = pl.papcount;
+		const s32 *papped = pl.papped;
 		if (!here) {
 			continue;
 		}
@@ -11533,6 +11728,7 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		g_ZombieNearBox[i] = (flags & 0x08) != 0;
 		g_ZombieNearPap[i] = (flags & 0x10) != 0;
 		g_ZombieWhere[i] = (flags & 0x20) != 0;
+		g_ZombieOutOfPlay[i] = (flags & 0x40) != 0;
 		// what the client has not got itself is nobody
 		g_ZombieNearPerk[i] = nearperk >= 0 && nearperk < ZOMBIEPERK_COUNT ? nearperk : -1;
 		g_ZombieNearWall[i] = nearwall >= 0 && nearwall < g_ZombieNumWallBuys ? nearwall : -1;
@@ -11613,6 +11809,7 @@ void zombiesClientTick(void)
 			g_ZombieKnifeRaise60[i] = 0;
 			g_ZombieKnifeCooldown60[i] = 0;
 			g_ZombieWhere[i] = false;
+			g_ZombieOutOfPlay[i] = false;
 		}
 
 		for (k = 0; k < ARRAYCOUNT(g_ZombieDropSerialHere); k++) {
@@ -11754,6 +11951,13 @@ void zombiesClientTick(void)
 	// this machine's own knife, swung as its walk is predicted
 	if (me >= 0 && me < PLAYERCOUNT() && g_Vars.players[me] && g_Vars.players[me]->prop) {
 		zombiesTickKnife(me);
+	}
+
+	// back in at the next round: no longer watching anyone. Offline the
+	// round's turn (g_ZombieRespawnDue) ends it while still dead; a client
+	// can be stood up by the host before any block of its has said so
+	if (me >= 0 && me < PLAYERCOUNT() && g_Vars.players[me] && !g_Vars.players[me]->isdead) {
+		g_ZombieSpectating[me] = false;
 	}
 }
 

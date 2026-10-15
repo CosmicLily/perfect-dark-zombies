@@ -186,7 +186,10 @@
   sends none of Zombies' objects (`zombiesNetOwnsProp`); Zombies' state in
   the scenario block (1280 bytes now, `zombiesNetCapture/Apply`), the
   client's own frame (`scenarioClientTick`); Interact as NETCMD_INTERACT;
-  `CONT_0200` is 0x02000000, not 0x200; how it was staged on Windows.
+  `CONT_0200` is 0x02000000, not 0x200; how it was staged on Windows;
+  then a client's bleed-out and respawn, a joiner's open seats
+  (`g_ZombieOutOfPlay`), a Zombies match through host migration
+  (`zombiesNetResume`), and pdlobbyd under Windows' asyncio.
 
 ## The shape
 
@@ -4177,9 +4180,39 @@ drink in its hands, the HUD's points for both players, the prompts with its own 
 the box and Pack-a-Punch bought and taken ("Hold F for Fallen Falcon"), the knife's slash,
 power-ups made and DOUBLE POINTS' banner and timer, BLEEDING OUT, GAME OVER, MATCH_END.
 
-Not done or not seen online yet: a Zombies match through host migration (`netScenKeep` refuses
-past Capture the Case: the new host starts it over); a client bleeding out and back at the next
-round, and its teammate camera (zombiesDeadCameraTick runs on the client; untried); a remote
-player's third-person drink arm (reads the drink by playernum, so it should); joining in progress;
-no `netzombiestest.sh`. The net HUD's "T: chat hold P: players" hint sits over "Zombies: N" for
+**The paths tried after (2026-10-14, the same day, no wire change past 33):**
+
+- **A client bleeding out and back.** Seen: its teammate camera (follow, and first person after a
+  press of F), "YOU WILL RESPAWN NEXT ROUND", and its new life when the host's round turns. Fixed:
+  the client's `g_ZombieSpectating` stayed set after the new life. Offline the round's turn
+  (`g_ZombieRespawnDue`) clears it while the player is still dead; a client is stood up by the host
+  before any of its blocks says the respawn is due, so `zombiesClientTick` clears it on any life.
+  Not done: watched in first person, a client shows no gun or drink in the teammate's hands (a
+  client runs nobody else's hands; offline the watched player's gun is drawn).
+- **A remote player's third-person drink arm** on a client: the bottle raised and thrown, as offline.
+- **Joining in progress** (the host's `[Net] JoinInProgress=1`): the joiner takes the seat, places
+  the machines where the host's are and follows the round. Found: such a host makes every seat a
+  player from the match's start (the open ones dead and hidden, `netPlayerOutOfPlay`), so Zombies
+  counted them - the joiner's HUD had a points row for an empty seat, and one human with open seats
+  was never "alone" for Quick Revive's solo rules. `g_ZombieOutOfPlay[]` (the host's, and bit 0x40 of
+  a player's flags in the block) now keeps them out of the HUD's rows, the solo rules
+  (`zombiesPlayersInPlay()`), the teammate camera, the round's respawn and GAME OVER's count. An open
+  seat's start-of-match setup (team, health) is already done, so a joiner needs none.
+- **Host migration.** `netScenKeep` takes a Zombies block now, and `zombiesNetResume` keeps the
+  round, the wall buys put up, and each player's points, perks (given back without a drink:
+  `zombiesGivePerkQuietly`) and upgraded guns, seats 0 and swap exchanged; the resumed stage's frames
+  start at 0 (only the level clock is carried), so Zombies' own start runs and the kept state is
+  given back where its first round starts (`zombiesNetResumeTake`). The players' guns are their own
+  RESUME records. The block's offsets that the resume reads alone are `ZOMBIE_NET_WALLS_AT` and
+  `ZOMBIE_NET_PLAYERS_AT`; the capture warns if its layout moves off them. Not carried: the box, the
+  power-ups, anyone down (all up again), Pack-a-Punch's gun in the machine.
+  Staged as netmigratetest's "quit" case: a lobby-script room (`--net-lobby-scenario 6`, new, as Game
+  Setup's Scenario sets it), the host quitting at frame 2200 in round 2; alpha hosted on from round 2
+  with every seat's points and perks where they were.
+
+**pdlobbyd on Windows** does not start: asyncio has no `add_signal_handler` there. For a local test,
+start it through a wrapper that makes that a no-op (`ProactorEventLoop.add_signal_handler =
+lambda *a, **k: None`, then `runpy.run_path` on pdlobbyd.py); the deployed lobby runs on Linux.
+
+Still no `netzombiestest.sh`. The net HUD's "T: chat hold P: players" hint sits over "Zombies: N" for
 its first seconds.

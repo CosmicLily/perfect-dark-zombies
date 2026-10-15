@@ -549,7 +549,7 @@ void netScenHostSeatCleared(s32 slot)
  */
 s32 netScenKeep(u8 *out)
 {
-	if (!s_HaveCur || s_Cur[OFF_SCEN] > MPSCENARIO_CAPTURETHECASE) {
+	if (!s_HaveCur || s_Cur[OFF_SCEN] > MPSCENARIO_ZOMBIES) {
 		return 0;
 	}
 
@@ -570,6 +570,12 @@ void netScenResume(const u8 *b, s32 swap)
 
 	if (g_NetMode != NETMODE_SERVER || !g_Vars.normmplayerisrunning || b[OFF_SCEN] != g_MpSetup.scenario) {
 		return;
+	}
+
+	// Zombies' round, each player's points, perks and upgraded guns, from
+	// when its round starts (zombies.inc)
+	if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		zombiesNetResume(b + OFF_BODY, NETSCEN_SIZE - OFF_BODY, swap);
 	}
 
 	for (i = 0; i < g_MpNumChrs; i++) {

@@ -23,6 +23,7 @@
 #include "game/menu.h"
 #include "game/mplayer/mplayer.h"
 #include "game/mplayer/setup.h"
+#include "game/mplayer/scenarios.h"
 #include "lib/main.h"
 #include "net/net.h"
 #include "net/netlobby.h"
@@ -4256,6 +4257,14 @@ static void lobbyScriptTick(void)
 				}
 
 				g_MpSetup.stagenum = sysArgGetInt("--net-test-stage", 0x32);
+
+				// --net-lobby-scenario N: the room's Combat Simulator scenario
+				// (MPSCENARIO_*, 6 Zombies), as Game Setup's Scenario sets it
+				if (sysArgGetInt("--net-lobby-scenario", -1) >= MPSCENARIO_COMBAT
+						&& sysArgGetInt("--net-lobby-scenario", -1) <= MPSCENARIO_ZOMBIES) {
+					g_MpSetup.scenario = sysArgGetInt("--net-lobby-scenario", MPSCENARIO_COMBAT);
+					scenarioInit();
+				}
 
 				// --net-lobby-teams: a team match (the Game Lobby's roster
 				// grouped and coloured by team)

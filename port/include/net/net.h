@@ -108,6 +108,7 @@ struct prop;
 s32 zombiesNetOwnsProp(struct prop *prop);
 void zombiesNetCapture(u8 *out, s32 size);
 void zombiesNetApply(const u8 *in, s32 size, s32 final);
+void zombiesNetResume(const u8 *in, s32 size, s32 swap); // host migration: the old host's last block, seats 0 and swap exchanged
 
 // The player whose ears and eyes this machine has (propsnd.c), or fallback
 struct player;
