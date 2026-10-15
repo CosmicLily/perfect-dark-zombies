@@ -5024,10 +5024,12 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	}
 
 #ifndef PLATFORM_N64
-	// Don't damage if team multiplayer and friendly fire is off
+	// Don't damage if team multiplayer and friendly fire is off (Zombies:
+	// never, whatever the Combat Simulator's option says - the players are
+	// one team against the zombies, who are another)
 	if (g_Vars.mplayerisrunning
 			&& (g_MpSetup.options & MPOPTION_TEAMSENABLED)
-			&& !(g_MpSetup.options & MPOPTION_FRIENDLYFIRE)
+			&& (!(g_MpSetup.options & MPOPTION_FRIENDLYFIRE) || zombiesIsActive())
 			&& aprop
 			&& aprop != vprop
 			&& (aprop->type == PROPTYPE_PLAYER || aprop->type == PROPTYPE_CHR)

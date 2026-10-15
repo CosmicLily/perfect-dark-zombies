@@ -6855,6 +6855,17 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		(void *)&g_MpPlayerOptionsMenuDialog,
 	},
+#ifndef PLATFORM_N64
+	{
+		// Zombies' own settings and controls (zombies.inc)
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Zombies Options\n",
+		0,
+		(void *)&g_ZombiesSettingsMenuDialog,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

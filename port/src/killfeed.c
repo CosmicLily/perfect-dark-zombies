@@ -90,6 +90,11 @@ s32 killfeedIsOn(void)
 {
 	const s32 mode = g_ModOptions.killfeed;
 
+	// Zombies has none: the zombies' deaths are the game, not news
+	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		return 0;
+	}
+
 	if (mode == KILLFEED_AUTO) {
 		return g_NetMode != NETMODE_NONE;
 	}

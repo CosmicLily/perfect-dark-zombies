@@ -708,9 +708,12 @@ Gfx *scenarioRenderHud(Gfx *gdl)
 
 		playercount = PLAYERCOUNT();
 
+		// the team's colour along the view's edge; not in Zombies, whose one
+		// team of players is only for the zombies to have the other
 		if ((g_MpSetup.options & MPOPTION_TEAMSENABLED)
 				&& (g_MpSetup.options & MPOPTION_DISPLAYTEAM)
-				&& playercount >= 2) {
+				&& playercount >= 2
+				&& g_MpSetup.scenario != MPSCENARIO_ZOMBIES) {
 			chr = g_Vars.currentplayer->prop->chr;
 			cplayernum = g_Vars.currentplayernum;
 

@@ -11962,10 +11962,10 @@ void zombiesClientTick(void)
 }
 
 /**
- * The Zombies Options page, Game Setup's Options for Zombies: the two of the
- * Combat Simulator's own rules that mean something here (the radar, auto-aim),
- * then Zombies' own (zombieperks.c keeps them in pd.ini, so they last from one
- * run of the game to the next).
+ * The Zombies Options page, on Player Setup: Zombies' own settings
+ * (zombieperks.c keeps them in pd.ini, so they last from one run of the game
+ * to the next). Game Setup's Options for Zombies has the two of the Combat
+ * Simulator's own rules that mean something here (the radar, auto-aim).
  */
 static const s32 g_ZombieStartPointChoices[] = { 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000 };
 
@@ -12096,31 +12096,13 @@ struct menudialogdef g_ZombiesControlsMenuDialog = {
 	NULL,
 };
 
-struct menuitem g_ZombiesOptionsMenuItems[] = {
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_MPMENU_226, // "No Radar"
-		MPOPTION_NORADAR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_MPMENU_227, // "No Auto-Aim"
-		MPOPTION_NOAUTOAIM,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
-	},
+/**
+ * Zombies Options, on Player Setup (setup.c's, and the online pages' in
+ * netprofile.c): Zombies' own settings, which this machine keeps in pd.ini
+ * (zombieperks.c) and plays by when it hosts. Its match rules - the radar,
+ * auto-aim - stay on Game Setup's Options (g_ZombiesOptionsMenuDialog below).
+ */
+struct menuitem g_ZombiesSettingsMenuItems[] = {
 	{
 		MENUITEMTYPE_DROPDOWN,
 		0,
@@ -12197,9 +12179,56 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
-struct menudialogdef g_ZombiesOptionsMenuDialog = {
+struct menudialogdef g_ZombiesSettingsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	(uintptr_t)"Zombies Options",
+	g_ZombiesSettingsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// Game Setup's Options for Zombies: the two of the Combat Simulator's own
+// rules that mean something here (Zombies' own are on Player Setup)
+struct menuitem g_ZombiesOptionsMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		L_MPMENU_226, // "No Radar"
+		MPOPTION_NORADAR,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		L_MPMENU_227, // "No Auto-Aim"
+		MPOPTION_NOAUTOAIM,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_MPMENU_239, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesOptionsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Zombies Rules",
 	g_ZombiesOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
