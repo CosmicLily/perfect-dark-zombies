@@ -1597,6 +1597,7 @@ struct zombiemesh {
 	f32 zmin;         // its back
 	f32 width;        // across, and front to back, in its own centimetres
 	f32 depth;
+	f32 height;
 	// a "_moving" material's vertices (Pack-a-Punch's drums), each run's
 	// first and count in vtx, and their t as built, for zombiesMeshSpin()
 	s32 numruns;
@@ -1857,6 +1858,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 				lo[0] = MIN(lo[0], ov->pos[0]);
 				hi[0] = MAX(hi[0], ov->pos[0]);
 				lo[1] = MIN(lo[1], ov->pos[2]);
+				hi[1] = MAX(hi[1], ov->pos[2]);
 				lo[2] = MIN(lo[2], -ov->pos[1]);
 				hi[2] = MAX(hi[2], -ov->pos[1]);
 			}
@@ -1909,6 +1911,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 	zm->zmin = lo[2];
 	zm->width = hi[0] - lo[0];
 	zm->depth = hi[2] - lo[2];
+	zm->height = hi[1] - lo[1];
 
 	sysLogPrintf(LOG_NOTE, "zombies: %s's own model, %d triangles in %d vertices, %d commands%s",
 			label, m->numtris, numvtx, numgfx, zm->numruns ? ", its drums turning" : "");
@@ -1998,6 +2001,237 @@ static void zombiesMeshSpin(struct zombiemesh *zm)
 
 static bool zombiesPapGunInCamo(struct defaultobj *obj);
 static Gfx *zombiesCamoAt(Gfx *gdl);
+static bool zombiesMachineMeshPoint(s32 id, struct defaultobj *obj, const f32 objpos[3],
+		struct coord *out, struct coord *front);
+static f32 zombiesGroundAt(struct coord *pos, RoomNum *rooms);
+
+/**
+ * A machine's light on what is round it, as Call of Duty's machines cast
+ * theirs: a soft glow in the perk's colour round its lit sign, turned to the
+ * camera, and a pool of it on the floor in front. Both are a round falloff
+ * added onto what is there (G_ADDITIVE_EXT), tested against the depth and
+ * not written to it, in the translucent pass.
+ */
+#define ZOMBIE_GLOW_TEX   32
+#define ZOMBIE_GLOW_HALO  0x70 // the glow's strength round the sign
+#define ZOMBIE_GLOW_FLOOR 0x68 // and on the floor
+
+static u8 g_ZombieGlowTex[ZOMBIE_GLOW_TEX * ZOMBIE_GLOW_TEX] __attribute__((aligned(8)));
+static bool g_ZombieGlowTexMade = false;
+
+// the falloff: bright in the middle, nothing at the edge, smooth all the way
+static void zombiesGlowTexMake(void)
+{
+	s32 x;
+	s32 y;
+
+	for (y = 0; y < ZOMBIE_GLOW_TEX; y++) {
+		for (x = 0; x < ZOMBIE_GLOW_TEX; x++) {
+			f32 dx = (x + 0.5f) / (ZOMBIE_GLOW_TEX / 2) - 1;
+			f32 dy = (y + 0.5f) / (ZOMBIE_GLOW_TEX / 2) - 1;
+			f32 d = sqrtf(dx * dx + dy * dy);
+			f32 v = d >= 1 ? 0 : (1 - d) * (1 - d);
+
+			g_ZombieGlowTex[y * ZOMBIE_GLOW_TEX + x] = (u8)(v * 255.0f);
+		}
+	}
+
+	g_ZombieGlowTexMade = true;
+}
+
+// A machine's colour: the perk's, Pack-a-Punch's purple
+static void zombiesMachineGlowColour(s32 id, u8 rgb[3])
+{
+	if (id >= 0 && id < ZOMBIEPERK_COUNT) {
+		rgb[0] = g_ZombiePerks[id].colour[0];
+		rgb[1] = g_ZombiePerks[id].colour[1];
+		rgb[2] = g_ZombiePerks[id].colour[2];
+	} else {
+		rgb[0] = 0xb0;
+		rgb[1] = 0x40;
+		rgb[2] = 0xff;
+	}
+}
+
+// One quad: corners a, b, c, d in the space mtx takes into the view
+static Gfx *zombiesGlowQuad(Gfx *gdl, Mtxf *mtx, const s16 corners[4][3])
+{
+	Vtx *vtx = gfxAllocate(sizeof(Vtx) * 4);
+	Col *col = gfxAllocate(sizeof(Col) * 4);
+	static const s16 st[4][2] = { { 0, 0 }, { ZOMBIE_GLOW_TEX << 5, 0 },
+		{ ZOMBIE_GLOW_TEX << 5, ZOMBIE_GLOW_TEX << 5 }, { 0, ZOMBIE_GLOW_TEX << 5 } };
+	s32 i;
+
+	if (!vtx || !col) {
+		return gdl;
+	}
+
+	for (i = 0; i < 4; i++) {
+		vtx[i].x = corners[i][0];
+		vtx[i].y = corners[i][1];
+		vtx[i].z = corners[i][2];
+		vtx[i].flags = 0;
+		vtx[i].colour = (u8)(i * 4);
+		vtx[i].s = st[i][0];
+		vtx[i].t = st[i][1];
+		col[i].r = col[i].g = col[i].b = col[i].a = 0xff;
+	}
+
+	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+	gSPColor(gdl++, col, 4);
+	gSPVertex(gdl++, vtx, 4, 0);
+	gSPTri4(gdl++, 0, 1, 2, 0, 2, 3, 0, 0, 0, 0, 0, 0);
+
+	return gdl;
+}
+
+static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
+{
+	struct zombiemesh *zm = &g_ZombieMeshes[id];
+	Mtxf *cam = camGetWorldToScreenMtxf();
+	struct coord sign;
+	struct coord floor;
+	struct coord front;
+	f32 objpos[3];
+	f32 scale;
+	f32 r;
+	u8 rgb[3];
+	s32 i;
+
+	if (!zm->gdl || zm->width <= 0 || zm->height <= 0) {
+		return gdl;
+	}
+
+	// the sign: near the top, at the front, across the middle
+	objpos[0] = zm->midx;
+	objpos[1] = -(zm->zmin + zm->depth + 6);
+	objpos[2] = zm->ymin + zm->height * 0.86f;
+
+	if (!zombiesMachineMeshPoint(id, obj, objpos, &sign, &front)) {
+		return gdl;
+	}
+
+	// the floor in front: its foot, a little out from its front
+	objpos[1] = -(zm->zmin + zm->depth + 30);
+	objpos[2] = zm->ymin + 1.5f;
+
+	if (!zombiesMachineMeshPoint(id, obj, objpos, &floor, NULL)) {
+		return gdl;
+	}
+
+	if (!g_ZombieGlowTexMade) {
+		zombiesGlowTexMake();
+	}
+
+	// The floor itself, which the model's foot need not be on: looked up
+	// once for each place the machine stands
+	{
+		static struct coord at[ZOMBIE_PAP_ID + 1];
+		static f32 ground[ZOMBIE_PAP_ID + 1];
+		static bool known[ZOMBIE_PAP_ID + 1];
+
+		if (!known[id] || at[id].x != obj->prop->pos.x || at[id].y != obj->prop->pos.y || at[id].z != obj->prop->pos.z) {
+			struct coord probe = floor;
+
+			probe.y = obj->prop->pos.y;
+			ground[id] = zombiesGroundAt(&probe, obj->prop->rooms);
+			at[id] = obj->prop->pos;
+			known[id] = true;
+		}
+
+		// none found (off a ledge): the model's foot
+		if (ground[id] > floor.y - 100 && ground[id] < obj->prop->pos.y + 50) {
+			floor.y = ground[id] + 1.5f;
+		}
+	}
+
+	zombiesMachineGlowColour(id, rgb);
+
+	gDPPipeSync(gdl++);
+	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+	gDPSetRenderMode(gdl++, G_RM_ZB_XLU_SURF, G_RM_ZB_XLU_SURF2);
+	gDPSetCombineLERP(gdl++, 0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0,
+			0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0);
+	gDPSetTextureFilter(gdl++, G_TF_BILERP);
+	gDPSetTexturePersp(gdl++, G_TP_PERSP);
+	gDPSetTextureLOD(gdl++, G_TL_TILE);
+	gDPSetTextureLUT(gdl++, G_TT_NONE);
+	gDPSetTextureConvert(gdl++, G_TC_FILT);
+	gDPSetAlphaCompare(gdl++, G_AC_NONE);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
+	gDPLoadTextureBlock(gdl++, g_ZombieGlowTex, G_IM_FMT_I, G_IM_SIZ_8b,
+			ZOMBIE_GLOW_TEX, ZOMBIE_GLOW_TEX, 0,
+			G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
+			G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+	gSPSetExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
+
+	// The pool on the floor: a flat quad, across the machine's front and out
+	// from it, in the world
+	{
+		Mtxf world;
+		Mtxf *mtx = gfxAllocateMatrix();
+		f32 across = zm->width * ZOMBIE_MESH_SCALE * 0.9f;
+		f32 out = 90;
+		const s16 corners[4][3] = {
+			{ (s16)-across, 0, (s16)-out }, { (s16)across, 0, (s16)-out },
+			{ (s16)across, 0, (s16)out }, { (s16)-across, 0, (s16)out },
+		};
+
+		mtx4LoadIdentity(&world);
+		// x across the front, z out of it
+		world.m[0][0] = front.z;
+		world.m[0][2] = -front.x;
+		world.m[2][0] = front.x;
+		world.m[2][2] = front.z;
+		world.m[3][0] = floor.x;
+		world.m[3][1] = floor.y;
+		world.m[3][2] = floor.z;
+
+		mtx4MultMtx4(cam, &world, mtx);
+
+		gDPSetPrimColor(gdl++, 0, 0, rgb[0], rgb[1], rgb[2], ZOMBIE_GLOW_FLOOR);
+		gdl = zombiesGlowQuad(gdl, mtx, corners);
+	}
+
+	// The halo round the sign: a square turned to the camera, the sign's
+	// place taken into the view and the square laid out there
+	{
+		Mtxf *mtx = gfxAllocateMatrix();
+		f32 c[3];
+		s16 h;
+
+		scale = sqrtf(cam->m[0][0] * cam->m[0][0] + cam->m[0][1] * cam->m[0][1] + cam->m[0][2] * cam->m[0][2]);
+		// by the width of a perk machine at most: Pack-a-Punch on its table is
+		// two metres across, and its halo washed the walls behind purple
+		r = (zm->width < 100 ? zm->width : 100) * ZOMBIE_MESH_SCALE * 0.9f;
+		h = (s16)r;
+
+		for (i = 0; i < 3; i++) {
+			c[i] = cam->m[0][i] * sign.x + cam->m[1][i] * sign.y + cam->m[2][i] * sign.z + cam->m[3][i];
+		}
+
+		mtx4LoadIdentity(mtx);
+		mtx->m[0][0] = mtx->m[1][1] = mtx->m[2][2] = scale;
+		mtx->m[3][0] = c[0];
+		mtx->m[3][1] = c[1];
+		mtx->m[3][2] = c[2];
+
+		{
+			const s16 corners[4][3] = { { -h, h, 0 }, { h, h, 0 }, { h, -h, 0 }, { -h, -h, 0 } };
+
+			gDPSetPrimColor(gdl++, 0, 0, rgb[0], rgb[1], rgb[2], ZOMBIE_GLOW_HALO);
+			gdl = zombiesGlowQuad(gdl, mtx, corners);
+		}
+	}
+
+	gDPPipeSync(gdl++);
+	gSPClearExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
+
+	return gdl;
+}
 
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
@@ -2048,8 +2282,9 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 		return false;
 	}
 
-	// drawn in the opaque pass; the translucent one has nothing of it
+	// drawn in the opaque pass; the translucent one has its glow
 	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		renderdata->gdl = zombiesRenderMachineGlow(renderdata->gdl, id, obj);
 		return true;
 	}
 
