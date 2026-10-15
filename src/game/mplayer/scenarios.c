@@ -64,6 +64,7 @@
 #include "modelpack.h"
 #include "handtint.h"
 #include "gewatch.h"
+#include "geslappers.h"
 #include "input.h"
 #include "net/net.h"
 #endif

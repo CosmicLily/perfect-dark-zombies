@@ -2441,6 +2441,7 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
  * DRINK_GULP is set to make Call of Duty's 65 frames at 30.
  */
 #define ZOMBIE_DRINK_JOINTS 33
+#define ZOMBIE_DRINK_LEFTHAND 17 // the hand file's left forearm, and the left hand's joints after it
 #define ZOMBIE_DRINK_PARTS  2
 #define ZOMBIE_DRINK_UNITS  2.54f // Call of Duty's inches to the view model's units
 
@@ -2584,6 +2585,30 @@ static void zombiesDrinkMtx(const f32 *rows, const f32 pre[3][3], Mtxf *out)
 }
 
 /**
+ * The hands the drink is drawn on: the character's hand model, or, with no
+ * gun in hand, the fists - bare hands are a weapon whose model is the hand
+ * file itself (bgunTickMasterLoad()), and no hand model is loaded beside it.
+ * With Pack-a-Punch holding the only gun, a perk drunk bare handed was the
+ * HUD's bottle. GoldenEye's slappers are a model of their own, not the hands.
+ */
+static struct model *zombiesDrinkHandModel(struct player *player)
+{
+	struct hand *hand = &player->hands[HAND_RIGHT];
+
+	if (player->gunctrl.handmodeldef != NULL && hand->handmodel.definition != NULL) {
+		return &hand->handmodel;
+	}
+
+	if (player->gunctrl.weaponnum == WEAPON_UNARMED && !geslappersActive()
+			&& hand->gunmodel.definition != NULL
+			&& hand->gunmodel.definition->nummatrices >= ZOMBIE_DRINK_JOINTS) {
+		return &hand->gunmodel;
+	}
+
+	return NULL;
+}
+
+/**
  * bgunRender()'s, after the guns: the drink in the hands of the player whose
  * view is being drawn. True when it was drawn, so the HUD's bottle is not.
  */
@@ -2613,8 +2638,7 @@ bool zombiesDrinkViewmodelActive(s32 playernum)
 		return false;
 	}
 
-	return g_Vars.players[playernum]->gunctrl.handmodeldef != NULL
-		&& g_Vars.players[playernum]->hands[HAND_RIGHT].handmodel.definition != NULL;
+	return zombiesDrinkHandModel(g_Vars.players[playernum]) != NULL;
 }
 
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
@@ -2622,7 +2646,7 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	const f32 (*objaxes)[3] = g_ZombieBottleObjAxes;
 	const s32 playernum = g_Vars.currentplayernum;
 	struct player *player = g_Vars.currentplayer;
-	struct hand *hand;
+	struct model *handmodel;
 	struct modelrenderdata renderdata = {NULL, true, 3};
 	const f32 *frame;
 	Mtxf *matrices;
@@ -2639,8 +2663,8 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	t = g_ZombieDrink60[playernum] - DRINK_GUNDOWN;
 	t = t >= g_ZombieDrinkPose.ticks ? g_ZombieDrinkPose.ticks - 1 : t;
 	frame = g_ZombieDrinkPose.mtx + t * (ZOMBIE_DRINK_JOINTS + ZOMBIE_DRINK_PARTS) * 12;
-	hand = &player->hands[HAND_RIGHT];
-	n = hand->handmodel.definition->nummatrices;
+	handmodel = zombiesDrinkHandModel(player);
+	n = handmodel->definition->nummatrices;
 
 	if (n < ZOMBIE_DRINK_JOINTS) {
 		n = ZOMBIE_DRINK_JOINTS;
@@ -2654,6 +2678,17 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 
 	for (j = 0; j < n; j++) {
 		zombiesDrinkMtx(frame + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
+
+		// The drink is the right hand's. The hand model with a gun shows no
+		// left hand, but the fists (bare hands) have both, and the left one
+		// stood at the edge of the view; put behind the eye here, as good as
+		// not there. Not folded to nothing: a matrix of no size has no
+		// inverse, and the release's meshes, lit from one, lost both hands
+		if (j >= ZOMBIE_DRINK_LEFTHAND && j < ZOMBIE_DRINK_JOINTS) {
+			matrices[j].m[3][0] = 0;
+			matrices[j].m[3][1] = 0;
+			matrices[j].m[3][2] = 20000;
+		}
 	}
 
 	// in bgunRender()'s depth and projection, which the guns have set
@@ -2670,17 +2705,17 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	// The hands: the character's own, painted as theirs (handtint.c)
 	handtintTick();
 
-	saved = hand->handmodel.matrices;
-	hand->handmodel.matrices = matrices;
-	modelUpdateRelations(&hand->handmodel);
+	saved = handmodel->matrices;
+	handmodel->matrices = matrices;
+	modelUpdateRelations(handmodel);
 
 	// the release's meshes keep a model's pose for the rest of the pass
 	// (xblamesh.c), and the hands may have been drawn on the gun already
 	xblaMeshPassBegin();
-	modelRender(&renderdata, &hand->handmodel);
+	modelRender(&renderdata, handmodel);
 	xblaMeshPassBegin();
 
-	hand->handmodel.matrices = saved;
+	handmodel->matrices = saved;
 	gdl = renderdata.gdl;
 
 	// The bottle and its cap, in the hands
