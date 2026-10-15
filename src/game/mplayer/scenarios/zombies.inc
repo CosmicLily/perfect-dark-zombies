@@ -1645,6 +1645,15 @@ static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 sl
 
 static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const char *label);
 
+// A material lit with the power on: its name ends "_on" (Black Ops II's
+// "mtl_zombie_vending_jugg_on", "..._vent_power_on", "..._logo_on")
+static bool zombiesMaterialIsOn(const char *name)
+{
+	size_t len = strlen(name);
+
+	return len >= 3 && strcmp(name + len - 3, "_on") == 0;
+}
+
 static void zombiesMeshBuild(s32 id)
 {
 	char rel[128];
@@ -1734,6 +1743,14 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 
 		gDPPipeSync(gdl++);
 
+		// A light with the power on - Black Ops II's "_on" materials, its
+		// unlit_replace technique at fifteen to twenty-five times - glows:
+		// the picture brightened by its own baked shade on top of itself,
+		// whatever the room
+		if (mat && zombiesMaterialIsOn(mat->name)) {
+			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, TEXEL0, 0, 0, 0, 1,
+					0, 0, 0, COMBINED, 0, 0, 0, 1);
+		} else
 		// A sign is lit, as the machine's is with the power on: not darkened
 		// by the room (the second cycle's primitive colour, set round the
 		// list, is the room's light)
