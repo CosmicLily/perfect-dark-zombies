@@ -15,31 +15,79 @@ void mpCalculateTeamIsOnlyAi(void);
 extern u32 g_HudAlignModeL;
 extern u32 g_HudAlignModeR;
 
-s32 inputLastPressWasKeyboard(void);
-
 /**
  * The buttons that use things - the box, the machine, a revive - as the
  * game's own use reads them (bondmove.c): B in the N64 control modes; in the
  * PC mode B, which only the keyboard has (E), and A, which is the
  * controller's. Reading B alone, a controller in the PC mode could not use
  * anything here.
+ *
+ * Unless Zombies' own Interact button (BUTTON_INTERACT, F by default, set on
+ * the Zombies Options page) is bound on the device the player is using: then
+ * that alone. The use button is the game's activate too, which with nothing
+ * of the level's to operate jumps (and in the PC mode E is Accept as well),
+ * so every buy on it jumped.
  */
+// The player's Interact binding on the device they are using, NULL for none
+static const u32 *zombiesInteractBind(s32 playernum)
+{
+	const s32 mpindex = g_Vars.playerstats[playernum].mpindex;
+	const s32 cont = optionsGetContpadNum1(mpindex);
+	const bool keyboard = playernum == 0 && inputLastPressWasKeyboard();
+	const u32 *binds = inputKeyGetBinds(cont, CK_0200);
+	s32 b;
+
+	if (binds == NULL) {
+		return NULL;
+	}
+
+	for (b = 0; b < INPUT_MAX_BINDS; b++) {
+		const bool pad = binds[b] >= VK_JOY_BEGIN;
+
+		if (binds[b] && pad != keyboard) {
+			return &binds[b];
+		}
+	}
+
+	return NULL;
+}
+
 static u32 zombiesUseMask(s32 playernum)
 {
 	s32 mpindex = g_Vars.playerstats[playernum].mpindex;
 
-	if (optionsGetControlMode(mpindex) == CONTROLMODE_PC) {
-		return B_BUTTON | BUTTON_CANCEL_USE | BUTTON_ACCEPT_USE;
+	if (zombiesInteractBind(playernum)) {
+		return BUTTON_INTERACT;
 	}
 
-	return B_BUTTON;
+	if (optionsGetControlMode(mpindex) == CONTROLMODE_PC) {
+		return B_BUTTON | BUTTON_CANCEL_USE | BUTTON_ACCEPT_USE | BUTTON_INTERACT;
+	}
+
+	return B_BUTTON | BUTTON_INTERACT;
 }
 
 // What the prompts call that button: the key on the keyboard, the button on
 // a controller
 static const char *zombiesUseName(s32 playernum)
 {
+	static char name[32];
 	s32 mpindex = g_Vars.playerstats[playernum].mpindex;
+	const u32 *bind = zombiesInteractBind(playernum);
+
+	if (bind) {
+		char *p;
+
+		snprintf(name, sizeof(name), "%s", inputGetKeyName(*bind));
+
+		for (p = name; *p; p++) {
+			if (*p == '_') {
+				*p = ' ';
+			}
+		}
+
+		return name;
+	}
 
 	if (playernum == 0 && inputLastPressWasKeyboard()) {
 		return "E";
@@ -10918,6 +10966,14 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 		MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Knife Button\n",
 		10,
+		menuhandlerZombiesBind,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Interact Button\n",
+		11,
 		menuhandlerZombiesBind,
 	},
 	{

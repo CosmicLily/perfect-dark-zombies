@@ -4582,6 +4582,8 @@ static const struct menubind modMenuBinds[] = {
 	// Zombies' knife (BUTTON_MELEE): its row is on the Zombies Options page
 	// (menuhandlerZombiesBind(), zombies.inc), at this index, 10
 	{ CK_0100,   LANG_N("Knife [+]\n"),   LANG_N("N64 Ext 0100\n") },
+	// Zombies' interact (BUTTON_INTERACT): on the Zombies Options page too, 11
+	{ CK_0200,   LANG_N("Interact [+]\n"), LANG_N("N64 Ext 0200\n") },
 };
 
 static const char *menutextModBind(struct menuitem *item)

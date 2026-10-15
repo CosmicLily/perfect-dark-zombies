@@ -225,7 +225,7 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 		{ CK_B,             SDL_SCANCODE_E,      0                   },
 		{ CK_X,             SDL_SCANCODE_R,      0                   },
 		{ CK_RTRIG,         VK_MOUSE_RIGHT,      SDL_SCANCODE_Z      },
-		{ CK_LTRIG,         SDL_SCANCODE_F,      SDL_SCANCODE_X      },
+		{ CK_LTRIG,         SDL_SCANCODE_X,      0                   },
 		{ CK_ZTRIG,         VK_MOUSE_LEFT,       SDL_SCANCODE_SPACE  },
 		{ CK_START,         SDL_SCANCODE_TAB,    0                   },
 		{ CK_DPAD_D,        SDL_SCANCODE_Q,      VK_MOUSE_MIDDLE     },
@@ -246,6 +246,7 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 		{ CK_1000,          SDL_SCANCODE_V,      0                   },
 		{ CK_0800,          SDL_SCANCODE_C,      0                   },
 		{ CK_0100,          SDL_SCANCODE_G,      0                   }, // Zombies' knife (BUTTON_MELEE)
+		{ CK_0200,          SDL_SCANCODE_F,      0                   }, // Zombies' interact (BUTTON_INTERACT)
 		{ CK_ACCEPT,        SDL_SCANCODE_RETURN, SDL_SCANCODE_E      },
 		{ CK_CANCEL,        VK_MOUSE_RIGHT,      0                   },
 	};
@@ -855,6 +856,57 @@ static void inputMigrateMeleeBind(s32 ctrl)
 	}
 }
 
+static s32 inputHasBind(s32 ctrl, u32 ck, u32 vk);
+static void inputRemoveBind(s32 ctrl, u32 ck, u32 vk);
+
+/**
+ * Zombies' interact (CK_0200, BUTTON_INTERACT) on F, for a config written
+ * before it had it. Buying and taking were on the use button, E, which in PC
+ * controls is also Accept: with nothing of the level's to operate, that is a
+ * jump, and every buy jumped. F was alt-fire's (L Trigger) besides X, so it
+ * moves over when X still has alt-fire; otherwise F is left alone and so is
+ * interact, which then falls back to E as before (zombies.inc).
+ */
+static void inputMigrateInteractBind(s32 ctrl)
+{
+	const u32 joyfirst = VK_JOY_BEGIN + ctrl * INPUT_MAX_CONTROLLER_BUTTONS;
+	s32 haskey = 0;
+	s32 ftaken = 0;
+	u32 ck;
+	s32 b;
+
+	if (ctrl != 0) {
+		return;
+	}
+
+	for (b = 0; b < INPUT_MAX_BINDS; ++b) {
+		const u32 vk = binds[ctrl][CK_0200][b];
+
+		if (vk && !(vk >= joyfirst && vk < joyfirst + INPUT_MAX_CONTROLLER_BUTTONS)) {
+			haskey = 1;
+		}
+	}
+
+	if (haskey) {
+		return;
+	}
+
+	// alt-fire gives F up while X keeps it
+	if (inputHasBind(ctrl, CK_LTRIG, SDL_SCANCODE_F) && inputHasBind(ctrl, CK_LTRIG, SDL_SCANCODE_X)) {
+		inputRemoveBind(ctrl, CK_LTRIG, SDL_SCANCODE_F);
+	}
+
+	for (ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
+		if (inputHasBind(ctrl, ck, SDL_SCANCODE_F)) {
+			ftaken = 1;
+		}
+	}
+
+	if (!ftaken) {
+		inputKeyBind(ctrl, CK_0200, -1, SDL_SCANCODE_F);
+	}
+}
+
 static s32 inputHasBind(s32 ctrl, u32 ck, u32 vk)
 {
 	s32 b;
@@ -872,10 +924,20 @@ static void inputRemoveBind(s32 ctrl, u32 ck, u32 vk)
 {
 	s32 b;
 
+	s32 n = 0;
+
+	// the ones left packed to the front: a hole saved as a leading empty
+	// entry (", X")
 	for (b = 0; b < INPUT_MAX_BINDS; ++b) {
-		if (binds[ctrl][ck][b] == vk) {
-			binds[ctrl][ck][b] = 0;
+		const u32 kept = binds[ctrl][ck][b];
+
+		if (kept && kept != vk) {
+			binds[ctrl][ck][n++] = kept;
 		}
+	}
+
+	while (n < INPUT_MAX_BINDS) {
+		binds[ctrl][ck][n++] = 0;
 	}
 }
 
@@ -1069,6 +1131,7 @@ static inline void inputLoadBinds(void)
 
 		inputMigrateRollBind(i);
 		inputMigrateMeleeBind(i);
+		inputMigrateInteractBind(i);
 
 		if (i == 0) {
 			inputMendCutPadBinds(i);
