@@ -1979,6 +1979,9 @@ static void zombiesMeshSpin(struct zombiemesh *zm)
 	}
 }
 
+static bool zombiesPapGunInCamo(struct defaultobj *obj);
+static Gfx *zombiesCamoAt(Gfx *gdl);
+
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
  * when this is a machine with a model of its own, drawn here instead.
@@ -1997,6 +2000,15 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	if (!zombiesIsActive()) {
 		return false;
+	}
+
+	// the gun out of Pack-a-Punch, upgraded, in its camo
+	if (zombiesPapGunInCamo(obj)) {
+		renderdata->gdl = zombiesCamoAt(renderdata->gdl);
+		modelRender(renderdata, obj->model);
+		gDPGrayscaleEXT(renderdata->gdl++, 0);
+
+		return true;
 	}
 
 	for (id = 0; id <= ZOMBIE_PAP_ID; id++) {
@@ -6284,9 +6296,9 @@ static void zombiesPapHideGun(void)
 static void zombiesPapPlaceGun(s32 t)
 {
 	// Buried's machine: its middle drum's mouth, a metre up, and the gun out
-	// in front of it (the OBJ's centimetres, the front -y)
-	static const f32 inside[3] = { 0, -5, 100 };
-	static const f32 outside[3] = { 0, -52, 100 };
+	// in front of it (the OBJ's centimetres, the front -y), clear of the tray
+	static const f32 inside[3] = { 0, -5, 106 };
+	static const f32 outside[3] = { 0, -52, 106 };
 	struct defaultobj *obj = &g_ZombiePapGunObj;
 	struct coord pos;
 	struct coord front;
@@ -6496,20 +6508,43 @@ f32 zombiesPapPitch(s32 weaponnum)
  */
 #define ZOMBIE_CAMO_LOOP60 480 // eight seconds
 
-Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum)
+// The camo on, at this moment's phase
+static Gfx *zombiesCamoAt(Gfx *gdl)
 {
-	u32 phase;
-
-	if (!zombiesIsActive() || !zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
-		return gdl;
-	}
-
-	phase = (u32)(g_Vars.lvframe60 % ZOMBIE_CAMO_LOOP60) * 65536 / ZOMBIE_CAMO_LOOP60;
+	u32 phase = (u32)(g_Vars.lvframe60 % ZOMBIE_CAMO_LOOP60) * 65536 / ZOMBIE_CAMO_LOOP60;
 
 	gDPSetGrayscaleColorEXT(gdl++, (phase >> 8) & 0xff, phase & 0xff, 0, 0xff);
 	gDPGrayscaleEXT(gdl++, 2);
 
 	return gdl;
+}
+
+Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum)
+{
+	if (!zombiesIsActive() || !zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return gdl;
+	}
+
+	return zombiesCamoAt(gdl);
+}
+
+// The gun in Pack-a-Punch once it has come out upgraded: drawn in its camo
+// (zombiesRenderMachine())
+static bool zombiesPapGunInCamo(struct defaultobj *obj)
+{
+	s32 i;
+
+	if (obj != &g_ZombiePapGunObj || !g_ZombiePapGunUp || !obj->model) {
+		return false;
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		if (g_ZombiePap60[i] >= ZOMBIE_PAP_OFFERAT) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum)
