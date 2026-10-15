@@ -4290,7 +4290,7 @@ static void netTestStartMatch(void)
 			}
 		}
 
-		if (scen >= MPSCENARIO_COMBAT && scen <= MPSCENARIO_CAPTURETHECASE) {
+		if (scen >= MPSCENARIO_COMBAT && scen <= MPSCENARIO_ZOMBIES) {
 			g_MpSetup.scenario = scen;
 			g_MpSetup.options |= MPOPTION_HTB_HIGHLIGHTBRIEFCASE | MPOPTION_HTB_SHOWONRADAR | MPOPTION_CTC_SHOWONRADAR
 				| MPOPTION_KOH_HILLONRADAR | MPOPTION_HTM_SHOWONRADAR | MPOPTION_PAC_HIGHLIGHTTARGET | MPOPTION_PAC_SHOWONRADAR;
@@ -4561,7 +4561,7 @@ s32 netRefuseMatchStart(void)
 	}
 
 	// every Combat Simulator scenario is online (phase 7a, netscen.c)
-	if (s_Role == NETROLE_HOST && (g_MpSetup.scenario < MPSCENARIO_COMBAT || g_MpSetup.scenario > MPSCENARIO_CAPTURETHECASE)) {
+	if (s_Role == NETROLE_HOST && (g_MpSetup.scenario < MPSCENARIO_COMBAT || g_MpSetup.scenario > MPSCENARIO_ZOMBIES)) {
 		sysLogPrintf(LOG_NOTE, "net: refused to start a net match with scenario %d", g_MpSetup.scenario);
 		snprintf(s_NoticeText, sizeof(s_NoticeText), "%s", "This scenario cannot be played online.");
 		g_NetNoticePending = 1;

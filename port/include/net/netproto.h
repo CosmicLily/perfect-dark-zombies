@@ -200,7 +200,16 @@
 //    join in progress takes its room team's), u8 antispawns[12] (each
 //    counter-op's guards taken), u8 antiradius[12] (the guard's radius),
 //    s16 antibody[12], s16 antihead[12] (the guard's body and head it wears)
-#define NET_PROTOCOL_VERSION 32
+// 33 (Zombies online, 2026-10-14: CLAUDE-notes/netplay.md "Zombies
+//    online"): RULES may carry scenario 6 (MPSCENARIO_ZOMBIES); the scenario
+//    block grows to 1280 bytes (NETSCEN_SIZE), and a Zombies match's body at
+//    224 is zombies.inc's (zombiesNetCapture: the round, the power-ups, the
+//    box, Pack-a-Punch, the drops, the wall buys, its sounds, and each
+//    player's points, perks, drink, downed state and upgraded guns); the
+//    host sends none of Zombies' own objects as entities (each machine
+//    places the machines itself, the same way); a command's flags may have
+//    NETCMD_INTERACT (no bytes follow)
+#define NET_PROTOCOL_VERSION 33
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2
@@ -872,7 +881,7 @@
  *     entert, hullyaw, speed, turnsum, turretyaw, u8 0[8] (bytes 688..719)
  *   u8      hasscen               (protocol 7) 0 none, 1 keyframe, 2 against
  *                                 the baseline's
- *   delta   scenario              NETSCEN_SIZE (768; protocol 10, was 640)
+ *   delta   scenario              NETSCEN_SIZE (1280; protocol 33, was 768, 640 before 10)
  *     bytes, the match's scenario state, the same for every client
  *     (netscen.c), every index an mpchr config slot (players 0-11, sims
  *     12+); REF5 is u8 kind (0 none,
@@ -1041,6 +1050,7 @@
 #define NETORDER_ALLSIMS   0xff // the order's sim: every sim on the player's team (the menu's all-bots mode)
 #define NETORDER_NOTARGET  0xff // the order's target: none (any command but Attack)
 #define NETORDER_SIM       0x80 // ... a sim's: 0x80 + its bot config slot (below it a player's playernum)
+#define NETCMD_INTERACT    0x20 // (protocol 33) Zombies' own Interact is bound on the device the player uses: buys are on it alone
 
 #define NETCONN_SPECTATE   0x01 // CONNECT's flags
 #define NETACC_INPROGRESS  0x01 // ACCEPT's flags

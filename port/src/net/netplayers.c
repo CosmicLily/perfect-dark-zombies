@@ -36,6 +36,8 @@
 #include "net/netcmd.h"
 #include "netint.h"
 
+s32 zombiesInteractBoundHere(void); // zombies.inc: this machine's player has Zombies' own Interact bound where it plays
+
 /**
  * Remote players on the host and the client's usercmds
  * (PLANS/netplay/spec-players.md, spec-tick.md §3d; the wire in netproto.h).
@@ -1460,6 +1462,22 @@ void netMouseAbsDelta(s32 playernum, f32 *dx, f32 *dy)
 	inputMouseGetAbsScaledDelta(dx, dy);
 }
 
+/**
+ * The host, Zombies' buys (zombies.inc's zombiesUseMask): 1 when a client's
+ * player has Zombies' own Interact bound where it plays (NETCMD_INTERACT on
+ * its command), 0 when not, -1 for a player whose pad is not a client's
+ */
+s32 netPlayersInteractBound(s32 playernum)
+{
+	const s32 pad = netPadOfPlayer(playernum);
+
+	if (!netPadIsRemote(pad)) {
+		return -1;
+	}
+
+	return (s_Pads[pad].cur.flags & NETCMD_INTERACT) != 0;
+}
+
 s32 netMouseLocked(s32 playernum)
 {
 	const s32 pad = netPadOfPlayer(playernum);
@@ -2430,6 +2448,12 @@ static void netPlayersClientCapture(void)
 			c->body[1] = netBodyAngleToWire(travel);
 			c->bodyflags = travelset ? NETBODY_TRAVEL : 0;
 		}
+	}
+
+	// (protocol 33) Zombies' own Interact bound on the device this player is
+	// using: the host then buys on it alone, as this machine would
+	if (zombiesInteractBoundHere()) {
+		c->flags |= NETCMD_INTERACT;
 	}
 
 	// what this tick's pose step will draw the others at (netlagcomp.c)

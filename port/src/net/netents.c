@@ -962,7 +962,10 @@ static void netCaptureAll(void)
 		} else if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_WEAPON) {
 			struct defaultobj *obj = prop->obj;
 
-			if (!obj) {
+			// (protocol 33) Zombies' machines, the box and the guns over it,
+			// the wall buys' guns and the power-ups: each machine makes its
+			// own from the scenario block (zombies.inc)
+			if (!obj || zombiesNetOwnsProp(prop)) {
 				continue;
 			}
 

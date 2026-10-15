@@ -2962,6 +2962,7 @@ void lvTick(void)
 #endif
 		menuTick();
 		if (!NET_CLIENT) scenarioTick(); // netplay C13
+		else scenarioClientTick();
 
 		if (!g_MainIsEndscreen) {
 			propsTick();

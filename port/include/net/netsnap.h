@@ -365,7 +365,7 @@ void netLpUnpack(const u8 *in, struct netlpstate *out);
  * local-player block. Its layout is netscen.c's (netproto.h, SNAP); this
  * file carries its bytes only.
  */
-#define NETSCEN_SIZE 768 // protocol 10 (was 640): MAX_MPCHRS 92, MAX_PLAYERS 12
+#define NETSCEN_SIZE 1280 // protocol 33 (was 768, 640 before 10): Zombies' body (zombies.inc) past the 224 of the counts
 
 /**
  * The world block (protocol 29): the world's latest-value-wins state that no

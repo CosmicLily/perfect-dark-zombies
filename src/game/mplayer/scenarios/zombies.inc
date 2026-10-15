@@ -28,12 +28,14 @@ extern u32 g_HudAlignModeR;
  * of the level's to operate jumps (and in the PC mode E is Accept as well),
  * so every buy on it jumped.
  */
-// The player's Interact binding on the device they are using, NULL for none
+// The player's Interact binding on the device they are using, NULL for none.
+// Online only this machine's own player has binds here, on its first
+// controller; a client's is said by its commands (zombiesUseMask()).
 static const u32 *zombiesInteractBind(s32 playernum)
 {
 	const s32 mpindex = g_Vars.playerstats[playernum].mpindex;
-	const s32 cont = optionsGetContpadNum1(mpindex);
-	const bool keyboard = playernum == 0 && inputLastPressWasKeyboard();
+	const s32 cont = g_NetMode == NETMODE_NONE ? optionsGetContpadNum1(mpindex) : netIsLocalSlot(playernum) ? 0 : -1;
+	const bool keyboard = NET_LOCAL_UI(playernum) && inputLastPressWasKeyboard();
 	const u32 *binds = inputKeyGetLiveBinds(cont, CK_0200);
 	s32 b;
 
@@ -55,8 +57,11 @@ static const u32 *zombiesInteractBind(s32 playernum)
 static u32 zombiesUseMask(s32 playernum)
 {
 	s32 mpindex = g_Vars.playerstats[playernum].mpindex;
+	// a client's player on the host: whether its machine has Interact bound,
+	// as its commands say (NETCMD_INTERACT, protocol 33)
+	const s32 remote = g_NetMode == NETMODE_SERVER ? netPlayersInteractBound(playernum) : -1;
 
-	if (zombiesInteractBind(playernum)) {
+	if (remote > 0 || (remote < 0 && zombiesInteractBind(playernum))) {
 		return BUTTON_INTERACT;
 	}
 
@@ -89,11 +94,20 @@ static const char *zombiesUseName(s32 playernum)
 		return name;
 	}
 
-	if (playernum == 0 && inputLastPressWasKeyboard()) {
+	if (NET_LOCAL_UI(playernum) && inputLastPressWasKeyboard()) {
 		return "E";
 	}
 
 	return optionsGetControlMode(mpindex) == CONTROLMODE_PC ? "A" : "B";
+}
+
+// netplayers.c, each command a client sends: this machine's player has
+// Interact bound where it plays (NETCMD_INTERACT); an s32, as bool is not the
+// same size on both sides
+s32 zombiesInteractBoundHere(void)
+{
+	return g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES
+		&& g_NetLocalSlot >= 0 && g_NetLocalSlot < PLAYERCOUNT() && zombiesInteractBind(g_NetLocalSlot) != NULL;
 }
 
 static s32 g_ZombieRound = 0;
@@ -180,6 +194,36 @@ struct zombiepopup {
 
 static struct zombiepopup g_ZombiePopups[ZOMBIE_MAX_POPUPS];
 
+/**
+ * Online (protocol 33): what the host's Zombies makes that a client's would
+ * have made, kept for the scenario block (zombiesNetCapture()) - the last
+ * ZOMBIE_NET_RING of each, numbered, so a client takes the ones it has not
+ * had even across a lost snapshot or two.
+ */
+#define ZOMBIE_NET_RING 16 // a power of two: the u16 numbers wrap onto the same slots
+
+struct zombienetpopup {
+	s8 playernum;
+	s16 value;
+};
+
+struct zombienetsound {
+	u16 sound;
+	u8 pitch;    // in 64ths
+	s8 who;      // the player it is for, -1 everyone
+	u8 chr;      // an mpchr slot it comes from (a groan), 0xff none
+	u8 mine;     // that player's machine made it already (its knife)
+};
+
+static struct zombienetpopup g_ZombieNetPopups[ZOMBIE_NET_RING];
+static u16 g_ZombieNetPopupSeq = 0;
+static struct zombienetsound g_ZombieNetSounds[ZOMBIE_NET_RING];
+static u16 g_ZombieNetSoundSeq = 0;
+static s32 g_ZombieSoundFor = -1;      // whose the sounds being made are, -1 everyone's
+static bool g_ZombieSoundMine = false; // ... and that player's machine made them too
+static u32 g_ZombieNetRand = 0x5eed;   // a client's own numbers, never the match's
+static s32 g_ZombieNetRemaining = 0;   // a client's "Zombies: N", the host's count
+
 static void zombiesResetPoints(void)
 {
 	s32 i;
@@ -213,7 +257,23 @@ static void zombiesAddPopup(s32 playernum, s32 value)
 	g_ZombiePopups[oldest].playernum = playernum;
 	g_ZombiePopups[oldest].value = value;
 	g_ZombiePopups[oldest].age60 = 0;
-	g_ZombiePopups[oldest].yoffset = (s32)(rngRandom() % 13) - 6;
+
+	if (NET_CLIENT) {
+		// the host's random numbers are the match's: a client draws its own
+		g_ZombieNetRand = g_ZombieNetRand * 1103515245 + 12345;
+		g_ZombiePopups[oldest].yoffset = (s32)((g_ZombieNetRand >> 16) % 13) - 6;
+	} else {
+		g_ZombiePopups[oldest].yoffset = (s32)(rngRandom() % 13) - 6;
+	}
+
+	// for the clients, who see their own
+	if (g_NetMode == NETMODE_SERVER) {
+		struct zombienetpopup *p = &g_ZombieNetPopups[g_ZombieNetPopupSeq % ZOMBIE_NET_RING];
+
+		p->playernum = (s8)playernum;
+		p->value = (s16)(value < -32768 ? -32768 : value > 32767 ? 32767 : value);
+		g_ZombieNetPopupSeq++;
+	}
 }
 
 static void zombiesTickPopups(void)
@@ -252,7 +312,8 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 	s32 playernum;
 	s32 value;
 
-	if (!aprop || aprop->type != PROPTYPE_PLAYER || g_ZombieGameOver) {
+	// a client's points are the host's (the scenario block)
+	if (!aprop || aprop->type != PROPTYPE_PLAYER || g_ZombieGameOver || NET_CLIENT) {
 		return;
 	}
 
@@ -747,13 +808,46 @@ static bool g_ZombieUseNeedsRelease[MAX_PLAYERS];
 static bool g_ZombieNearJugg[MAX_PLAYERS];
 static s32 g_ZombieLastFrame = 0x7fffffff;
 
-static void zombiesPlaySound(s32 sound, f32 pitch)
+// Online, the host keeps it for the clients (zombiesNetCapture()); chr is the
+// mpchr slot a sound comes from, -1 for none
+static void zombiesNetKeepSound(s32 sound, f32 pitch, s32 chr)
+{
+	struct zombienetsound *s;
+	s32 p = (s32)(pitch * 64 + 0.5f);
+
+	if (g_NetMode != NETMODE_SERVER) {
+		return;
+	}
+
+	s = &g_ZombieNetSounds[g_ZombieNetSoundSeq % ZOMBIE_NET_RING];
+	s->sound = (u16)sound;
+	s->pitch = (u8)(p < 1 ? 1 : p > 255 ? 255 : p);
+	s->who = (s8)g_ZombieSoundFor;
+	s->chr = chr >= 0 && chr < 0xff ? (u8)chr : 0xff;
+	s->mine = g_ZombieSoundMine;
+	g_ZombieNetSoundSeq++;
+}
+
+static void zombiesPlaySoundHere(s32 sound, f32 pitch)
 {
 	struct sndstate *handle = sndStart(var80095200, sound, NULL, -1, -1, -1, -1, -1);
 
 	if (handle && pitch != 1.0f) {
 		audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *)&pitch);
 	}
+}
+
+// Heard by everyone on this machine; online, a sound of one player's (its
+// buy, its drink) only on that player's machine
+static void zombiesPlaySound(s32 sound, f32 pitch)
+{
+	zombiesNetKeepSound(sound, pitch, -1);
+
+	if (g_NetMode != NETMODE_NONE && g_ZombieSoundFor >= 0 && !netIsLocalSlot(g_ZombieSoundFor)) {
+		return;
+	}
+
+	zombiesPlaySoundHere(sound, pitch);
 }
 
 static void zombiesResetJuggernog(void)
@@ -4530,7 +4624,8 @@ void zombiesQuickMelee(void)
 	s32 playernum = g_Vars.currentplayernum;
 	struct gunctrl *ctrl;
 
-	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS) {
+	// a client's replay of its commands walks again, and nothing else
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || g_NetReplaying) {
 		return;
 	}
 
@@ -4561,7 +4656,13 @@ void zombiesQuickMelee(void)
 	ctrl->leftwant = WEAPON_NONE;
 	bgunEquipWeapon(WEAPON_COMBATKNIFE);
 
+	// online, a client swings its own knife at once as it predicts its walk
+	// (zombiesClientTick()): its swish is its machine's
+	g_ZombieSoundFor = playernum;
+	g_ZombieSoundMine = true;
 	zombiesPlaySound(SFX_THROW, 1.5f);
+	g_ZombieSoundMine = false;
+	g_ZombieSoundFor = -1;
 }
 
 // Another gun put in the hand meanwhile (the box, a wall buy) is kept: the
@@ -4585,7 +4686,8 @@ static void zombiesKnifeHit(s32 playernum)
 	f32 looklen = sqrtf(lookx * lookx + lookz * lookz);
 	s32 i;
 
-	if (me == NULL || looklen < 0.001f) {
+	// a client's knife is for show: the host's blow is the one that lands
+	if (me == NULL || looklen < 0.001f || NET_CLIENT) {
 		return;
 	}
 
@@ -5012,6 +5114,11 @@ bool zombiesPlayerGoesDown(s32 playernum, bool force)
 
 	if (player->isdead) {
 		return false;
+	}
+
+	// a client: whether the host has the player down, and nothing changed here
+	if (NET_CLIENT) {
+		return g_ZombieDowned[playernum] && !force;
 	}
 
 	if (g_ZombieDowned[playernum]) {
@@ -7391,15 +7498,18 @@ static void zombiesTickBox(void)
 
 			g_ZombieBoxNeedsRelease[i] = true;
 			g_ZombieBoxHeld60[i] = 0;
+			g_ZombieSoundFor = i;
 
 			if (g_ZombiePoints[i] < ZOMBIE_BOX_COST || g_ZombieBoxNumGuns <= 0) {
 				zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+				g_ZombieSoundFor = -1;
 				continue;
 			}
 
 			g_ZombiePoints[i] -= ZOMBIE_BOX_COST;
 			zombiesAddPopup(i, -ZOMBIE_BOX_COST);
 			zombiesPlaySound(SFX_MENU_SELECT, 0.8f);
+			g_ZombieSoundFor = -1;
 
 			g_ZombieBoxState = ZOMBIEBOX_SPIN;
 			g_ZombieBoxUser = i;
@@ -7534,6 +7644,7 @@ struct zombiedrop {
 };
 
 static struct zombiedrop g_ZombieDrops[4];
+static u8 g_ZombieDropSerial[4];           // each slot's drops counted (online: a client knows a new one)
 static s32 g_ZombieDropsThisRound = 0;
 static s32 g_ZombieMaxAmmoBanner60 = -1;   // how long a power-up's name has been up, -1 when not
 static s32 g_ZombieBannerKind = ZOMBIEPOWERUP_MAXAMMO;
@@ -7655,11 +7766,11 @@ static void zombiesDropPlace(struct zombiedrop *drop)
 	}
 }
 
+static bool zombiesDropMake(struct zombiedrop *drop, s32 kind, struct coord *pos, f32 floory, RoomNum *rooms);
+
 static void zombiesMaybeDrop(struct chrdata *victim)
 {
 	struct zombiedrop *drop = NULL;
-	struct defaultobj *obj;
-	struct prop *prop;
 	s32 i;
 
 	if (victim->prop == NULL || !g_ZombieCfgPowerups || g_ZombieDropsThisRound >= ZOMBIE_DROPS_PER_ROUND
@@ -7679,10 +7790,25 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 		return;
 	}
 
+	if (zombiesDropMake(drop, zombiesNextPowerup(), &victim->prop->pos,
+				victim->ground > -30000 ? victim->ground : victim->prop->pos.y - 60, victim->prop->rooms)) {
+		g_ZombieDropSerial[drop - g_ZombieDrops]++; // a new one in the slot, for the clients
+		g_ZombieDropsThisRound++;
+		zombiesPlaySound(SFX_PICKUP_SHIELD, 1.5f);
+	}
+}
+
+// A power-up of kind in drop's slot, floating over floory at pos; false when
+// it could not be made. A client makes the host's this way (zombiesNetApply()).
+static bool zombiesDropMake(struct zombiedrop *drop, s32 kind, struct coord *pos, f32 floory, RoomNum *rooms)
+{
+	struct defaultobj *obj;
+	struct prop *prop;
+
 	obj = &drop->obj;
 
 	bzero(drop, sizeof(*drop));
-	drop->kind = zombiesNextPowerup();
+	drop->kind = kind;
 	obj->extrascale = 256;
 	obj->type = OBJTYPE_BASIC;
 	obj->modelnum = zombiesPowerupModel(drop->kind);
@@ -7698,13 +7824,13 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 	setupLoadModeldef(obj->modelnum);
 
 	if (g_ModelStates[obj->modelnum].modeldef == NULL) {
-		return;
+		return false;
 	}
 
 	prop = objInitWithAutoModel(obj);
 
 	if (prop == NULL || obj->model == NULL) {
-		return;
+		return false;
 	}
 
 	// small: ZOMBIE_DROP_SIZE long
@@ -7737,10 +7863,10 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 
 	drop->active = true;
 	drop->age60 = 0;
-	drop->floory = victim->ground > -30000 ? victim->ground : victim->prop->pos.y - 60;
-	memcpy(drop->rooms, victim->prop->rooms, sizeof(drop->rooms));
+	drop->floory = floory;
+	memcpy(drop->rooms, rooms, sizeof(drop->rooms));
 
-	prop->pos = victim->prop->pos;
+	prop->pos = *pos;
 	zombiesDropPlace(drop);
 
 	propActivate(prop);
@@ -7748,8 +7874,7 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 
 	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
 
-	g_ZombieDropsThisRound++;
-	zombiesPlaySound(SFX_PICKUP_SHIELD, 1.5f);
+	return true;
 }
 
 // Every gun every living player carries, its spare clips full
@@ -8563,7 +8688,9 @@ static void zombiesTickWallBuys(void)
 		g_ZombieWallNeedsRelease[i] = true;
 		g_ZombieWallHeld60[i] = 0;
 
+		g_ZombieSoundFor = i;
 		zombiesWallBuyPurchase(i, g_ZombieNearWall[i]);
+		g_ZombieSoundFor = -1;
 	}
 }
 
@@ -9152,6 +9279,9 @@ static void zombiesTickGroans(void)
 		}
 
 		psCreate(NULL, zchr->prop, sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+
+		// online, from the same zombie on every machine (its config slot)
+		zombiesNetKeepSound(sound, pitch, func0f18d074(mpPlayerGetIndex(zchr)));
 	}
 }
 
@@ -9285,6 +9415,8 @@ void zombiesTick(void)
 	}
 
 	for (i = 0; i < PLAYERCOUNT(); i++) {
+		// online, a buy's and a drink's sounds are the player's own
+		g_ZombieSoundFor = i;
 		zombiesTickRegen(i);
 		zombiesTickJuggernog(i);
 		zombiesTickPerkMachines(i);
@@ -9292,6 +9424,8 @@ void zombiesTick(void)
 		zombiesTickWhere(i);
 		zombiesTickKnife(i);
 	}
+
+	g_ZombieSoundFor = -1;
 
 	zombiesTintPerkMachines();
 	zombiesTintPap();
@@ -10728,6 +10862,11 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 
 		remaining += zombiesCountAlive();
 
+		// a client's puppets are not the host's count of them
+		if (NET_CLIENT) {
+			remaining = g_ZombieNetRemaining;
+		}
+
 #ifndef PLATFORM_N64
 		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
 #endif
@@ -10840,6 +10979,782 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 	gdl = zombiesRenderNukeFlash(gdl);
 
 	return gdl;
+}
+
+/**
+ * Zombies online (protocol 33, CLAUDE-notes/netplay.md "Zombies online").
+ *
+ * The host plays Zombies as it does offline, a client's player's buys, revives
+ * and knife from its commands (zombiesHoldingUse() reads its virtual pad;
+ * zombiesUseMask() its NETCMD_INTERACT). A client runs none of zombiesTick()
+ * (netplay's C13). Instead:
+ *
+ * - each machine puts up the perk machines, Pack-a-Punch, the box and the wall
+ *   buys itself, the same way: where they go is the arena's alone (its spawn
+ *   pads and its walls, no random numbers), so the host sends none of them,
+ *   nor the guns over them nor the power-ups, as entities (zombiesNetOwnsProp(),
+ *   netents.c), and zombiesRenderMachine(), the chalk and the radar find the
+ *   client's own. The block carries where the host's stand, and a client says
+ *   in its log if its own are elsewhere;
+ * - the host's state rides in the scenario block (zombiesNetCapture(), by
+ *   playernum, which is the host's on every machine), and the client's frame
+ *   (zombiesClientTick()) shows it: the gun over the box, the gun in
+ *   Pack-a-Punch, the guns put up on the walls, the power-ups;
+ * - the points' popups and the sounds the host's Zombies made ride in two
+ *   rings of the last ZOMBIE_NET_RING, numbered, so a lost snapshot loses none;
+ *   a sound of one player's (its buy, its drink) is heard on that player's
+ *   machine only;
+ * - a client's knife swings on its own machine as it predicts its walk
+ *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
+ *   is the host's.
+ */
+#define ZOMBIE_NET_VERSION 1
+
+struct zombienetbuf {
+	u8 *w;
+	const u8 *r;
+	s32 at;
+	s32 size;
+};
+
+static s32 g_ZombieNetPopupSeen = -1;  // client: the next popup and sound to take, -1 before the first block
+static s32 g_ZombieNetSoundSeen = -1;
+static s32 g_ZombieNetBoxShown = -1;   // client: the gun over the box, as the host has it
+static u32 g_ZombieNetWallMask = 0;    // ... the wall buys with their gun up
+static u8 g_ZombieDropSerialHere[4];   // ... the host's drop each slot has here
+static bool g_ZombieNetChecked = false;
+static s32 g_ZombieNetApplied = 0;
+static s32 g_ZombieNetPopupsTaken = 0;
+static s32 g_ZombieNetSoundsTaken = 0;
+static s32 g_ZombieNetDropsMade = 0;
+
+static s32 znClamp(s32 v, s32 lo, s32 hi)
+{
+	return v < lo ? lo : v > hi ? hi : v;
+}
+
+static void znPut(struct zombienetbuf *b, u32 v, s32 n)
+{
+	s32 i;
+
+	for (i = 0; i < n; i++) {
+		if (b->at < b->size) {
+			b->w[b->at] = (u8)(v >> (i * 8));
+		}
+
+		b->at++;
+	}
+}
+
+static u32 znGet(struct zombienetbuf *b, s32 n)
+{
+	u32 v = 0;
+	s32 i;
+
+	for (i = 0; i < n; i++) {
+		if (b->at < b->size) {
+			v |= (u32)b->r[b->at] << (i * 8);
+		}
+
+		b->at++;
+	}
+
+	return v;
+}
+
+static void znPutF(struct zombienetbuf *b, f32 f)
+{
+	u32 v;
+
+	memcpy(&v, &f, 4);
+	znPut(b, v, 4);
+}
+
+static f32 znGetF(struct zombienetbuf *b)
+{
+	u32 v = znGet(b, 4);
+	f32 f;
+
+	memcpy(&f, &v, 4);
+
+	return f == f && f < 1e7f && f > -1e7f ? f : 0;
+}
+
+/**
+ * netents.c, the host's capture: one of Zombies' own objects, which each
+ * machine makes for itself (an s32: bool is not the same size on both sides)
+ */
+s32 zombiesNetOwnsProp(struct prop *prop)
+{
+	struct defaultobj *obj;
+	s32 i;
+
+	if (!zombiesIsActive() || prop == NULL || (obj = prop->obj) == NULL) {
+		return 0;
+	}
+
+	if (obj == &g_ZombieBoxObj || obj == &g_ZombiePapObj || obj == &g_ZombiePapGunObj) {
+		return 1;
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieJuggObjs); i++) {
+		if (obj == &g_ZombieJuggObjs[i]) {
+			return 1;
+		}
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombiePerkObjs); i++) {
+		if (obj == &g_ZombiePerkObjs[i]) {
+			return 1;
+		}
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieBoxGunObjs); i++) {
+		if (obj == &g_ZombieBoxGunObjs[i]) {
+			return 1;
+		}
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieWallBuys); i++) {
+		if (obj == &g_ZombieWallBuys[i].obj) {
+			return 1;
+		}
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieDrops); i++) {
+		if (obj == &g_ZombieDrops[i].obj) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * netscen.c, the host's block at a tick's end: Zombies' body, the layout
+ * zombiesNetApply() reads in the same order
+ */
+void zombiesNetCapture(u8 *out, s32 size)
+{
+	struct zombienetbuf b = { out, NULL, 0, size };
+	u32 mask = 0;
+	s32 remaining;
+	s32 i;
+	s32 k;
+
+	znPut(&b, ZOMBIE_NET_VERSION, 1);
+	znPut(&b, znClamp(g_ZombieRound, 0, 0xffff), 2);
+	znPut(&b, znClamp(g_Vars.lvframenum - g_ZombieRoundStartFrame, 0, 0xffff), 2);
+	znPut(&b, (u16)(s16)(g_ZombieNextWaveFrame < 0 ? -1 : znClamp(g_ZombieNextWaveFrame - g_Vars.lvframenum, 0, 0x7fff)), 2);
+
+	remaining = g_ZombieRoundTotal - g_ZombieSpawned;
+	remaining = (remaining < 0 ? 0 : remaining) + zombiesCountAlive();
+	znPut(&b, znClamp(remaining, 0, 0xffff), 2);
+
+	znPut(&b, g_ZombieGameOver ? 1 : 0, 1);
+	znPut(&b, znClamp(g_ZombieGameOver60, 0, 0xffff), 2);
+	znPut(&b, znClamp(g_ZombieInstaKill60, 0, 0xffff), 2);
+	znPut(&b, znClamp(g_ZombieDoublePoints60, 0, 0xffff), 2);
+	znPut(&b, (u16)(s16)znClamp(g_ZombieMaxAmmoBanner60, -1, 0x7fff), 2);
+	znPut(&b, znClamp(g_ZombieBannerKind, 0, ZOMBIEPOWERUP_COUNT - 1), 1);
+	znPut(&b, (u16)(s16)znClamp(g_ZombieNukeFlash60, -1, 0x7fff), 2);
+	znPut(&b, znClamp(g_ZombieQrSoloBuys, 0, 0xff), 1);
+
+	znPut(&b, znClamp(g_ZombieBoxState, 0, ZOMBIEBOX_OFFER), 1);
+	znPut(&b, znClamp(g_ZombieBoxTime60, 0, 0xffff), 2);
+	znPut(&b, (u8)(s8)znClamp(g_ZombieBoxUser, -1, MAX_PLAYERS - 1), 1);
+	znPut(&b, (u16)(s16)znClamp(g_ZombieBoxShown, -1, 0x7fff), 2);
+
+	for (k = 0; k < ARRAYCOUNT(g_ZombieWallBuys); k++) {
+		if (g_ZombieWallBuys[k].shown) {
+			mask |= 1 << k;
+		}
+	}
+
+	znPut(&b, mask, 1);
+
+	// the rings
+	znPut(&b, g_ZombieNetPopupSeq, 2);
+
+	for (k = 0; k < ZOMBIE_NET_RING; k++) {
+		znPut(&b, (u8)g_ZombieNetPopups[k].playernum, 1);
+		znPut(&b, (u16)g_ZombieNetPopups[k].value, 2);
+	}
+
+	znPut(&b, g_ZombieNetSoundSeq, 2);
+
+	for (k = 0; k < ZOMBIE_NET_RING; k++) {
+		znPut(&b, g_ZombieNetSounds[k].sound, 2);
+		znPut(&b, g_ZombieNetSounds[k].pitch, 1);
+		znPut(&b, (u8)g_ZombieNetSounds[k].who, 1);
+		znPut(&b, g_ZombieNetSounds[k].chr, 1);
+		znPut(&b, g_ZombieNetSounds[k].mine, 1);
+	}
+
+	// the power-ups
+	for (k = 0; k < ARRAYCOUNT(g_ZombieDrops); k++) {
+		struct zombiedrop *drop = &g_ZombieDrops[k];
+		const bool on = drop->active && drop->obj.prop != NULL;
+
+		znPut(&b, on ? 1 : 0, 1);
+		znPut(&b, znClamp(drop->kind, 0, ZOMBIEPOWERUP_COUNT - 1), 1);
+		znPut(&b, g_ZombieDropSerial[k], 1);
+		znPut(&b, znClamp(drop->age60, 0, 0xffff), 2);
+		znPutF(&b, on ? drop->obj.prop->pos.x : 0);
+		znPutF(&b, on ? drop->obj.prop->pos.z : 0);
+		znPutF(&b, on ? drop->floory : 0);
+		znPut(&b, (u16)(s16)(on ? drop->rooms[0] : -1), 2);
+	}
+
+	// where the machines and the box stand here
+	for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+		struct defaultobj *obj = zombiesMachineObjAt(k);
+		const bool up = obj && obj->prop;
+
+		znPut(&b, (u16)(s16)(up ? znClamp((s32)obj->prop->pos.x, -32767, 32767) : -32768), 2);
+		znPut(&b, (u16)(s16)(up ? znClamp((s32)obj->prop->pos.z, -32767, 32767) : -32768), 2);
+	}
+
+	// each player, by playernum
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const bool in = i < PLAYERCOUNT() && g_Vars.players[i] != NULL;
+		u32 perks = 0;
+		u32 flags = 0;
+		s32 count = 0;
+
+		if (in) {
+			for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
+				if (zombiesPlayerHasPerk(i, k)) {
+					perks |= 1 << k;
+				}
+			}
+
+			count = znClamp(g_ZombiePerkOrderCount[i], 0, ZOMBIEPERK_COUNT);
+			flags |= g_ZombieDowned[i] ? 0x01 : 0;
+			flags |= g_ZombieRespawnDue[i] ? 0x02 : 0;
+			flags |= g_ZombieNearJugg[i] ? 0x04 : 0;
+			flags |= g_ZombieNearBox[i] ? 0x08 : 0;
+			flags |= g_ZombieNearPap[i] ? 0x10 : 0;
+			flags |= g_ZombieWhere[i] ? 0x20 : 0;
+		}
+
+		znPut(&b, in ? (u32)g_ZombiePoints[i] : 0, 4);
+		znPut(&b, perks, 1);
+		znPut(&b, count, 1);
+
+		for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
+			znPut(&b, k < count ? znClamp(g_ZombiePerkOrder[i][k], 0, ZOMBIEPERK_COUNT - 1) : 0, 1);
+		}
+
+		znPut(&b, (u16)(s16)(in ? znClamp(g_ZombieDrink60[i], -1, 0x7fff) : -1), 2);
+		znPut(&b, in ? znClamp(g_ZombieDrinkPerk[i], 0, ZOMBIEPERK_COUNT - 1) : 0, 1);
+		znPut(&b, flags, 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearPerk[i], -1, 0x7f) : -1), 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearWall[i], -1, 0x7f) : -1), 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearDowned[i], -1, 0x7f) : -1), 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieReviver[i], -1, 0x7f) : -1), 1);
+		znPut(&b, in ? znClamp(g_ZombieBleed60[i], 0, 0xffff) : 0, 2);
+		znPut(&b, in ? znClamp(g_ZombieRevive60[i], 0, 0xffff) : 0, 2);
+		znPut(&b, in ? znClamp(g_ZombieSelfRevive60[i], 0, 0xffff) : 0, 2);
+		znPut(&b, (u16)(s16)(in ? znClamp(g_ZombiePap60[i], -1, 0x7fff) : -1), 2);
+		znPut(&b, in ? znClamp(g_ZombiePapGun[i], 0, 0xff) : 0, 1);
+		count = in ? znClamp(g_ZombiePapCount[i], 0, ZOMBIE_PAP_MAX) : 0;
+		znPut(&b, count, 1);
+
+		for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
+			znPut(&b, k < count ? znClamp(g_ZombiePapped[i][k], 0, 0xff) : 0, 1);
+		}
+	}
+
+	if (b.at > size) {
+		static bool warned = false;
+
+		if (!warned) {
+			warned = true;
+			sysLogPrintf(LOG_WARNING, "zombies: the online block wants %d bytes, the scenario block has %d", b.at, size);
+		}
+	}
+}
+
+// A sound the host's Zombies made, heard here as it would have been there
+static void zombiesNetPlay(const struct zombienetsound *s)
+{
+	const f32 pitch = s->pitch / 64.0f;
+
+	if (s->sound == 0 || (s->who >= 0 && (s->who != g_NetLocalSlot || s->mine))) {
+		return;
+	}
+
+	g_ZombieNetSoundsTaken++;
+
+	if (s->chr != 0xff) {
+		const s32 index = func0f18d0e8(s->chr);
+
+		if (index >= 0 && index < g_MpNumChrs && g_MpAllChrPtrs[index] && g_MpAllChrPtrs[index]->prop) {
+			psCreate(NULL, g_MpAllChrPtrs[index]->prop, s->sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+		}
+
+		return;
+	}
+
+	zombiesPlaySoundHere(s->sound, pitch);
+}
+
+// The machines here against where the host's stand, once they are up
+static void zombiesNetCheckMachines(const s16 hostpos[][2])
+{
+	s32 off = 0;
+	s32 k;
+
+	for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+		struct defaultobj *obj = zombiesMachineObjAt(k);
+		const bool here = obj && obj->prop;
+		const bool there = hostpos[k][0] != -32768;
+
+		if (here != there || (here && (fabsf(obj->prop->pos.x - hostpos[k][0]) > 2 || fabsf(obj->prop->pos.z - hostpos[k][1]) > 2))) {
+			off++;
+			sysLogPrintf(LOG_WARNING, "zombies: online, %s is at %.0f %.0f here and at %d %d on the host",
+					k < ZOMBIE_MACHINE_IDS - 1 ? zombiesMachineName(k) : "the Mystery Box",
+					here ? obj->prop->pos.x : 0.0f, here ? obj->prop->pos.z : 0.0f, hostpos[k][0], hostpos[k][1]);
+		}
+	}
+
+	if (off == 0) {
+		sysLogPrintf(LOG_NOTE, "zombies: online, the machines and the box here stand where the host's do");
+	}
+}
+
+/**
+ * netscen.c, a client, the host's block of a tick (and MATCH_END's last, final)
+ */
+void zombiesNetApply(const u8 *in, s32 size, s32 final)
+{
+	struct zombienetbuf b = { NULL, in, 0, size };
+	struct zombienetpopup popups[ZOMBIE_NET_RING];
+	struct zombienetsound sounds[ZOMBIE_NET_RING];
+	s16 machines[ZOMBIE_MACHINE_IDS][2];
+	const bool wasover = g_ZombieGameOver;
+	const s32 wasnext = g_ZombieNextWaveFrame;
+	u16 seq;
+	s32 v;
+	s32 i;
+	s32 k;
+
+	if (!NET_CLIENT || znGet(&b, 1) != ZOMBIE_NET_VERSION) {
+		return;
+	}
+
+	g_ZombieNetApplied++;
+	g_ZombieRound = znGet(&b, 2);
+	g_ZombieRoundStartFrame = g_Vars.lvframenum - (s32)znGet(&b, 2);
+	v = (s16)znGet(&b, 2);
+	g_ZombieNextWaveFrame = v < 0 ? -1 : g_Vars.lvframenum + v;
+	g_ZombieNetRemaining = znGet(&b, 2);
+	g_ZombieGameOver = znGet(&b, 1) != 0;
+	g_ZombieGameOver60 = znGet(&b, 2);
+	g_ZombieInstaKill60 = znGet(&b, 2);
+	g_ZombieDoublePoints60 = znGet(&b, 2);
+	g_ZombieMaxAmmoBanner60 = (s16)znGet(&b, 2);
+	g_ZombieBannerKind = znClamp(znGet(&b, 1), 0, ZOMBIEPOWERUP_COUNT - 1);
+	g_ZombieNukeFlash60 = (s16)znGet(&b, 2);
+	g_ZombieQrSoloBuys = znGet(&b, 1);
+
+	g_ZombieBoxState = znClamp(znGet(&b, 1), 0, ZOMBIEBOX_OFFER);
+	g_ZombieBoxTime60 = znGet(&b, 2);
+	g_ZombieBoxUser = znClamp((s8)znGet(&b, 1), -1, PLAYERCOUNT() - 1);
+	v = (s16)znGet(&b, 2);
+	g_ZombieNetBoxShown = v >= 0 && v < NUM_MPWEAPONS ? v : -1;
+	g_ZombieNetWallMask = znGet(&b, 1);
+
+	// the rings: the ones not had yet, the first block's taken as had
+	seq = znGet(&b, 2);
+
+	for (k = 0; k < ZOMBIE_NET_RING; k++) {
+		popups[k].playernum = (s8)znGet(&b, 1);
+		popups[k].value = (s16)znGet(&b, 2);
+	}
+
+	if (g_ZombieNetPopupSeen >= 0) {
+		u16 s;
+
+		for (s = (u16)g_ZombieNetPopupSeen; s != seq && (u16)(seq - s) <= ZOMBIE_NET_RING; s++) {
+			const struct zombienetpopup *p = &popups[s % ZOMBIE_NET_RING];
+
+			if (p->playernum >= 0 && p->playernum < PLAYERCOUNT()) {
+				zombiesAddPopup(p->playernum, p->value);
+				g_ZombieNetPopupsTaken++;
+			}
+		}
+	}
+
+	g_ZombieNetPopupSeen = seq;
+	seq = znGet(&b, 2);
+
+	for (k = 0; k < ZOMBIE_NET_RING; k++) {
+		sounds[k].sound = znGet(&b, 2);
+		sounds[k].pitch = znGet(&b, 1);
+		sounds[k].who = (s8)znGet(&b, 1);
+		sounds[k].chr = znGet(&b, 1);
+		sounds[k].mine = znGet(&b, 1);
+	}
+
+	if (g_ZombieNetSoundSeen >= 0 && !final) {
+		u16 s;
+
+		for (s = (u16)g_ZombieNetSoundSeen; s != seq && (u16)(seq - s) <= ZOMBIE_NET_RING; s++) {
+			zombiesNetPlay(&sounds[s % ZOMBIE_NET_RING]);
+		}
+	}
+
+	g_ZombieNetSoundSeen = seq;
+
+	// the power-ups, each made here at the host's place
+	for (k = 0; k < ARRAYCOUNT(g_ZombieDrops); k++) {
+		struct zombiedrop *drop = &g_ZombieDrops[k];
+		const bool on = znGet(&b, 1) != 0;
+		const s32 kind = znClamp(znGet(&b, 1), 0, ZOMBIEPOWERUP_COUNT - 1);
+		const u8 serial = znGet(&b, 1);
+		const s32 age = znGet(&b, 2);
+		struct coord pos;
+		f32 floory;
+		RoomNum rooms[8];
+
+		pos.x = znGetF(&b);
+		pos.z = znGetF(&b);
+		floory = znGetF(&b);
+		rooms[0] = (s16)znGet(&b, 2);
+		rooms[1] = -1;
+		pos.y = floory;
+
+		if (!on) {
+			if (drop->active) {
+				zombiesDropRemove(drop);
+			}
+
+			continue;
+		}
+
+		if (drop->active && g_ZombieDropSerialHere[k] != serial) {
+			zombiesDropRemove(drop);
+		}
+
+		// a slot whose last one is still going waits for it
+		if (!drop->active && drop->obj.prop == NULL && rooms[0] > 0 && rooms[0] < g_Vars.roomcount
+				&& g_ZombieDropSerialHere[k] != serial) {
+			if (zombiesDropMake(drop, kind, &pos, floory, rooms)) {
+				g_ZombieNetDropsMade++;
+			}
+
+			g_ZombieDropSerialHere[k] = serial;
+		}
+
+		if (drop->active) {
+			drop->age60 = age;
+		}
+	}
+
+	for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+		machines[k][0] = (s16)znGet(&b, 2);
+		machines[k][1] = (s16)znGet(&b, 2);
+	}
+
+	// once both have put them up (the host's first blocks are from before)
+	if (!g_ZombieNetChecked && g_ZombieJuggPlaced && (machines[0][0] != -32768 || machines[ZOMBIE_MACHINE_IDS - 1][0] != -32768)) {
+		g_ZombieNetChecked = true;
+		zombiesNetCheckMachines(machines);
+	}
+
+	// each player
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const bool here = i < PLAYERCOUNT() && g_Vars.players[i] != NULL;
+		const s32 points = (s32)znGet(&b, 4);
+		const u32 perks = znGet(&b, 1);
+		const s32 count = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT);
+		s32 order[ZOMBIEPERK_COUNT];
+		s32 drink;
+		s32 drinkperk;
+		u32 flags;
+		s32 nearperk;
+		s32 nearwall;
+		s32 neardowned;
+		s32 reviver;
+		s32 bleed;
+		s32 revive;
+		s32 selfrevive;
+		s32 pap60;
+		s32 papgun;
+		s32 papcount;
+		s32 papped[ZOMBIE_PAP_MAX];
+
+		for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
+			order[k] = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT - 1);
+		}
+
+		drink = (s16)znGet(&b, 2);
+		drinkperk = znClamp(znGet(&b, 1), 0, ZOMBIEPERK_COUNT - 1);
+		flags = znGet(&b, 1);
+		nearperk = (s8)znGet(&b, 1);
+		nearwall = (s8)znGet(&b, 1);
+		neardowned = (s8)znGet(&b, 1);
+		reviver = (s8)znGet(&b, 1);
+		bleed = znGet(&b, 2);
+		revive = znGet(&b, 2);
+		selfrevive = znGet(&b, 2);
+		pap60 = (s16)znGet(&b, 2);
+		papgun = znGet(&b, 1);
+		papcount = znClamp(znGet(&b, 1), 0, ZOMBIE_PAP_MAX);
+
+		for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
+			papped[k] = znGet(&b, 1);
+		}
+
+		if (!here) {
+			continue;
+		}
+
+		g_ZombiePoints[i] = points;
+		g_ZombieHasJugg[i] = (perks & 1) != 0;
+
+		for (k = 1; k < ZOMBIEPERK_COUNT; k++) {
+			g_ZombieHasPerk[i][k] = (perks & (1 << k)) != 0;
+		}
+
+		g_ZombiePerkOrderCount[i] = count;
+
+		for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
+			g_ZombiePerkOrder[i][k] = order[k];
+		}
+
+		g_ZombieDrink60[i] = drink < 0 ? -1 : znClamp(drink, 0, DRINK_TOTAL - 1);
+		g_ZombieDrinkPerk[i] = drinkperk;
+		g_ZombieDowned[i] = (flags & 0x01) != 0;
+		g_ZombieRespawnDue[i] = (flags & 0x02) != 0;
+		g_ZombieNearJugg[i] = (flags & 0x04) != 0;
+		g_ZombieNearBox[i] = (flags & 0x08) != 0;
+		g_ZombieNearPap[i] = (flags & 0x10) != 0;
+		g_ZombieWhere[i] = (flags & 0x20) != 0;
+		// what the client has not got itself is nobody
+		g_ZombieNearPerk[i] = nearperk >= 0 && nearperk < ZOMBIEPERK_COUNT ? nearperk : -1;
+		g_ZombieNearWall[i] = nearwall >= 0 && nearwall < g_ZombieNumWallBuys ? nearwall : -1;
+		g_ZombieNearDowned[i] = neardowned >= 0 && neardowned < PLAYERCOUNT() ? neardowned : -1;
+		g_ZombieReviver[i] = reviver >= 0 && reviver < PLAYERCOUNT() ? reviver : -1;
+		g_ZombieBleed60[i] = bleed;
+		g_ZombieRevive60[i] = revive;
+		g_ZombieSelfRevive60[i] = selfrevive;
+		g_ZombiePap60[i] = pap60 < 0 ? -1 : znClamp(pap60, 0, ZOMBIE_PAP_TOTAL60 - 1);
+		g_ZombiePapGun[i] = papgun;
+		g_ZombiePapCount[i] = papcount;
+
+		for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
+			g_ZombiePapped[i][k] = papped[k];
+		}
+	}
+
+	// the round cleared: its sting, as the host's (zombiesTick())
+	if (wasnext < 0 && g_ZombieNextWaveFrame >= 0 && !final && g_ZombieRound > 0) {
+		zombiesRoundSting();
+	}
+
+	// GAME OVER: this machine's own best for the arena, and its music
+	if (!wasover && g_ZombieGameOver) {
+		g_ZombieBestRound = zombiesReadBest(g_Vars.stagenum);
+		g_ZombieNewBest = g_ZombieRound > g_ZombieBestRound;
+
+		if (g_ZombieNewBest) {
+			zombiesWriteBest(g_Vars.stagenum, g_ZombieRound);
+		}
+
+		sysLogPrintf(LOG_NOTE, "zombies: online, game over on stage 0x%02x at round %d (best here before %d)",
+				g_Vars.stagenum, g_ZombieRound, g_ZombieBestRound);
+
+		if (!final) {
+			musicStartSting(MUSIC_MISSION_FAILED, TICKS(240 * 20));
+		}
+	}
+
+	if (final) {
+		sysLogPrintf(LOG_NOTE, "zombies: online, %d blocks applied, %d popups, %d sounds, %d power-ups made here",
+				g_ZombieNetApplied, g_ZombieNetPopupsTaken, g_ZombieNetSoundsTaken, g_ZombieNetDropsMade);
+	}
+}
+
+/**
+ * scenarios.c's scenarioClientTick(), a net client's frame (C13: in place of
+ * zombiesTick()): the machines put up here, and the host's state shown on them
+ */
+void zombiesClientTick(void)
+{
+	const s32 adv = g_Vars.lvupdate60;
+	const s32 me = g_NetLocalSlot;
+	s32 owner = -1;
+	s32 i;
+	s32 k;
+
+	if (!NET_CLIENT) {
+		return;
+	}
+
+	// a new match, as zombiesTick() knows one
+	if (g_Vars.lvframenum < g_ZombieLastFrame) {
+		zombiesResetJuggernog();
+		zombiesResetBox();
+		zombiesResetDrops();
+		zombiesResetWallBuys();
+		zombiesResetPerks();
+		zombiesResetPap();
+		zombiesResetPoints();
+		zombiesResetDowned();
+		zombiesResetGuns();
+
+		for (i = 0; i < MAX_PLAYERS; i++) {
+			g_ZombieKnife60[i] = 0;
+			g_ZombieKnifeStage[i] = ZKNIFE_NONE;
+			g_ZombieKnifeEnter60[i] = 0;
+			g_ZombieKnifeRaise60[i] = 0;
+			g_ZombieKnifeCooldown60[i] = 0;
+			g_ZombieWhere[i] = false;
+		}
+
+		for (k = 0; k < ARRAYCOUNT(g_ZombieDropSerialHere); k++) {
+			g_ZombieDropSerialHere[k] = 0;
+		}
+
+		g_ZombieRound = 0;
+		g_ZombieNextWaveFrame = -1;
+		g_ZombieGameOver = false;
+		g_ZombieGameOver60 = 0;
+		g_ZombieNetRemaining = 0;
+		g_ZombieNetPopupSeen = -1;
+		g_ZombieNetSoundSeen = -1;
+		g_ZombieNetBoxShown = -1;
+		g_ZombieNetWallMask = 0;
+		g_ZombieNetChecked = false;
+		g_ZombieNetApplied = g_ZombieNetPopupsTaken = g_ZombieNetSoundsTaken = g_ZombieNetDropsMade = 0;
+	}
+
+	g_ZombieLastFrame = g_Vars.lvframenum;
+
+	// up where the host's go, the same way
+	if (!g_ZombieJuggPlaced && g_Vars.lvframenum >= 3 && g_Vars.players[0]->prop) {
+		g_ZombieJuggPlaced = true;
+		zombiesPlaceJuggernog();
+		zombiesPlaceBox();
+		zombiesPlacePerks();
+		zombiesCornerMachines();
+		zombiesPlaceWallBuys();
+	}
+
+	// the sides, as the host's (the radar's and the names' colours)
+	if (g_Vars.lvframenum < 60) {
+		g_MpSetup.options |= MPOPTION_TEAMSENABLED;
+
+		for (i = 0; i < g_MpNumChrs; i++) {
+			struct mpchrconfig *cfg = g_MpAllChrConfigPtrs[i];
+
+			cfg->team = i < PLAYERCOUNT() ? 0 : 1;
+
+			if (g_MpAllChrPtrs[i]) {
+				g_MpAllChrPtrs[i]->team = 1 << cfg->team;
+			}
+		}
+	}
+
+	zombiesTickPopups();
+	zombiesTintPerkMachines();
+	zombiesTintPap();
+
+	// between the host's blocks its clocks run on here as they do there
+	if (g_ZombieMaxAmmoBanner60 >= 0) {
+		g_ZombieMaxAmmoBanner60 += adv;
+
+		if (g_ZombieMaxAmmoBanner60 > ZOMBIE_DROP_BANNER60) {
+			g_ZombieMaxAmmoBanner60 = -1;
+		}
+	}
+
+	g_ZombieInstaKill60 = g_ZombieInstaKill60 > adv ? g_ZombieInstaKill60 - adv : 0;
+	g_ZombieDoublePoints60 = g_ZombieDoublePoints60 > adv ? g_ZombieDoublePoints60 - adv : 0;
+
+	if (g_ZombieNukeFlash60 >= 0) {
+		g_ZombieNukeFlash60 += adv;
+
+		if (g_ZombieNukeFlash60 >= ZOMBIE_NUKE_FLASH60) {
+			g_ZombieNukeFlash60 = -1;
+		}
+	}
+
+	if (g_ZombieGameOver) {
+		g_ZombieGameOver60 += adv;
+	}
+
+	if (g_ZombieBoxState != ZOMBIEBOX_IDLE) {
+		g_ZombieBoxTime60 += adv;
+	}
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		if (g_ZombieDrink60[i] >= 0) {
+			g_ZombieDrink60[i] = g_ZombieDrink60[i] + adv >= DRINK_TOTAL ? -1 : g_ZombieDrink60[i] + adv;
+		}
+
+		if (g_ZombiePap60[i] >= 0 && g_ZombiePap60[i] + adv < ZOMBIE_PAP_TOTAL60) {
+			g_ZombiePap60[i] += adv;
+		}
+
+		if (owner < 0 && g_ZombiePap60[i] >= ZOMBIE_PAP_DOWN60) {
+			owner = i;
+		}
+	}
+
+	// the gun over the box
+	if (g_ZombieNetBoxShown != g_ZombieBoxShown) {
+		if (g_ZombieNetBoxShown < 0) {
+			zombiesBoxHideGun();
+		} else {
+			zombiesBoxShowGun(g_ZombieNetBoxShown);
+		}
+	}
+
+	zombiesBoxPlaceGun();
+
+	// the gun in Pack-a-Punch, from its going in to its being taken
+	if (owner >= 0 && !g_ZombiePapGunUp) {
+		zombiesPapShowGun(g_ZombiePapGun[owner]);
+	} else if (owner < 0 && g_ZombiePapGunUp) {
+		zombiesPapHideGun();
+	}
+
+	if (owner >= 0) {
+		zombiesPapPlaceGun(g_ZombiePap60[owner]);
+	}
+
+	// the wall buys bought
+	for (k = 0; k < g_ZombieNumWallBuys; k++) {
+		if ((g_ZombieNetWallMask & (1 << k)) && !g_ZombieWallBuys[k].shown) {
+			zombiesWallBuyShowGun(&g_ZombieWallBuys[k]);
+		}
+	}
+
+	// the power-ups turning and bobbing
+	for (k = 0; k < ARRAYCOUNT(g_ZombieDrops); k++) {
+		struct zombiedrop *drop = &g_ZombieDrops[k];
+
+		if (!drop->active) {
+			continue;
+		}
+
+		if (drop->obj.prop == NULL) {
+			drop->active = false;
+			continue;
+		}
+
+		drop->age60 += adv;
+		zombiesDropPlace(drop);
+	}
+
+	// this machine's own knife, swung as its walk is predicted
+	if (me >= 0 && me < PLAYERCOUNT() && g_Vars.players[me] && g_Vars.players[me]->prop) {
+		zombiesTickKnife(me);
+	}
 }
 
 /**

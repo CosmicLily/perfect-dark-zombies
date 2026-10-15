@@ -23,6 +23,7 @@ void scenarioInit(void);
 s32 scenarioNumProps(void);
 void scenarioInitProps(void);
 void scenarioTick(void);
+void scenarioClientTick(void); // a net client's, in scenarioTick's place (scenarios.c)
 void scenarioTickChr(struct chrdata *chr);
 Gfx *scenarioRadarExtra(Gfx *gdl);
 bool scenarioRadarChr(Gfx **gdl, struct prop *prop);

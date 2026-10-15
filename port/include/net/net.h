@@ -99,6 +99,15 @@ s32 netSlotOwnS32(s32 playernum, const s32 *var, s32 mine);
 // The host: buttons a client's player pressed this tick, as its command
 // carried them (START too); 0 for anyone else's (GoldenEye's exit, gexplus.c)
 u32 netPlayersHostPressed(s32 playernum, u32 mask);
+// The host: 1 when a client's player has Zombies' own Interact bound where it
+// plays (its command's NETCMD_INTERACT, protocol 33), 0 not, -1 not a client's
+s32 netPlayersInteractBound(s32 playernum);
+// Zombies online (protocol 33, netscen.c): the scenario block's body, and
+// whether a prop is one of Zombies' own (each machine makes those itself)
+struct prop;
+s32 zombiesNetOwnsProp(struct prop *prop);
+void zombiesNetCapture(u8 *out, s32 size);
+void zombiesNetApply(const u8 *in, s32 size, s32 final);
 
 // The player whose ears and eyes this machine has (propsnd.c), or fallback
 struct player;

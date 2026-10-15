@@ -61,6 +61,13 @@
  *          s16 hillrooms[2], f32 hillpos[3], f32 colourfrac[3]
  *     CTC  s16 teamindexes[4], s16 playercountsperteam[4], s16 baserooms[4],
  *          REF tokens[4]
+ *     ZOMBIES (protocol 33) zombies.inc's (zombiesNetCapture/zombiesNetApply,
+ *          by playernum: the round, power-ups, box, Pack-a-Punch, drops,
+ *          wall buys, sounds, each player's points, perks, drink, downed
+ *          state and upgraded guns). Its machines are none of the host's
+ *          entities: each machine places them itself, as the host does
+ *          (zombiesNetOwnsProp), and the client's own tick shows them
+ *          (scenarioClientTick)
  *   REF (5 bytes): u8 kind (0 none, 1 a chr: u8 slot, 2 an entity: u16 id,
  *   u16 gen)
  */
@@ -498,6 +505,10 @@ static void netScenCapture(u8 *out)
 		}
 		break;
 	}
+	case MPSCENARIO_ZOMBIES:
+		// (protocol 33) zombies.inc's own layout
+		zombiesNetCapture(out + OFF_BODY, NETSCEN_SIZE - OFF_BODY);
+		break;
 	default:
 		break;
 	}
@@ -1234,6 +1245,9 @@ static void netScenApply(const u8 *b, u32 tick, const char *tag)
 		}
 		break;
 	}
+	case MPSCENARIO_ZOMBIES:
+		zombiesNetApply(b + OFF_BODY, NETSCEN_SIZE - OFF_BODY, tick == 0xffffffff);
+		break;
 	default:
 		break;
 	}

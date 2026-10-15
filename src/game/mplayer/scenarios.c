@@ -648,6 +648,18 @@ void scenarioTick(void)
 }
 
 /**
+ * A net client's frame in place of scenarioTick (C13: the scenario is the
+ * host's): what a scenario shows from the host's state that the client makes
+ * itself. Zombies' machines, the guns over them and its power-ups.
+ */
+void scenarioClientTick(void)
+{
+	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		zombiesClientTick();
+	}
+}
+
+/**
  * Tick a single chr.
  *
  * If chr is provided then it will be a bot.

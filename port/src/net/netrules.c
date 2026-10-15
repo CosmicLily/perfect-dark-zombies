@@ -1281,7 +1281,8 @@ s32 netRulesRead(struct netbuf *b)
 	s_NetRules.cheats[0] = netBufReadU32(b);
 	s_NetRules.cheats[1] = netBufReadU32(b);
 
-	if (s_NetRules.scenario > MPSCENARIO_CAPTURETHECASE || s_NetRules.timelimit > 60 || s_NetRules.scorelimit > 100) {
+	// every Combat Simulator scenario, Zombies too (protocol 33, netscen.c)
+	if (s_NetRules.scenario > MPSCENARIO_ZOMBIES || s_NetRules.timelimit > 60 || s_NetRules.scorelimit > 100) {
 		b->error = 1;
 	}
 

@@ -179,6 +179,14 @@
   between two home routers; a campaign room reopened after its first
   mission (nobody could join after that); the lobby answering a WireGuard
   peer from the wrong address; how to steer one joiner's traffic.
+- **Zombies online (protocol 33, 2026-10-14, branch zombies-dabs)** — the
+  section of that name: three allow-lists stopped at Capture the Case (a
+  guest's "The host's stage message did not parse."); each machine places
+  the machines itself (the placement is the arena's alone) and the host
+  sends none of Zombies' objects (`zombiesNetOwnsProp`); Zombies' state in
+  the scenario block (1280 bytes now, `zombiesNetCapture/Apply`), the
+  client's own frame (`scenarioClientTick`); Interact as NETCMD_INTERACT;
+  `CONT_0200` is 0x02000000, not 0x200; how it was staged on Windows.
 
 ## The shape
 
@@ -4113,3 +4121,65 @@ sims?".
   the kill feed is told around the match branch's hit (`killfeedSetSentry`).
 - **The Mauler's charge** reaches the host (same charge and magazine as the client, traced); Perfect
   Dark draws the charge only on the first person gun, so other players never see it (notabug).
+
+## Zombies online (protocol 33, 2026-10-14)
+
+A guest joining a friend's Zombies match (MPSCENARIO_ZOMBIES, 6) got "The host's stage message did
+not parse.": `netRulesRead` refused any scenario past Capture the Case, so the RULES were dropped and
+the STAGE_LOAD after them had nothing to go on. Two more lists stopped there too:
+`netRefuseMatchStart` (a host's own start) and `--net-test-scenario`. All three now go to 6.
+
+Letting the rules through was not enough: a client runs none of a scenario's code (C13), and
+nothing of Zombies reached it. The shape now (zombies.inc's "Zombies online" comment has the detail):
+
+- **Each machine places the machines itself.** Juggernog, the perks, Pack-a-Punch, the box and the
+  wall buys go where the arena's spawn pads and walls put them, with no random numbers, so a client
+  runs the same placement at its own frame 3 (`zombiesClientTick`) and gets the host's places to the
+  unit (checked once, logged: "the machines and the box here stand where the host's do"; a
+  difference is a WARNING per machine). The host sends none of Zombies' objects as entities
+  (`zombiesNetOwnsProp`, at the top of netents.c's OBJ capture): sent as DYNOBJs they had come out
+  as stock mainframes (or failed to make: "make failed"), which `zombiesRenderMachine`, the chalk and
+  the radar did not know.
+- **The state is a body in the scenario block** (`zombiesNetCapture` / `zombiesNetApply`, by
+  playernum, which is the host's on every machine): the round and its clocks (as "ago"/"in" against
+  `lvframenum`, which is each machine's own), the count left, GAME OVER, the power-ups' timers and
+  banner, the box (state, time, the gun shown), the wall buys put up, the four power-ups (made
+  on the client at the host's place by `zombiesDropMake`, a serial per slot), and per player the
+  points, perks and their order, the drink, downed/bleed/revive, the "near" flags the prompts read,
+  Pack-a-Punch's clock and gun and the upgraded guns. NETSCEN_SIZE went 768 to 1280 for it (~720
+  used); delta-coded, so a quiet block costs nothing.
+- **What the host's Zombies made rides in two rings** of the last 16, numbered: the points' popups
+  and the sounds (2-D, or at a zombie by its mpchr slot: the groans). A sound of one player's - its
+  buy, its drink, its error buzz - is heard on that player's machine only (`g_ZombieSoundFor`); before,
+  offline-only code played every player's on the host.
+- **The client's own frame** (`scenarioClientTick` from lv.c where `scenarioTick` is skipped) shows
+  the block: the gun over the box, the gun sliding in and out of Pack-a-Punch, the wall guns, the
+  power-ups bobbing, the drink and the timers running on between blocks, and the client's own knife
+  (`zombiesQuickMelee` runs in the predicted walk; `g_NetReplaying` returns it; the blow is the
+  host's, `zombiesKnifeHit` does nothing on a client). GAME OVER's best round is each machine's own
+  record file.
+- **Interact.** The host reads a client's buttons from its virtual pad, but `zombiesUseMask` asked
+  the host's own binds whether Interact was bound. A command now carries NETCMD_INTERACT (0x20, no
+  bytes) when the client's player has it bound on the device it uses, and the host buys on Interact
+  alone then, as offline. Interact is bound on a pad by default, so a client buys on Interact, never B.
+  `zombiesInteractBind`/`zombiesUseName` ask the local player online (controller 0), not player 0.
+
+**Trap: `CONT_0200` is 0x02000000.** BUTTON_INTERACT and BUTTON_MELEE (`CONT_0200`/`CONT_0100`,
+os_cont.h) are the port's extended bits. A `--net-test-input` line holding `200` holds nothing.
+
+**Staged on Windows (no gate script yet).** Two games on loopback from `build-dabs` with scratch
+`--savedir`s (never build-dabs/pd.ini): host `--host 27299 --net-test-host 1 --net-test-stage 0x32
+--net-test-sims 0 --net-test-scenario 6` (Zombies adds its own horde), client `--connect
+127.0.0.1:27299 --net-test-join --net-test-input FILE` with lines like `600 640 2000000 0 0 0 0 0 0`.
+Being at a machine was stood in for by a temporary host probe that counted everyone near; the
+client took screenshots with `screenshotRequest()` at chosen frames. Seen on the client: the perk
+drink in its hands, the HUD's points for both players, the prompts with its own key, Juggernog,
+the box and Pack-a-Punch bought and taken ("Hold F for Fallen Falcon"), the knife's slash,
+power-ups made and DOUBLE POINTS' banner and timer, BLEEDING OUT, GAME OVER, MATCH_END.
+
+Not done or not seen online yet: a Zombies match through host migration (`netScenKeep` refuses
+past Capture the Case: the new host starts it over); a client bleeding out and back at the next
+round, and its teammate camera (zombiesDeadCameraTick runs on the client; untried); a remote
+player's third-person drink arm (reads the drink by playernum, so it should); joining in progress;
+no `netzombiestest.sh`. The net HUD's "T: chat hold P: players" hint sits over "Zombies: N" for
+its first seconds.
