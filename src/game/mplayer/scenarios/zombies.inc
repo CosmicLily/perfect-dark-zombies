@@ -1238,6 +1238,14 @@ static void zombiesPlaceJuggernog(void)
  * - Stamin-Up (2000): moves 15% faster (zombiesMoveScale(), bondwalk.c).
  * - Mule Kick (4000): a third gun (zombiesGunLimit()). Going down takes the
  *   third gun with it; drinking Mule Kick again gives that gun back.
+ * - Deadshot Daiquiri (1500): aimed down the sights, a bullet that hits a
+ *   zombie hits its head, as Black Ops II's snaps the aim there
+ *   (zombiesDeadshotHitpart(), chrDamage()).
+ * - PhD Flopper (2000): no harm from the player's own blasts, and a dolphin
+ *   dive, or a drop from a height, lands with a blast of its own
+ *   (zombiesPhdBlast()).
+ * - Electric Cherry (2000): a reload sends out a shock, wider and harder the
+ *   emptier the magazine was (zombiesReloadStarted(), bondgun.c).
  */
 #define ZOMBIEPERK_JUGGERNOG   0
 #define ZOMBIEPERK_QUICKREVIVE 1
@@ -1245,7 +1253,10 @@ static void zombiesPlaceJuggernog(void)
 #define ZOMBIEPERK_DOUBLETAP   3
 #define ZOMBIEPERK_STAMINUP    4
 #define ZOMBIEPERK_MULEKICK    5
-#define ZOMBIEPERK_COUNT       6   // zombieperks.c's pictures are in this order
+#define ZOMBIEPERK_DEADSHOT    6
+#define ZOMBIEPERK_PHDFLOPPER  7
+#define ZOMBIEPERK_CHERRY      8
+#define ZOMBIEPERK_COUNT       9   // zombieperks.c's pictures are in this order
 
 #define ZOMBIE_PERK_WALLREACH   400.0f // how far from its pad a machine's wall may be (200 left Skedar three short)
 #define ZOMBIE_PERK_PADCLEAR    140.0f // and how far at least, so the pad stays clear
@@ -1273,6 +1284,9 @@ static struct zombieperkdef g_ZombiePerks[ZOMBIEPERK_COUNT] = {
 	{ "Double Tap",   2000,             { 0xff, 0x90, 0x20 }, 0xff902000 },
 	{ "Stamin-Up",    2000,             { 0xf0, 0xd0, 0x30 }, 0xf0d03000 },
 	{ "Mule Kick",    4000,             { 0x70, 0x98, 0x48 }, 0x70984800 },
+	{ "Deadshot Daiquiri", 1500,        { 0x90, 0x60, 0x38 }, 0x90603800 },
+	{ "PhD Flopper",  2000,             { 0xc0, 0x40, 0xd0 }, 0xc040d000 },
+	{ "Electric Cherry", 2000,          { 0x40, 0xd0, 0xff }, 0x40d0ff00 },
 };
 
 // Juggernog's is g_ZombieHasJugg; the rest here
@@ -1801,7 +1815,8 @@ struct zombiemesh {
 static struct zombiemesh g_ZombieMeshes[ZOMBIE_PAP_ID + 1];
 
 static const char *g_ZombieMeshNames[ZOMBIE_PAP_ID + 1] = {
-	"juggernog", "quickrevive", "speedcola", "doubletap", "staminup", "mulekick", "packapunch",
+	"juggernog", "quickrevive", "speedcola", "doubletap", "staminup", "mulekick",
+	"deadshot", "phdflopper", "electriccherry", "packapunch",
 };
 
 // A white tile for a material whose picture will not bind
@@ -1839,10 +1854,17 @@ static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 sl
 static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const char *label);
 
 // A material lit with the power on: its name ends "_on" (Black Ops II's
-// "mtl_zombie_vending_jugg_on", "..._vent_power_on", "..._logo_on")
+// "mtl_zombie_vending_jugg_on", "..._vent_power_on", "..._logo_on"). Not the
+// Mob of the Dead machines' bodies, which carry the name whole (Deadshot's
+// "..._al_vending_ads_on", PhD's "..._nuke_on", Electric Cherry's): lit up,
+// the machine was a lamp. Deadshot's logo of its own still is.
 static bool zombiesMaterialIsOn(const char *name)
 {
 	size_t len = strlen(name);
+
+	if (strstr(name, "_ads_on") || strstr(name, "_nuke_on") || strstr(name, "electric_cherry_on")) {
+		return false;
+	}
 
 	return len >= 3 && strcmp(name + len - 3, "_on") == 0;
 }
@@ -4450,6 +4472,279 @@ f32 zombiesBulletScale(struct prop *aprop)
 	}
 
 	return scale;
+}
+
+/**
+ * chrDamage() asks, before anything is taken: Deadshot Daiquiri's aim. A
+ * player with it looking down the sights (Perfect Dark's aim mode, or COD
+ * Style Aiming's sights) puts a bullet that hits a zombie anywhere into its
+ * head, as Black Ops II's snaps the sights to the head: four times the hit
+ * a limb is, and a headshot's points. Not a knife, nor a blast.
+ */
+s32 zombiesDeadshotHitpart(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, bool explosion)
+{
+	struct player *player;
+	struct weaponfunc *func;
+	s32 playernum;
+
+	if (!zombiesIsActive() || explosion || !chr || !chr->aibot || !aprop || aprop->type != PROPTYPE_PLAYER) {
+		return hitpart;
+	}
+
+	if (hitpart <= 0 || hitpart == HITPART_HEAD || hitpart == HITPART_GUN || hitpart == HITPART_HAT
+			|| hitpart >= HITPART_GENERAL) {
+		return hitpart;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(aprop);
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || !zombiesPlayerHasPerk(playernum, ZOMBIEPERK_DEADSHOT)) {
+		return hitpart;
+	}
+
+	func = gset ? gsetGetWeaponFunction(gset) : NULL;
+
+	if (func && (func->type & 0xff) == INVENTORYFUNCTYPE_MELEE) {
+		return hitpart;
+	}
+
+	player = g_Vars.players[playernum];
+
+	if (!player->insightaimmode && player->codaimfrac < 0.5f) {
+		return hitpart;
+	}
+
+	return HITPART_HEAD;
+}
+
+// chrDamage() asks, of a blast: a player with PhD Flopper takes none of it
+bool zombiesPhdShrugs(struct chrdata *chr)
+{
+	s32 playernum;
+
+	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER) {
+		return false;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(chr->prop);
+
+	return playernum >= 0 && zombiesPlayerHasPerk(playernum, ZOMBIEPERK_PHDFLOPPER);
+}
+
+// Call of Duty's damage, in a zombie's own (zombiesHealthForRound()'s scale)
+static f32 zombiesCodDamage(f32 cod)
+{
+	return ZOMBIE_PD_HEALTH * cod / ZOMBIE_COD_HEALTH;
+}
+
+/**
+ * Every zombie standing within radius of pos takes damage (Call of Duty's),
+ * less with distance down to half at the edge, as playernum's: their points
+ * and kills. A shock (Electric Cherry) leaves sparks on each one it reaches.
+ * The host deals it (chrDamage() is the host's online).
+ */
+static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 coddamage, bool shock)
+{
+	struct prop *aprop = playernum >= 0 && playernum < MAX_PLAYERS && g_Vars.players[playernum]
+		? g_Vars.players[playernum]->prop : NULL;
+	s32 hit = 0;
+	s32 i;
+
+	for (i = 0; i < g_BotCount; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		struct coord dir;
+		f32 dist;
+
+		if (!zchr || !zchr->aibot || !zchr->prop || chrIsDead(zchr)) {
+			continue;
+		}
+
+		dir.x = zchr->prop->pos.x - pos->x;
+		dir.y = zchr->prop->pos.y - pos->y;
+		dir.z = zchr->prop->pos.z - pos->z;
+		dist = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+		if (dist > radius || dir.y > 200 || dir.y < -200) {
+			continue;
+		}
+
+		if (dist > 0) {
+			dir.x /= dist;
+			dir.y /= dist;
+			dir.z /= dist;
+		}
+
+		if (shock) {
+			struct coord up = { 0, 1, 0 };
+			struct coord at = zchr->prop->pos;
+
+			at.y += 40;
+			sparksCreate(zchr->prop->rooms[0], zchr->prop, &at, &up, &dir, SPARKTYPE_ELECTRICAL);
+		}
+
+		chrDamageByExplosion(zchr, zombiesCodDamage(coddamage) * (1.0f - 0.5f * dist / radius), &dir, aprop, pos);
+		hit++;
+	}
+
+	return hit;
+}
+
+/**
+ * PhD Flopper's blast, where a dive or a drop lands: Call of Duty's, round
+ * the player, the player and the other players untouched (zombiesPhdShrugs(),
+ * and teams in chrDamage()). The game's own blast is laid on for its sight
+ * and sound, and its own damage goes on the zombies with the rest.
+ */
+#define ZOMBIE_PHD_RADIUS 300.0f
+#define ZOMBIE_PHD_DAMAGE 1500.0f // Call of Duty's: a dive kills the early rounds' zombies outright
+
+static void zombiesPhdBlast(s32 playernum)
+{
+	struct prop *prop = g_Vars.players[playernum]->prop;
+	struct coord pos;
+
+	if (!prop || !zombiesPlayerHasPerk(playernum, ZOMBIEPERK_PHDFLOPPER)) {
+		return;
+	}
+
+	pos = prop->pos;
+	pos.y = prop->chr ? prop->chr->ground + 10 : pos.y;
+
+	explosionCreateSimple(prop, &pos, prop->rooms, EXPLOSIONTYPE_12, playernum);
+	zombiesHurtAround(playernum, &pos, ZOMBIE_PHD_RADIUS, ZOMBIE_PHD_DAMAGE, false);
+}
+
+/**
+ * Electric Cherry: bondgun.c, a hand starting a reload. The shock reaches
+ * further and hits harder the emptier the magazine was - an empty one most -
+ * and a reload hard after another gives a weaker one, as Black Ops II's do.
+ */
+#define ZOMBIE_CHERRY_RADIUS_MIN 100.0f
+#define ZOMBIE_CHERRY_RADIUS_MAX 350.0f
+#define ZOMBIE_CHERRY_DAMAGE     1000.0f // Call of Duty's, at an empty magazine
+#define ZOMBIE_CHERRY_COOL60     180     // three seconds for a whole one again
+
+static s32 g_ZombieCherryLast60[MAX_PLAYERS];
+
+void zombiesReloadStarted(s32 handnum)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct hand *hand;
+	f32 spent;
+	f32 strength = 1.0f;
+	s32 since;
+	struct coord pos;
+
+	if (!zombiesIsActive() || NET_CLIENT || playernum < 0 || playernum >= MAX_PLAYERS
+			|| !zombiesPlayerHasPerk(playernum, ZOMBIEPERK_CHERRY) || !zombiesPlayerIsUp(playernum)) {
+		return;
+	}
+
+	hand = &g_Vars.currentplayer->hands[handnum];
+
+	if (hand->clipsizes[0] <= 0) {
+		return;
+	}
+
+	spent = 1.0f - (f32)hand->loadedammo[0] / hand->clipsizes[0];
+	spent = spent < 0 ? 0 : spent > 1 ? 1 : spent;
+
+	since = g_Vars.lvframe60 - g_ZombieCherryLast60[playernum];
+
+	if (since >= 0 && since < ZOMBIE_CHERRY_COOL60) {
+		strength = (f32)since / ZOMBIE_CHERRY_COOL60;
+	}
+
+	g_ZombieCherryLast60[playernum] = g_Vars.lvframe60;
+
+	if (spent * strength < 0.05f) {
+		return;
+	}
+
+	pos = g_Vars.currentplayer->prop->pos;
+
+	zombiesHurtAround(playernum,
+			&pos,
+			ZOMBIE_CHERRY_RADIUS_MIN + (ZOMBIE_CHERRY_RADIUS_MAX - ZOMBIE_CHERRY_RADIUS_MIN) * spent,
+			ZOMBIE_CHERRY_DAMAGE * spent * strength,
+			true);
+
+	zombiesPlaySound(SFX_MAULER_CHARGE, 1.8f);
+}
+
+/**
+ * The dolphin dive: crouch at a run forward throws the player forward and
+ * low (bwalkTryDive(), bondwalk.c), and they land flat on the floor, squatting,
+ * as Call of Duty's dive to prone; with PhD Flopper the landing is a blast.
+ * A drop from a height lands one too, with PhD. bondmove.c asks when crouch
+ * goes down; zombiesTickDive() watches for the landing.
+ */
+#define ZOMBIE_DIVE_RUN      0.75f // how hard forward the player must be going
+#define ZOMBIE_DIVE_MAX60    90    // a dive's most, before it counts as landed anyway
+#define ZOMBIE_PHD_DROP      200.0f // a drop from this high lands PhD's blast
+
+static s32 g_ZombieDive60[MAX_PLAYERS];       // 60ths into a dive, 0 for none
+static f32 g_ZombieFallTop[MAX_PLAYERS];      // the highest ground a fall left from
+static bool g_ZombieWasFalling[MAX_PLAYERS];
+
+bool zombiesTryDive(void)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS
+			|| !zombiesPlayerIsUp(playernum) || g_ZombieDowned[playernum]
+			|| g_ZombieDive60[playernum] > 0
+			|| player->speedforwards < ZOMBIE_DIVE_RUN) {
+		return false;
+	}
+
+	if (!bwalkTryDive()) {
+		return false;
+	}
+
+	g_ZombieDive60[playernum] = 1;
+
+	return true;
+}
+
+// Each frame, the current player's: a dive landing, and a drop
+void zombiesTickDive(void)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || !player->prop || !player->prop->chr) {
+		return;
+	}
+
+	if (g_ZombieDive60[playernum] > 0) {
+		g_ZombieDive60[playernum] += g_Vars.lvupdate60;
+
+		// down again: flat out, as a dive ends
+		if ((g_ZombieDive60[playernum] > 12 && !player->isfalling && player->bdeltapos.y <= 0)
+				|| g_ZombieDive60[playernum] > ZOMBIE_DIVE_MAX60) {
+			g_ZombieDive60[playernum] = 0;
+			player->crouchpos = CROUCHPOS_SQUAT;
+
+			if (!NET_CLIENT) {
+				zombiesPhdBlast(playernum);
+			}
+		}
+	}
+
+	// a drop: the ground it left from, against the ground it lands on
+	if (player->isfalling) {
+		if (!g_ZombieWasFalling[playernum]) {
+			g_ZombieFallTop[playernum] = player->prop->chr->ground;
+		}
+	} else if (g_ZombieWasFalling[playernum] && g_ZombieDive60[playernum] == 0) {
+		if (g_ZombieFallTop[playernum] - player->prop->chr->ground > ZOMBIE_PHD_DROP && !NET_CLIENT) {
+			zombiesPhdBlast(playernum);
+		}
+	}
+
+	g_ZombieWasFalling[playernum] = player->isfalling;
 }
 
 static Gfx *zombiesRadarDrops(Gfx *gdl);
@@ -12933,7 +13228,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
  *   is the host's.
  */
-#define ZOMBIE_NET_VERSION 2 // 2 (protocol 34): the doors bought, the barriers' boards
+#define ZOMBIE_NET_VERSION 3 // 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
 
 struct zombienetbuf {
 	u8 *w;
@@ -13008,8 +13303,8 @@ static f32 znGetF(struct zombienetbuf *b)
 // Where the players start in the block (zombiesNetCapture()'s order): a
 // resumed match reads them alone (zombiesNetResume())
 #define ZOMBIE_NET_WALLS_AT   28  // the wall buys' mask, past the round's, the power-ups' and the box's
-#define ZOMBIE_NET_PLAYERS_AT 285
-#define ZOMBIE_NET_PLAYER_BYTES 38 // zombiesNetReadPlayer()'s
+#define ZOMBIE_NET_PLAYERS_AT 297 // 285 + 4 a machine for Deadshot, PhD and Electric Cherry
+#define ZOMBIE_NET_PLAYER_BYTES 42 // zombiesNetReadPlayer()'s: 38 with six perks, a byte of mask
 #define ZOMBIE_NET_DOORS_AT   (ZOMBIE_NET_PLAYERS_AT + ZOMBIE_NET_PLAYER_BYTES * MAX_PLAYERS) // past the players
 
 // A player's part of the block, as zombiesNetCapture() writes it
@@ -13039,7 +13334,7 @@ static void zombiesNetReadPlayer(struct zombienetbuf *b, struct zombienetplayer 
 	s32 k;
 
 	pl->points = (s32)znGet(b, 4);
-	pl->perks = znGet(b, 1);
+	pl->perks = znGet(b, 2);
 	pl->count = znClamp(znGet(b, 1), 0, ZOMBIEPERK_COUNT);
 
 	for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
@@ -13348,7 +13643,7 @@ void zombiesNetCapture(u8 *out, s32 size)
 		}
 
 		znPut(&b, in ? (u32)g_ZombiePoints[i] : 0, 4);
-		znPut(&b, perks, 1);
+		znPut(&b, perks, 2);
 		znPut(&b, count, 1);
 
 		for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
@@ -13810,6 +14105,7 @@ void zombiesClientTick(void)
 	}
 
 	zombiesTickPopups();
+
 	zombiesTintPerkMachines();
 	zombiesTintPap();
 

@@ -95,6 +95,7 @@ const char *zombiesPapName(s32 weaponnum, const char *name);
 f32 zombiesPapPitch(s32 weaponnum);
 Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum);
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl);
+void zombiesReloadStarted(s32 handnum);
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
@@ -4190,6 +4191,14 @@ bool bgunSetState(s32 handnum, s32 state)
 	}
 
 	if (valid) {
+#ifndef PLATFORM_N64
+		// Zombies: Electric Cherry's shock, as the magazine stood before
+		// the reload (zombies.inc)
+		if (state == HANDSTATE_RELOAD && hand->state != HANDSTATE_RELOAD) {
+			zombiesReloadStarted(handnum);
+		}
+#endif
+
 		hand->state = state;
 		hand->stateframes = 0;
 		hand->stateflags = 0;

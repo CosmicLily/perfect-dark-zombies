@@ -95,6 +95,8 @@ f32 zombiesMeleeDamage(void);
 bool zombiesInstaKillOn(void);
 s32 zombiesDoorBarsChrs(struct prop *doorprop);
 f32 zombiesBulletScale(struct prop *aprop);
+bool zombiesPhdShrugs(struct chrdata *chr);
+s32 zombiesDeadshotHitpart(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, bool explosion);
 void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim);
 
 s32 g_RecentQuipsPlayed[5];
@@ -5040,6 +5042,14 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			&& chr->team == aprop->chr->team) {
 		return;
 	}
+
+	// Zombies: PhD Flopper takes no harm from a blast (zombies.inc)
+	if (explosion && zombiesPhdShrugs(chr)) {
+		return;
+	}
+
+	// and Deadshot Daiquiri's aim takes the head
+	hitpart = zombiesDeadshotHitpart(chr, aprop, gset, hitpart, explosion);
 #endif
 
 	if (gset == NULL) {

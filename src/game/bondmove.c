@@ -58,6 +58,8 @@
 
 bool zombiesIsActive(void);
 void zombiesQuickMelee(void);
+bool zombiesTryDive(void);
+void zombiesTickDive(void);
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -1880,6 +1882,16 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						while (g_Vars.currentplayer->crouchpos > oldcrouchpos && !bwalkCanUncrouch()) {
 							g_Vars.currentplayer->crouchpos--;
 						}
+
+#ifndef PLATFORM_N64
+						// Zombies: crouch at a run forward is a dolphin dive,
+						// stood up until it lands (zombies.inc)
+						if (g_Vars.currentplayer->crouchpos < oldcrouchpos && zombiesTryDive()) {
+							g_Vars.currentplayer->crouchpos = oldcrouchpos;
+						}
+
+						zombiesTickDive();
+#endif
 					}
 
 					// Third person, on the button's edge rather than while it is

@@ -23,7 +23,7 @@
 #include "system.h"
 #include "config.h"
 
-#define ZOMBIEPERK_COUNT 6
+#define ZOMBIEPERK_COUNT 9
 
 static const char *const perkFiles[ZOMBIEPERK_COUNT] = {
 	"$E/zombies/perks/juggernog.png",
@@ -32,6 +32,9 @@ static const char *const perkFiles[ZOMBIEPERK_COUNT] = {
 	"$E/zombies/perks/doubletap.png",
 	"$E/zombies/perks/staminup.png",
 	"$E/zombies/perks/mulekick.png",
+	"$E/zombies/perks/deadshot.png",
+	"$E/zombies/perks/phdflopper.png",
+	"$E/zombies/perks/electriccherry.png",
 };
 
 static u8 *zombiePerkLoad(s32 perk, s32 *outWidth, s32 *outHeight)
@@ -46,6 +49,9 @@ static u8 *zombiePerkLoad2(s32 *w, s32 *h) { return zombiePerkLoad(2, w, h); }
 static u8 *zombiePerkLoad3(s32 *w, s32 *h) { return zombiePerkLoad(3, w, h); }
 static u8 *zombiePerkLoad4(s32 *w, s32 *h) { return zombiePerkLoad(4, w, h); }
 static u8 *zombiePerkLoad5(s32 *w, s32 *h) { return zombiePerkLoad(5, w, h); }
+static u8 *zombiePerkLoad6(s32 *w, s32 *h) { return zombiePerkLoad(6, w, h); }
+static u8 *zombiePerkLoad7(s32 *w, s32 *h) { return zombiePerkLoad(7, w, h); }
+static u8 *zombiePerkLoad8(s32 *w, s32 *h) { return zombiePerkLoad(8, w, h); }
 
 static struct menuimage perkImages[ZOMBIEPERK_COUNT] = {
 	{ NULL, 0, zombiePerkLoad0, "zombies/perks/juggernog.png" },
@@ -54,10 +60,13 @@ static struct menuimage perkImages[ZOMBIEPERK_COUNT] = {
 	{ NULL, 0, zombiePerkLoad3, "zombies/perks/doubletap.png" },
 	{ NULL, 0, zombiePerkLoad4, "zombies/perks/staminup.png" },
 	{ NULL, 0, zombiePerkLoad5, "zombies/perks/mulekick.png" },
+	{ NULL, 0, zombiePerkLoad6, "zombies/perks/deadshot.png" },
+	{ NULL, 0, zombiePerkLoad7, "zombies/perks/phdflopper.png" },
+	{ NULL, 0, zombiePerkLoad8, "zombies/perks/electriccherry.png" },
 };
 
 // Whether each picture is there, asked once: -1 not yet
-static s32 perkPresent[ZOMBIEPERK_COUNT] = { -1, -1, -1, -1, -1, -1 };
+static s32 perkPresent[ZOMBIEPERK_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
 PD_CONSTRUCTOR static void zombiePerksInit(void)
 {

@@ -770,6 +770,48 @@ void bwalkTryRoll(void)
 
 	chrPlayRollAnimation(chr, toleft);
 }
+
+/**
+ * Zombies' dolphin dive (zombies.inc, zombiesTryDive()): the roll's push, but
+ * along the facing rather than across it and harder, with a hop under it so
+ * the player flies low and lands a way on. It holds the body as the roll does
+ * (ROLL_BUSY, bwalkIsRolling()), so nothing else starts mid-dive, and the
+ * landing - flat, squatting - is zombiesTickDive()'s.
+ */
+bool bwalkTryDive(void)
+{
+	struct coord fwd;
+	f32 len;
+
+	if (g_Vars.currentplayer->isdead
+			|| g_Vars.currentplayer->bondmovemode != MOVEMODE_WALK
+			|| g_Vars.currentplayer->isfalling
+			|| g_Vars.currentplayer->onladder
+			|| sitChairHoldsMove()
+			|| g_Vars.currentplayer->bdeltapos.y > 0.0f
+			|| g_Vars.lvframe60 - g_Vars.currentplayer->rolltime60 < ROLL_COOLDOWN) {
+		return false;
+	}
+
+	fwd.x = g_Vars.currentplayer->bond2.unk00.x;
+	fwd.z = g_Vars.currentplayer->bond2.unk00.z;
+	len = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
+
+	if (len <= 0.0f) {
+		return false;
+	}
+
+	g_Vars.currentplayer->rollspeed.x = fwd.x / len * DIVE_IMPULSE;
+	g_Vars.currentplayer->rollspeed.y = 0;
+	g_Vars.currentplayer->rollspeed.z = fwd.z / len * DIVE_IMPULSE;
+	g_Vars.currentplayer->rolltime60 = g_Vars.lvframe60;
+
+	if (bwalkCanMoveUpwards(DIVE_HOP)) {
+		g_Vars.currentplayer->bdeltapos.y = DIVE_HOP;
+	}
+
+	return true;
+}
 #endif
 
 bool bwalkCalculateNewPosition(struct coord *vel, f32 rotateamount, bool apply, f32 extrawidth, s32 checktypes)

@@ -216,7 +216,11 @@
 //    u8 the barriers, u8 boards[8] (each barrier's boards up), and per
 //    player s8 the door and s8 the barrier it is at (-1 none); a resumed
 //    match (host migration) opens the doors bought again
-#define NET_PROTOCOL_VERSION 34
+// 35 (Zombies' three more perks, 2026-10-15): the Zombies body's version 3
+//    has nine perks - each player's perk mask is u16 and the order nine
+//    bytes (42 a player, from 297) - and three more machines' places
+//    (Deadshot Daiquiri, PhD Flopper, Electric Cherry) before Pack-a-Punch's
+#define NET_PROTOCOL_VERSION 35
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2

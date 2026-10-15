@@ -65,6 +65,9 @@
 #include "handtint.h"
 #include "gewatch.h"
 #include "geslappers.h"
+#include "game/bondwalk.h"
+#include "game/sparks.h"
+#include "game/explosions.h"
 #include "input.h"
 #include "net/net.h"
 #endif

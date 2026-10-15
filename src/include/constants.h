@@ -3205,6 +3205,8 @@ s32 langpackIsCjk(void);
  * half second, which is what makes it read as a dodge rather than a sprint.
  */
 #define ROLL_IMPULSE  22.5f
+#define DIVE_IMPULSE  30.0f // Zombies' dolphin dive (bwalkTryDive()): forward, harder than a roll
+#define DIVE_HOP      4.0f  // and the hop under it, a vertical speed (a jump's is 5.75): some 30 units up
 #define ROLL_DECAY    (PAL ? 0.88120001554489f : 0.9f)
 #define ROLL_STOPPED  0.1f
 
