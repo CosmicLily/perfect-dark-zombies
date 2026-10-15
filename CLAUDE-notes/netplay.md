@@ -190,6 +190,16 @@
   then a client's bleed-out and respawn, a joiner's open seats
   (`g_ZombieOutOfPlay`), a Zombies match through host migration
   (`zombiesNetResume`), and pdlobbyd under Windows' asyncio.
+- **Zombies: barriers and doors (protocol 34, 2026-10-15)** — the section
+  of that name: zones from the waypoints with the doorways' links cut, which
+  doors lock and what they cost, why a zombie never has a locked door in its
+  way (spawns in open zones only, links disabled, `chrOpenDoor`, stock
+  waypoints while any door is shut), doors in no portal (their slab),
+  barriers on the walls by spawn pads, a zombie held at its boards, the
+  rebuild cap; which arenas have doors (Skedar has none); the block's
+  tail past the players (`ZOMBIE_NET_DOORS_AT`); the title demo eating a
+  loopback host that waited at the title; a hand-picked spot over a
+  spawn pad.
 
 ## The shape
 
@@ -4216,3 +4226,67 @@ lambda *a, **k: None`, then `runpy.run_path` on pdlobbyd.py); the deployed lobby
 
 Still no `netzombiestest.sh`. The net HUD's "T: chat hold P: players" hint sits over "Zombies: N" for
 its first seconds.
+
+## Zombies: barriers and doors (protocol 34, 2026-10-15)
+
+Call of Duty's boarded windows and buyable doors, on every arena without hand marking
+(zombies.inc's "Buyable doors and barriers" comment has the detail).
+
+**Zones are the waypoints with the doorways cut.** `zombiesMakeDoors` (once a stage, from the first
+`playerReset`, after `scenarioReset`'s `zombiesStageReset`) takes every plain door (sliding,
+vertical, swinging, flexi; not a lift's, a laser, one locked or open in the setup) by its doorway,
+finds the waypoint links whose line in plan crosses the doorway, and unions the waypoints without
+them. A doorway whose sides come out one zone has a way round it and stays a door; one with a zone
+of fewer than 2 spawn pads on a side is merged away; past 12 the smallest go. Again until stable.
+The players' zone is the one with the most pads; a door costs 750 + 250 per door further out (to
+1250). Nothing random, so a client makes the same doors and locks them too.
+
+**A zombie never has a locked door in its way.** A locked door has a key nobody carries
+(`ZOMBIE_DOOR_KEY`, for `doorIsUnlocked` and automatic doors), `OBJFLAG_CANNOT_ACTIVATE`,
+`chrOpenDoor` leaves it shut (`zombiesDoorBarsChrs`: simulants open any door otherwise) and its links
+are `navDisableSegment`ed (the stage's setup is reloaded each match, so nothing needs putting back).
+The players spawn and the zombies come in only on pads in open zones (the scenario's spawn hook,
+`zombiesChooseSpawnLocation`, and the scatter), and the open zones are joined by bought doors.
+Modern movement (Mod.SimBrain) walks a navmesh with no doors in it, so `simbrainOwns` hands every
+simulant to stock while any door is shut (`zombiesDoorsShut`). Seen: Carpark, Fortress and
+Felicity, god mode, 90 seconds each: every zombie ended up punching the player.
+
+**Which arenas have doors.** Skedar, Complex, G5, Pipes, Warehouse, Sewers, Villa and Ravine have
+no door props at all; Temple's, Ruins' and Grid's are in no portal (`door->portalnum` -1, though
+`OBJFLAG_DOOR_HASPORTAL` is set), so their doorway is the door's own model box (`zombiesDoorSlab`);
+those three, Base and Area 52 have only doors with a way round. Locked: Carpark 9 (stairwell doors
+between four zones), Fortress 9 (three zones off the start), Felicity 4.
+
+**Barriers** stand on walls beside spawn pads (`zombiesFindWall`, 400 reach), one a zone first,
+then the furthest from the machines, wall buys, doorways and each other (350), 8 at most; an
+invisible crate object (walk/shoot/throw-through) is drawn by `zombiesRenderBarrier` as untextured
+shaded boxes: a dark window, two posts, six slanted boards. Three zombies in four come in at a free
+barrier in an open zone near a player, stood at it (`g_ZombieSpawnAt` read by the spawn hook) and
+held there with `botApplyHold` (`zombiesBarrierHolds`), a board torn every 54 frames, then let go.
+Interact held near one puts a board back every 33 frames, 10 points each, 500 a round
+(rebuild_barrier_cap_per_round).
+
+**Online.** The block's version 2 adds, past the players at `ZOMBIE_NET_DOORS_AT` (741): u16 doors
+bought, u8 barriers, u8 boards[8], per player s8 door and s8 barrier (the prompts). A client opens
+the doors in the mask itself (their frac is the host's DOOR records anyway) and plays a board's fall
+or return and its sound when a count changes. A resumed match opens the doors bought again. Seen on
+loopback: the host's zombie tearing Skedar's boards on the client, the client rebuilding them with
+its own Interact (+10 each to its points), the client buying Carpark's door (750) and it opening
+and staying open on both.
+
+**Trap: a loopback host left at the title becomes the title's demo.** A host started a few seconds
+before its client sat at the title long enough for the attract demo; the net match then ran with
+`g_IsTitleDemo` set, the swirl's end (`playerEndCutscene`) changed to STAGE_TITLE at frame 114, and
+the host crashed in `scenarioCreateMatchStartHudmsgs` on the next stage's stale chrs (50 of them,
+one player). Start the client within a second of the host. Not this feature's; seen as a host
+crash at tick 114 with no other reason logged.
+
+**A hand-picked spot over a spawn pad** (Sewers' Speed Cola, `g_ZombieCornerPicks`): the pick wins
+and the pad comes off the spawn list (`zombiesTakePadsUnder`), on every machine alike; before, the
+pick was refused as "not free" and the machine went to a corner of its own choosing. The Where
+readout gives a place but no facing: a view is matched by spawning at the place with a yaw
+(screenshots) and a fan of rays to the wall.
+
+Not done: Skedar has no doors to buy (Call of Duty's debris would be the way); whether a zombie held at a
+barrier swings at a player standing at it was not checked (it keeps its target); barrier boards are not
+carried through host migration (all whole again).

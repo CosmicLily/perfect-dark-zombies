@@ -112,6 +112,8 @@ struct simbrainsim {
 
 s32 g_SimBrainModern = false;
 
+s32 zombiesDoorsShut(void); // zombies.inc
+
 static struct {
 	struct simnavagents *agents;
 	s32 pumpframe;
@@ -250,6 +252,12 @@ bool simbrainOwns(struct chrdata *chr)
 	s32 idx;
 
 	if (!g_SimBrainModern || !chr->aibot) {
+		return false;
+	}
+
+	// Zombies' locked doors are not in the mesh: stock's waypoints, which
+	// have their links taken out, until every door is bought (zombies.inc)
+	if (zombiesDoorsShut()) {
 		return false;
 	}
 

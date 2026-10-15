@@ -209,7 +209,14 @@
 //    host sends none of Zombies' own objects as entities (each machine
 //    places the machines itself, the same way); a command's flags may have
 //    NETCMD_INTERACT (no bytes follow)
-#define NET_PROTOCOL_VERSION 33
+// 34 (Zombies' barriers and doors, 2026-10-14: CLAUDE-notes/netplay.md
+//    "Zombies: barriers and doors"): the Zombies body's version 2 ends,
+//    past the players (at 741 of it), in u16 the doors bought (a bit per
+//    door zombies.inc locked, each machine locking the same ones itself),
+//    u8 the barriers, u8 boards[8] (each barrier's boards up), and per
+//    player s8 the door and s8 the barrier it is at (-1 none); a resumed
+//    match (host migration) opens the doors bought again
+#define NET_PROTOCOL_VERSION 34
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2

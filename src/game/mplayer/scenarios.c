@@ -292,6 +292,9 @@ struct mpscenario g_MpScenarios[] = {
 		zombiesRenderHud,
 		zombiesCalculatePlayerScore,
 		zombiesRadarExtra,
+		NULL,
+		NULL,
+		zombiesChooseSpawnLocation,
 	},
 };
 
@@ -943,6 +946,10 @@ void scenarioReset(void)
 	switch (g_MpSetup.scenario) {
 	case MPSCENARIO_KINGOFTHEHILL:
 		g_ScenarioData.koh.hillcount = 0;
+		break;
+	case MPSCENARIO_ZOMBIES:
+		// the stage's own waypoints again: its doors are made afresh
+		zombiesStageReset();
 		break;
 	case MPSCENARIO_CAPTURETHECASE:
 		for (i = 0; i < ARRAYCOUNT(g_ScenarioData.ctc.spawnpadsperteam); i++) {

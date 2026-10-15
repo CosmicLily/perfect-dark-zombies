@@ -64,7 +64,9 @@
  *     ZOMBIES (protocol 33) zombies.inc's (zombiesNetCapture/zombiesNetApply,
  *          by playernum: the round, power-ups, box, Pack-a-Punch, drops,
  *          wall buys, sounds, each player's points, perks, drink, downed
- *          state and upgraded guns). Its machines are none of the host's
+ *          state and upgraded guns; protocol 34: then the doors bought,
+ *          the barriers' boards, each player's door and barrier). Its
+ *          machines and barriers are none of the host's
  *          entities: each machine places them itself, as the host does
  *          (zombiesNetOwnsProp), and the client's own tick shows them
  *          (scenarioClientTick)

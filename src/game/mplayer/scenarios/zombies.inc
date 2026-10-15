@@ -1,4 +1,4 @@
-// Prototype Zombies mode, hooked into Combat for now.
+﻿// Prototype Zombies mode, hooked into Combat for now.
 
 void scenarioCreateHudmsg(s32 playernum, char *message);
 void botSpawn(struct chrdata *chr, u8 respawning);
@@ -602,6 +602,12 @@ f32 zombiesSpeedScale(void)
 	return 1.0f;
 }
 
+// Barriers and buyable doors (below, before zombiesTick())
+static s32 g_ZombieSpawnAt = -1;            // the barrier the zombie being sent in goes to, -1 a pad
+static s32 g_ZombieAtBarrier[MAX_BOTS];     // the barrier each zombie is held at, -1 none
+static s32 zombiesBarrierPick(void);
+static void zombiesBarrierTake(s32 b, s32 botnum);
+
 // Sends one finished-dying zombie back in. Returns true if one went.
 static bool zombiesSpawnOne(void)
 {
@@ -613,7 +619,17 @@ static bool zombiesSpawnOne(void)
 		if (zchr && zchr->aibot && zchr->actiontype == ACT_DEAD
 				&& zchr->act_dead.fadetimer60 >= TICKS(90)) {
 			zchr->aibot->config->difficulty = zombiesDifficultyForRound(g_ZombieRound);
+			// most come in at a barrier, as Call of Duty's: held at its
+			// boards until they are torn off (zombiesChooseSpawnLocation())
+			g_ZombieSpawnAt = zombiesBarrierPick();
+			g_ZombieAtBarrier[i] = -1;
 			botSpawn(zchr, true);
+
+			if (g_ZombieSpawnAt >= 0) {
+				zombiesBarrierTake(g_ZombieSpawnAt, i);
+			}
+
+			g_ZombieSpawnAt = -1;
 			g_ZombieHealth[i] = zombiesHealthForRound(g_ZombieRound);
 			zchr->maxdamage = g_ZombieHealth[i];
 			g_ZombieSpawned++;
@@ -943,6 +959,10 @@ static struct defaultobj *g_ZombieBox = NULL;
  */
 #define ZOMBIE_BOX_JUGG_APART 800.0f
 
+static void zombiesMakeDoors(void);
+static s32 zombiesPadComp(s32 padnum);
+static s32 g_ZombieStartComp = -1; // the zone the players start in, -1 for none (no doors)
+
 static void zombiesReserveBoxPad(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -1000,6 +1020,12 @@ static void zombiesReserveBoxPad(void)
 			}
 		}
 
+		// in the zone the players start in, where there is one: the box is
+		// the first thing a match spends on, before any door
+		if (g_ZombieStartComp >= 0 && zombiesPadComp(g_SpawnPoints[i]) != g_ZombieStartComp) {
+			score += 1e13f;
+		}
+
 		// ties to the lower pad number, so the pick never depends on the order
 		if (best < 0 || score < bestscore
 				|| (score == bestscore && g_SpawnPoints[i] < g_SpawnPoints[best])) {
@@ -1027,6 +1053,10 @@ void zombiesReserveJuggPad(void)
 	s32 i;
 
 	g_ZombieJuggPad = -1;
+
+	// the arena's zones and its locked doors, once a stage, from the whole
+	// spawn list (zombiesMakeDoors())
+	zombiesMakeDoors();
 
 	// with fewer, losing one would crowd the zombies coming in; an arena with
 	// a spot of its own needs no pad
@@ -2395,6 +2425,8 @@ static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
 	return gdl;
 }
 
+static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj);
+
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
  * when this is a machine with a model of its own, drawn here instead.
@@ -2413,6 +2445,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	if (!zombiesIsActive()) {
 		return false;
+	}
+
+	// a barrier: its boards, drawn here
+	if (zombiesRenderBarrier(renderdata, obj)) {
+		return true;
 	}
 
 	// the gun out of Pack-a-Punch, upgraded, in its camo
@@ -3618,6 +3655,8 @@ static void zombiesRaiseSolid(struct defaultobj *obj)
 
 // Whether a machine of radius at pos covers no spawn pad and keeps clear of
 // the other machines and the box
+static bool zombiesMachinesClear(struct coord *pos, f32 radius, struct defaultobj *self);
+
 static bool zombiesMachineSpotFree(struct coord *pos, f32 radius, struct defaultobj *self)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -3637,6 +3676,42 @@ static bool zombiesMachineSpotFree(struct coord *pos, f32 radius, struct default
 			return false;
 		}
 	}
+
+	return zombiesMachinesClear(pos, radius, self);
+}
+
+/**
+ * A spot picked by hand wins over a spawn pad under it (Sewers' Speed Cola at
+ * the end of a dead end with a pad in it): the pad comes off the spawn list,
+ * the same pad on every machine, so nobody spawns inside the machine and the
+ * wall buys and barriers placed after it look elsewhere
+ */
+static void zombiesTakePadsUnder(struct coord *pos, f32 radius)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	s32 i;
+
+	for (i = n - 1; i >= 0; i--) {
+		struct pad pad;
+		f32 dx;
+		f32 dz;
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+		dx = pad.pos.x - pos->x;
+		dz = pad.pos.z - pos->z;
+
+		if (dx * dx + dz * dz < (radius + 30) * (radius + 30) && fabsf(pad.pos.y - pos->y) < 200) {
+			sysLogPrintf(LOG_NOTE, "zombies: spawn pad %d under a picked machine; off the list", g_SpawnPoints[i]);
+			g_SpawnPoints[i] = g_SpawnPoints[--n];
+		}
+	}
+
+	g_NumSpawnPoints = n;
+}
+
+static bool zombiesMachinesClear(struct coord *pos, f32 radius, struct defaultobj *self)
+{
+	s32 i;
 
 	for (i = 0; i < ZOMBIE_MACHINE_IDS; i++) {
 		struct defaultobj *other = zombiesMachineObjAt(i);
@@ -3800,6 +3875,15 @@ static const struct zombiecornerpick g_ZombieCornerPicks[] = {
 	// facing out over the sand to the room's ceiling column (the spot stood on
 	// and read off with zombiesTickWhere())
 	{ 0x32, ZOMBIE_PAP_ID,         { -4435, -300, -4395 }, { -5114, 60, -5047 },   ZPICK_FLOOR  },
+	// Warehouse's Pack-a-Punch against the long slanted wall (30 degrees),
+	// in the middle between its two pillars: the wall's nearest point to
+	// where the player stood (794, 1857), found by a fan of rays
+	{ 0x3c, ZOMBIE_PAP_ID,         { 794, 158, 1857 },     { 1012, 158, 1480 },    ZPICK_WALL   }, // Warehouse
+	// Sewers' Speed Cola at the end of the short dead end off the brick room
+	// (its back wall at z -1276); its Juggernog in the red room's corner,
+	// the near wall (x -3076) meeting the far one (z 1400)
+	{ 0x42, ZOMBIEPERK_SPEEDCOLA,  { -2941, 238, -913 },   { -2930, 238, -1276 },  ZPICK_WALL   }, // Sewers
+	{ 0x42, ZOMBIEPERK_JUGGERNOG,  { -3106, -341, 981 },   { -3080, -341, 1396 },  ZPICK_CORNER }, // Sewers
 };
 
 void bgFindRoomsByPos(struct coord *pos, RoomNum *inrooms, RoomNum *aboverooms, s32 max, RoomNum *bestroom);
@@ -3832,7 +3916,7 @@ static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *orig
 	pos.z = eye.z + n.z * (dist - halfd - ZOMBIE_CORNER_GAP) + n.x * along;
 	pos.y = origin->y;
 
-	if (!zombiesMachineSpotFree(&pos, radius, obj)) {
+	if (!zombiesMachinesClear(&pos, radius, obj)) {
 		sysLogPrintf(LOG_NOTE, "zombies: %s's picked wall spot is not free", zombiesMachineName(perk));
 		return false;
 	}
@@ -3850,7 +3934,13 @@ static bool zombiesWallSpot(s32 perk, struct defaultobj *obj, struct coord *orig
 	sysLogPrintf(LOG_NOTE, "zombies: %s on its picked wall at %.0f %.0f %.0f", zombiesMachineName(perk),
 			obj->prop->pos.x, obj->prop->pos.y, obj->prop->pos.z);
 
-	return fabsf(obj->prop->pos.y - (floor + lift)) <= 30;
+	if (fabsf(obj->prop->pos.y - (floor + lift)) > 30) {
+		return false;
+	}
+
+	zombiesTakePadsUnder(&obj->prop->pos, radius);
+
+	return true;
 }
 
 // The machine standing free on the floor at spot, its front to face
@@ -5787,9 +5877,13 @@ void botApplyHold(struct chrdata *chr, struct coord *pos, RoomNum *room, f32 ang
 
 static s32 g_ZombieScatterPad[MAX_BOTS]; // the spawn pad's index each went to, -1 for none
 
+static s32 zombiesOpenSpawnPads(s16 *out);
+
 static void zombiesScatter(s32 botnum, struct chrdata *zchr)
 {
-	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	// the pads in the zones open so far: none behind a door still shut
+	s16 pads[MAX_SPAWNPOINTS];
+	s32 n = zombiesOpenSpawnPads(pads);
 	s32 pick = g_ZombieScatterPad[botnum];
 	f32 bestfar = -1;
 	s32 tries;
@@ -5811,7 +5905,7 @@ static void zombiesScatter(s32 botnum, struct chrdata *zchr)
 		f32 nearest = 1e20f;
 		s32 p;
 
-		padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+		padUnpack(pads[i], PADFIELD_POS, &pad);
 
 		for (p = 0; p < PLAYERCOUNT(); p++) {
 			struct prop *prop = g_Vars.players[p]->prop;
@@ -5837,7 +5931,7 @@ static void zombiesScatter(s32 botnum, struct chrdata *zchr)
 		}
 	}
 
-	padUnpack(g_SpawnPoints[pick], PADFIELD_POS | PADFIELD_ROOM, &pad);
+	padUnpack(pads[pick], PADFIELD_POS | PADFIELD_ROOM, &pad);
 	rooms[0] = pad.room;
 	rooms[1] = -1;
 
@@ -8735,6 +8829,1778 @@ static void zombiesTickWallBuys(void)
 	}
 }
 
+/**
+ * Buyable doors and barriers, as Call of Duty's (CLAUDE-notes/netplay.md,
+ * "Zombies: barriers and doors").
+ *
+ * Zones. The arena's waypoints are joined into zones with every link through
+ * a doorway taken out: a door whose links are the only way between two zones
+ * is a door that can be locked. A door with a way round it, or with a zone of
+ * fewer than ZOMBIE_ZONE_MINPADS spawn pads on a side, is left a door, its
+ * zones one (again and again until nothing changes), and no more than
+ * ZOMBIE_DOOR_MAX doorways are kept, the smallest zones merged first. The
+ * players start in the zone with the most spawn pads; a door's price is how
+ * many doors out from there it is (750, 1000, 1250). Nothing random: every
+ * machine online makes the same doors itself, as it places the machines.
+ *
+ * A locked door wants a key nobody has (ZOMBIE_DOOR_KEY: the player's own
+ * and automatic doors ask doorIsUnlocked()), cannot be activated, and
+ * chrOpenDoor() leaves it shut for the simulants (zombiesDoorBarsChrs());
+ * its waypoint links are taken out (navDisableSegment()), so a zombie's
+ * route never runs through it. The players spawn, and the zombies come in,
+ * only in the zones opened so far (zombiesChooseSpawnLocation()), which are
+ * joined by the doors bought, so a zombie never has a locked door between it
+ * and a player. Modern simulant movement (Mod.SimBrain) walks a navmesh that
+ * has no doors: while any door is shut the simulants walk stock's waypoints
+ * (simbrainOwns(), zombiesDoorsShut()).
+ *
+ * Barriers. Up to ZOMBIE_BARRIER_MAX boarded windows go on walls beside spawn
+ * pads, one a zone first, then the furthest from everything else. Most
+ * zombies come in at one in an open zone (zombiesBarrierPick()) and stand at
+ * its boards, held, tearing one off every ZOMBIE_BARRIER_TEAR60 until none
+ * is left; a player holding Interact at one puts them back one at a time, ten
+ * points a board, ZOMBIE_BARRIER_CAP a round.
+ */
+#define ZOMBIE_DOOR_MAX       12      // doorways locked at the most (a u16's bits online)
+#define ZOMBIE_DOOR_LEAVES    4       // doors in one doorway (a double door's two)
+#define ZOMBIE_DOOR_SEGS      12      // waypoint links through one doorway
+#define ZOMBIE_DOOR_CANDS     48      // doorways looked at
+#define ZOMBIE_DOOR_RANGE     160.0f  // how near the doorway's middle buying works
+#define ZOMBIE_DOOR_KEY       0x40000000 // a key nobody carries
+#define ZOMBIE_ZONE_MINPADS   2       // spawn pads a zone has, at the least, to be shut off
+#define ZOMBIE_WP_MAX         1024    // waypoints an arena may have to have doors
+
+#define ZOMBIE_BARRIER_MAX    8
+#define ZOMBIE_BARRIER_BOARDS 6
+#define ZOMBIE_BARRIER_REACH  400.0f  // how far from its pad the barrier's wall may be
+#define ZOMBIE_BARRIER_APART  350.0f  // from every machine, wall buy, doorway and other barrier
+#define ZOMBIE_BARRIER_STAND  50.0f   // a zombie tearing at it stands this far out from the wall
+#define ZOMBIE_BARRIER_RANGE  130.0f  // how near (of the stand) rebuilding works
+#define ZOMBIE_BARRIER_TEAR60 54      // a board torn off this often
+#define ZOMBIE_BARRIER_FIX60  33      // and put back this often, Interact held
+#define ZOMBIE_BARRIER_POINTS 10
+#define ZOMBIE_BARRIER_CAP    500     // Call of Duty's rebuild_barrier_cap_per_round
+#define ZOMBIE_BARRIER_NEAR   3000.0f // a zombie goes to a barrier this near a player, when there is one
+#define ZOMBIE_BOARD_FALL60   36      // a torn board falling
+#define ZOMBIE_BOARD_FIX60    14      // a board coming back on
+
+struct zombiedoor {
+	s16 portal;
+	s16 numleaves;
+	struct doorobj *leaves[ZOMBIE_DOOR_LEAVES];
+	s32 numsegs;
+	s16 segs[ZOMBIE_DOOR_SEGS][2];
+	s32 comps[2];      // the zones either side (waypoint roots)
+	s32 cost;
+	struct coord pos;  // the doorway's middle
+	bool open;
+};
+
+struct zombiebarrier {
+	struct defaultobj obj; // drawn as its boards (zombiesRenderBarrier())
+	struct coord pos;      // the boards' foot, against the wall
+	struct coord wall;     // the way to the wall
+	struct coord stand;    // where a zombie at it stands
+	RoomNum rooms[8];
+	RoomNum standrooms[8];
+	s32 comp;
+	s32 boards;
+	s32 zombie;            // the bot tearing it, -1 none
+	s32 tear60;
+	s16 anim60[ZOMBIE_BARRIER_BOARDS]; // since each board last went or came
+	bool torn[ZOMBIE_BARRIER_BOARDS];  // ... and which
+	bool placed;
+};
+
+static struct zombiedoor g_ZombieDoors[ZOMBIE_DOOR_MAX];
+static s32 g_ZombieNumDoors = 0;
+static bool g_ZombieDoorsMade = false;
+static s16 g_ZombieWpComp[ZOMBIE_WP_MAX];  // each waypoint's zone (its root)
+static u8 g_ZombieCompOpen[ZOMBIE_WP_MAX]; // by root
+static s16 g_ZombiePadCompPad[MAX_SPAWNPOINTS];
+static s16 g_ZombiePadCompOf[MAX_SPAWNPOINTS];
+static s32 g_ZombieNumPadComps = 0;
+static s32 g_ZombieNearDoor[MAX_PLAYERS];
+static s32 g_ZombieDoorHeld60[MAX_PLAYERS];
+static bool g_ZombieDoorNeedsRelease[MAX_PLAYERS];
+static u32 g_ZombieNetDoorMask = 0; // client: the doors the host has bought
+
+static struct zombiebarrier g_ZombieBarriers[ZOMBIE_BARRIER_MAX];
+static s32 g_ZombieNumBarriers = 0;
+static s32 g_ZombieNearBarrier[MAX_PLAYERS];
+static s32 g_ZombieFix60[MAX_PLAYERS];
+static s32 g_ZombieRebuilt[MAX_PLAYERS];   // the points rebuilding has given this round
+static s32 g_ZombieRebuiltRound = -1;
+
+u32 setupGetCmdLength(u32 *cmd);
+void navDisableSegment(struct waypoint *a, struct waypoint *b);
+void navEnableSegment(struct waypoint *a, struct waypoint *b);
+
+/**
+ * scenarios.c's scenarioReset(), each stage's setup freshly loaded: its
+ * waypoints are whole again, and the doors are made afresh at the first
+ * playerReset() (zombiesReserveJuggPad())
+ */
+void zombiesStageReset(void)
+{
+	g_ZombieDoorsMade = false;
+	g_ZombieNumDoors = 0;
+	g_ZombieNumPadComps = 0;
+	g_ZombieStartComp = -1;
+	g_ZombieNumBarriers = 0;
+	g_ZombieNetDoorMask = 0;
+}
+
+static s32 zombiesWpRoot(s16 *parent, s32 i)
+{
+	while (parent[i] != i) {
+		parent[i] = parent[parent[i]];
+		i = parent[i];
+	}
+
+	return i;
+}
+
+// The doorway's line in plan (its two furthest corners), its heights and its middle
+static bool zombiesPortalLine(s32 portalnum, f32 line[4], f32 *ymin, f32 *ymax, struct coord *mid)
+{
+	struct portalvertices *pv = (struct portalvertices *)((uintptr_t)g_BgPortals + g_BgPortals[portalnum].verticesoffset);
+	f32 best = -1;
+	s32 i;
+	s32 j;
+
+	if (pv->count < 3) {
+		return false;
+	}
+
+	mid->x = mid->y = mid->z = 0;
+	*ymin = 1e20f;
+	*ymax = -1e20f;
+
+	for (i = 0; i < pv->count; i++) {
+		mid->x += pv->vertices[i].x / pv->count;
+		mid->y += pv->vertices[i].y / pv->count;
+		mid->z += pv->vertices[i].z / pv->count;
+
+		if (pv->vertices[i].y < *ymin) {
+			*ymin = pv->vertices[i].y;
+		}
+
+		if (pv->vertices[i].y > *ymax) {
+			*ymax = pv->vertices[i].y;
+		}
+
+		for (j = i + 1; j < pv->count; j++) {
+			f32 dx = pv->vertices[i].x - pv->vertices[j].x;
+			f32 dz = pv->vertices[i].z - pv->vertices[j].z;
+
+			if (dx * dx + dz * dz > best) {
+				best = dx * dx + dz * dz;
+				line[0] = pv->vertices[i].x;
+				line[1] = pv->vertices[i].z;
+				line[2] = pv->vertices[j].x;
+				line[3] = pv->vertices[j].z;
+			}
+		}
+	}
+
+	return best > 40 * 40;
+}
+
+/**
+ * A door in no portal (Temple's, Ruins', Grid's): its own slab, closed, as
+ * its model's box stands - the box's widest way across in plan, its heights
+ * and its middle
+ */
+static bool zombiesDoorSlab(struct doorobj *door, f32 line[4], f32 *ymin, f32 *ymax, struct coord *mid)
+{
+	struct modelrodata_bbox *bbox = door->base.model ? objFindBboxRodata(&door->base) : NULL;
+	f32 lo[3];
+	f32 hi[3];
+	f32 c[3];
+	f32 best = -1;
+	f32 half = 0;
+	s32 i;
+	s32 j;
+
+	if (bbox == NULL || door->base.prop == NULL) {
+		return false;
+	}
+
+	lo[0] = objGetLocalXMin(bbox);
+	hi[0] = objGetLocalXMax(bbox);
+	lo[1] = objGetLocalYMin(bbox);
+	hi[1] = objGetLocalYMax(bbox);
+	lo[2] = objGetLocalZMin(bbox);
+	hi[2] = objGetLocalZMax(bbox);
+
+	for (j = 0; j < 3; j++) {
+		c[j] = (&door->base.prop->pos.x)[j];
+
+		for (i = 0; i < 3; i++) {
+			c[j] += door->base.realrot[i][j] * (lo[i] + hi[i]) / 2;
+		}
+	}
+
+	mid->x = c[0];
+	mid->y = c[1];
+	mid->z = c[2];
+
+	for (i = 0; i < 3; i++) {
+		f32 ex = door->base.realrot[i][0] * (hi[i] - lo[i]);
+		f32 ey = door->base.realrot[i][1] * (hi[i] - lo[i]);
+		f32 ez = door->base.realrot[i][2] * (hi[i] - lo[i]);
+
+		half += (ey < 0 ? -ey : ey) / 2;
+
+		if (ex * ex + ez * ez > best) {
+			best = ex * ex + ez * ez;
+			line[0] = c[0] - ex / 2;
+			line[1] = c[2] - ez / 2;
+			line[2] = c[0] + ex / 2;
+			line[3] = c[2] + ez / 2;
+		}
+	}
+
+	*ymin = c[1] - half;
+	*ymax = c[1] + half;
+
+	return best > 40 * 40;
+}
+
+/**
+ * Where the link a-b crosses the doorway's line in plan: 0 none, else the
+ * side a is on (1 or 2)
+ */
+static s32 zombiesLinkCrosses(const f32 line[4], f32 ymin, f32 ymax, const struct coord *a, const struct coord *b)
+{
+	f32 rx = b->x - a->x;
+	f32 rz = b->z - a->z;
+	f32 sx = line[2] - line[0];
+	f32 sz = line[3] - line[1];
+	f32 denom = rx * sz - rz * sx;
+	f32 qx = line[0] - a->x;
+	f32 qz = line[1] - a->z;
+	f32 t;
+	f32 u;
+	f32 y;
+
+	if (denom > -0.001f && denom < 0.001f) {
+		return 0;
+	}
+
+	t = (qx * sz - qz * sx) / denom;
+	u = (qx * rz - qz * rx) / denom;
+
+	if (t <= 0 || t >= 1 || u < 0 || u > 1) {
+		return 0;
+	}
+
+	y = a->y + (b->y - a->y) * t;
+
+	if (y < ymin - 120 || y > ymax + 60) {
+		return 0;
+	}
+
+	// a's side of the line
+	return (sx * (a->z - line[1]) - sz * (a->x - line[0])) > 0 ? 1 : 2;
+}
+
+// The zone a place is in: its room's nearest waypoint's, else the nearest's
+static s32 zombiesPosComp(struct coord *pos, RoomNum room, s32 numwp, const struct coord *wppos, const RoomNum *wproom)
+{
+	f32 best = 1e30f;
+	f32 bestany = 1e30f;
+	s32 found = -1;
+	s32 foundany = -1;
+	s32 i;
+
+	for (i = 0; i < numwp; i++) {
+		f32 dx = wppos[i].x - pos->x;
+		f32 dy = wppos[i].y - pos->y;
+		f32 dz = wppos[i].z - pos->z;
+		f32 d = dx * dx + dy * dy * 4 + dz * dz;
+
+		if (wproom[i] == room && d < best) {
+			best = d;
+			found = i;
+		}
+
+		if (d < bestany) {
+			bestany = d;
+			foundany = i;
+		}
+	}
+
+	if (found < 0) {
+		found = foundany;
+	}
+
+	return found >= 0 ? g_ZombieWpComp[found] : -1;
+}
+
+static s32 zombiesPadComp(s32 padnum)
+{
+	s32 i;
+
+	for (i = 0; i < g_ZombieNumPadComps; i++) {
+		if (g_ZombiePadCompPad[i] == padnum) {
+			return g_ZombiePadCompOf[i];
+		}
+	}
+
+	return -1;
+}
+
+static bool zombiesCompOpen(s32 comp)
+{
+	return g_ZombieNumDoors == 0 || comp < 0 || comp >= ZOMBIE_WP_MAX || g_ZombieCompOpen[comp];
+}
+
+// The spawn pads in the zones open so far; the whole list when none are
+static s32 zombiesOpenSpawnPads(s16 *out)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	s32 count = 0;
+	s32 i;
+
+	for (i = 0; i < n; i++) {
+		if (zombiesCompOpen(zombiesPadComp(g_SpawnPoints[i]))) {
+			out[count++] = g_SpawnPoints[i];
+		}
+	}
+
+	if (count == 0) {
+		for (i = 0; i < n; i++) {
+			out[i] = g_SpawnPoints[i];
+		}
+
+		count = n;
+	}
+
+	return count;
+}
+
+/**
+ * The arena's zones and the doors between them, locked (the comment above).
+ * Once a stage; zombiesStageReset() clears it.
+ */
+static void zombiesMakeDoors(void)
+{
+	static struct coord wppos[ZOMBIE_WP_MAX];
+	static RoomNum wproom[ZOMBIE_WP_MAX];
+	static s16 parent[ZOMBIE_WP_MAX];
+	static struct zombiedoor cands[ZOMBIE_DOOR_CANDS];
+	static bool alive[ZOMBIE_DOOR_CANDS];
+	static s16 padcount[ZOMBIE_WP_MAX];
+	static s16 depth[ZOMBIE_WP_MAX];
+	struct waypoint *waypoints = g_StageSetup.waypoints;
+	struct liftobj *lifts[32];
+	s32 numlifts = 0;
+	s32 numcands = 0;
+	s32 numwp = 0;
+	s32 numportals = 0;
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	s32 numalive;
+	s32 pass;
+	s32 i;
+	s32 j;
+	s32 k;
+	struct defaultobj *obj;
+
+	if (g_ZombieDoorsMade) {
+		return;
+	}
+
+	g_ZombieDoorsMade = true;
+	g_ZombieNumDoors = 0;
+	g_ZombieNumPadComps = 0;
+	g_ZombieStartComp = -1;
+
+	if (waypoints == NULL || g_StageSetup.props == NULL || g_BgPortals == NULL || n <= 0) {
+		return;
+	}
+
+	while (waypoints[numwp].padnum >= 0) {
+		if (++numwp >= ZOMBIE_WP_MAX) {
+			sysLogPrintf(LOG_WARNING, "zombies: stage 0x%02x has over %d waypoints; no doors", g_Vars.stagenum, ZOMBIE_WP_MAX);
+			return;
+		}
+	}
+
+	while (g_BgPortals[numportals].verticesoffset != 0) {
+		numportals++;
+	}
+
+	for (i = 0; i < numwp; i++) {
+		struct pad pad;
+
+		padUnpack(waypoints[i].padnum, PADFIELD_POS | PADFIELD_ROOM, &pad);
+		wppos[i] = pad.pos;
+		wproom[i] = pad.room;
+	}
+
+	// the lifts' doors are the lifts'
+	obj = (struct defaultobj *)g_StageSetup.props;
+
+	while (obj->type != OBJTYPE_END) {
+		if (obj->type == OBJTYPE_LIFT && obj->prop && numlifts < ARRAYCOUNT(lifts)) {
+			lifts[numlifts++] = (struct liftobj *)obj;
+		}
+
+		obj = (struct defaultobj *)((u32 *)obj + setupGetCmdLength((u32 *)obj));
+	}
+
+	// every doorway with a plain door in it, its doors together
+	obj = (struct defaultobj *)g_StageSetup.props;
+
+	while (obj->type != OBJTYPE_END) {
+		if (obj->type == OBJTYPE_DOOR && obj->prop) {
+			struct doorobj *door = (struct doorobj *)obj;
+			bool ok = door->portalnum < numportals
+				&& door->keyflags == 0
+				&& door->frac <= 0
+				&& (door->base.flags & (OBJFLAG_DOOR_KEEPOPEN | OBJFLAG_CANNOT_ACTIVATE)) == 0
+				&& (door->doorflags & DOORFLAG_DAMAGEONCONTACT) == 0
+				&& (door->doortype == DOORTYPE_SLIDING || door->doortype == DOORTYPE_VERTICAL
+						|| door->doortype == DOORTYPE_SWINGING || door->doortype == DOORTYPE_FLEXI1
+						|| door->doortype == DOORTYPE_FLEXI2 || door->doortype == DOORTYPE_FLEXI3);
+			s32 l;
+
+			for (l = 0; ok && l < numlifts; l++) {
+				for (k = 0; k < ARRAYCOUNT(lifts[l]->doors); k++) {
+					if (lifts[l]->doors[k] == door) {
+						ok = false;
+					}
+				}
+			}
+
+			if (ok) {
+				// its doorway: the one in its portal; with no portal, the one
+				// its sibling (a double door's other half) is in
+				for (k = 0; k < numcands; k++) {
+					if (door->portalnum >= 0 && cands[k].portal == door->portalnum) {
+						break;
+					}
+
+					if (door->portalnum < 0 && cands[k].portal < 0) {
+						struct doorobj *sib = door->sibling;
+						s32 m;
+
+						for (m = 0; m < cands[k].numleaves; m++) {
+							for (sib = door->sibling; sib && sib != door && sib != cands[k].leaves[m]; sib = sib->sibling);
+
+							if (sib == cands[k].leaves[m]) {
+								break;
+							}
+						}
+
+						if (m < cands[k].numleaves) {
+							break;
+						}
+					}
+				}
+
+				if (k == numcands && numcands < ZOMBIE_DOOR_CANDS) {
+					bzero(&cands[k], sizeof(cands[k]));
+					cands[k].portal = door->portalnum;
+					numcands++;
+				}
+
+				if (k < numcands && cands[k].numleaves < ZOMBIE_DOOR_LEAVES) {
+					cands[k].leaves[cands[k].numleaves++] = door;
+				}
+			}
+		}
+
+		obj = (struct defaultobj *)((u32 *)obj + setupGetCmdLength((u32 *)obj));
+	}
+
+	// a double door is one doorway: two found apart (one half in a portal,
+	// the other in none) go together, the portal's kept
+	for (k = 0; k < numcands; k++) {
+		for (j = k + 1; j < numcands; j++) {
+			bool same = false;
+			s32 a;
+			s32 b;
+
+			for (a = 0; a < cands[k].numleaves && !same; a++) {
+				for (b = 0; b < cands[j].numleaves && !same; b++) {
+					struct doorobj *sib = cands[k].leaves[a]->sibling;
+
+					while (sib && sib != cands[k].leaves[a] && !same) {
+						same = sib == cands[j].leaves[b];
+						sib = sib->sibling;
+					}
+				}
+			}
+
+			if (!same) {
+				continue;
+			}
+
+			for (b = 0; b < cands[j].numleaves && cands[k].numleaves < ZOMBIE_DOOR_LEAVES; b++) {
+				cands[k].leaves[cands[k].numleaves++] = cands[j].leaves[b];
+			}
+
+			if (cands[k].portal < 0) {
+				cands[k].portal = cands[j].portal;
+			}
+
+			cands[j] = cands[--numcands];
+			j = k;
+		}
+	}
+
+	// the waypoint links through each doorway
+	for (k = 0; k < numcands; k++) {
+		f32 line[4];
+		f32 ymin;
+		f32 ymax;
+
+		alive[k] = false;
+
+		if (cands[k].portal >= 0) {
+			if (!zombiesPortalLine(cands[k].portal, line, &ymin, &ymax, &cands[k].pos)) {
+				continue;
+			}
+		} else {
+			// in no portal: the slabs of its doors together, their two
+			// furthest ends in plan
+			f32 ends[ZOMBIE_DOOR_LEAVES * 2][2];
+			s32 numends = 0;
+			f32 best = -1;
+			s32 m;
+
+			ymin = 1e20f;
+			ymax = -1e20f;
+			cands[k].pos.x = cands[k].pos.y = cands[k].pos.z = 0;
+
+			for (m = 0; m < cands[k].numleaves; m++) {
+				f32 l[4];
+				f32 lo;
+				f32 hi;
+				struct coord c;
+
+				if (!zombiesDoorSlab(cands[k].leaves[m], l, &lo, &hi, &c)) {
+					continue;
+				}
+
+				ends[numends][0] = l[0];
+				ends[numends][1] = l[1];
+				ends[numends + 1][0] = l[2];
+				ends[numends + 1][1] = l[3];
+				numends += 2;
+				ymin = lo < ymin ? lo : ymin;
+				ymax = hi > ymax ? hi : ymax;
+				cands[k].pos.x += c.x;
+				cands[k].pos.y += c.y;
+				cands[k].pos.z += c.z;
+			}
+
+			if (numends == 0) {
+				continue;
+			}
+
+			cands[k].pos.x /= numends / 2;
+			cands[k].pos.y /= numends / 2;
+			cands[k].pos.z /= numends / 2;
+
+			for (i = 0; i < numends; i++) {
+				for (j = i + 1; j < numends; j++) {
+					f32 dx = ends[i][0] - ends[j][0];
+					f32 dz = ends[i][1] - ends[j][1];
+
+					if (dx * dx + dz * dz > best) {
+						best = dx * dx + dz * dz;
+						line[0] = ends[i][0];
+						line[1] = ends[i][1];
+						line[2] = ends[j][0];
+						line[3] = ends[j][1];
+					}
+				}
+			}
+		}
+
+		for (i = 0; i < numwp; i++) {
+			for (j = 0; waypoints[i].neighbours[j] >= 0; j++) {
+				s32 other = waypoints[i].neighbours[j] & 0x3fff;
+				s32 m;
+
+				if (other <= i || other >= numwp
+						|| !zombiesLinkCrosses(line, ymin, ymax, &wppos[i], &wppos[other])) {
+					continue;
+				}
+
+				for (m = 0; m < cands[k].numsegs; m++) {
+					if (cands[k].segs[m][0] == i && cands[k].segs[m][1] == other) {
+						break;
+					}
+				}
+
+				if (m == cands[k].numsegs && cands[k].numsegs < ZOMBIE_DOOR_SEGS) {
+					cands[k].segs[m][0] = i;
+					cands[k].segs[m][1] = other;
+					cands[k].numsegs++;
+				}
+			}
+		}
+
+		alive[k] = cands[k].numsegs > 0;
+	}
+
+	// the zones, again and again until every doorway left is the only way
+	// between two zones big enough to be worth shutting off
+	for (pass = 0; pass < ZOMBIE_DOOR_CANDS * 2 + 4; pass++) {
+		s32 worst = -1;
+		s32 worstpads = 0x7fff;
+		bool changed = false;
+
+		for (i = 0; i < numwp; i++) {
+			parent[i] = i;
+		}
+
+		for (i = 0; i < numwp; i++) {
+			for (j = 0; waypoints[i].neighbours[j] >= 0; j++) {
+				s32 other = waypoints[i].neighbours[j] & 0x3fff;
+				bool cut = false;
+
+				if (other >= numwp) {
+					continue;
+				}
+
+				for (k = 0; k < numcands && !cut; k++) {
+					s32 m;
+
+					if (!alive[k]) {
+						continue;
+					}
+
+					for (m = 0; m < cands[k].numsegs; m++) {
+						if ((cands[k].segs[m][0] == i && cands[k].segs[m][1] == other)
+								|| (cands[k].segs[m][1] == i && cands[k].segs[m][0] == other)) {
+							cut = true;
+							break;
+						}
+					}
+				}
+
+				if (!cut) {
+					s32 ra = zombiesWpRoot(parent, i);
+					s32 rb = zombiesWpRoot(parent, other);
+
+					if (ra != rb) {
+						// the lower one the root, so the zones' numbers are the arena's alone
+						if (ra < rb) {
+							parent[rb] = ra;
+						} else {
+							parent[ra] = rb;
+						}
+					}
+				}
+			}
+		}
+
+		for (i = 0; i < numwp; i++) {
+			g_ZombieWpComp[i] = zombiesWpRoot(parent, i);
+			padcount[i] = 0;
+		}
+
+		for (i = 0; i < n; i++) {
+			struct pad pad;
+			s32 comp;
+
+			padUnpack(g_SpawnPoints[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+			comp = zombiesPosComp(&pad.pos, pad.room, numwp, wppos, wproom);
+
+			if (comp >= 0) {
+				padcount[comp]++;
+			}
+		}
+
+		numalive = 0;
+
+		for (k = 0; k < numcands; k++) {
+			s32 m;
+			s32 pads;
+
+			if (!alive[k]) {
+				continue;
+			}
+
+			cands[k].comps[0] = g_ZombieWpComp[cands[k].segs[0][0]];
+			cands[k].comps[1] = g_ZombieWpComp[cands[k].segs[0][1]];
+
+			// a way round it: not a door that shuts anything off
+			for (m = 0; m < cands[k].numsegs; m++) {
+				if (g_ZombieWpComp[cands[k].segs[m][0]] == g_ZombieWpComp[cands[k].segs[m][1]]) {
+					break;
+				}
+			}
+
+			if (m < cands[k].numsegs || cands[k].comps[0] == cands[k].comps[1]) {
+				alive[k] = false;
+				changed = true;
+				break;
+			}
+
+			pads = padcount[cands[k].comps[0]] < padcount[cands[k].comps[1]]
+				? padcount[cands[k].comps[0]] : padcount[cands[k].comps[1]];
+
+			if (pads < worstpads) {
+				worstpads = pads;
+				worst = k;
+			}
+
+			numalive++;
+		}
+
+		if (changed) {
+			continue;
+		}
+
+		// a zone too small to be shut off, or too many doors: the smallest
+		// zone goes in with its neighbour, one at a time
+		if (worst >= 0 && (worstpads < ZOMBIE_ZONE_MINPADS || numalive > ZOMBIE_DOOR_MAX)) {
+			alive[worst] = false;
+			continue;
+		}
+
+		break;
+	}
+
+	// the spawn pads' zones, the whole list as it is before the machines
+	// take theirs
+	for (i = 0; i < n; i++) {
+		struct pad pad;
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+		g_ZombiePadCompPad[g_ZombieNumPadComps] = g_SpawnPoints[i];
+		g_ZombiePadCompOf[g_ZombieNumPadComps] = zombiesPosComp(&pad.pos, pad.room, numwp, wppos, wproom);
+		g_ZombieNumPadComps++;
+	}
+
+	numalive = 0;
+
+	for (k = 0; k < numcands; k++) {
+		if (alive[k]) {
+			numalive++;
+		}
+	}
+
+	if (numalive == 0) {
+		sysLogPrintf(LOG_NOTE, "zombies: stage 0x%02x: %d doorways, none locked (%d waypoints)", g_Vars.stagenum, numcands, numwp);
+		return;
+	}
+
+	// the players' zone: the most spawn pads, ties to the lower root
+	for (i = 0; i < numwp; i++) {
+		if (g_ZombieWpComp[i] == i && (g_ZombieStartComp < 0 || padcount[i] > padcount[g_ZombieStartComp])) {
+			g_ZombieStartComp = i;
+		}
+	}
+
+	// how many doors out each zone is
+	for (i = 0; i < numwp; i++) {
+		depth[i] = -1;
+		g_ZombieCompOpen[i] = 0;
+	}
+
+	depth[g_ZombieStartComp] = 0;
+
+	for (pass = 0; pass < ZOMBIE_DOOR_MAX + 1; pass++) {
+		for (k = 0; k < numcands; k++) {
+			s32 a = cands[k].comps[0];
+			s32 b = cands[k].comps[1];
+
+			if (!alive[k]) {
+				continue;
+			}
+
+			if (depth[a] >= 0 && (depth[b] < 0 || depth[b] > depth[a] + 1)) {
+				depth[b] = depth[a] + 1;
+			}
+
+			if (depth[b] >= 0 && (depth[a] < 0 || depth[a] > depth[b] + 1)) {
+				depth[a] = depth[b] + 1;
+			}
+		}
+	}
+
+	g_ZombieCompOpen[g_ZombieStartComp] = 1;
+
+	// the doors kept, nearest the start first, locked
+	for (pass = 0; pass <= ZOMBIE_DOOR_MAX; pass++) {
+		for (k = 0; k < numcands && g_ZombieNumDoors < ZOMBIE_DOOR_MAX; k++) {
+			struct zombiedoor *door = &g_ZombieDoors[g_ZombieNumDoors];
+			s32 da = depth[cands[k].comps[0]];
+			s32 db = depth[cands[k].comps[1]];
+			s32 near;
+
+			if (!alive[k] || da < 0 || db < 0) {
+				continue;
+			}
+
+			near = da < db ? da : db;
+
+			if (near != pass) {
+				continue;
+			}
+
+			*door = cands[k];
+			door->cost = 750 + 250 * (near < 2 ? near : 2);
+			door->open = false;
+
+			for (j = 0; j < door->numleaves; j++) {
+				door->leaves[j]->keyflags |= ZOMBIE_DOOR_KEY;
+				door->leaves[j]->base.flags |= OBJFLAG_CANNOT_ACTIVATE;
+				door->leaves[j]->base.flags2 |= OBJFLAG2_SKIPDOORLOCKEDMSG;
+			}
+
+			for (j = 0; j < door->numsegs; j++) {
+				navDisableSegment(&waypoints[door->segs[j][0]], &waypoints[door->segs[j][1]]);
+			}
+
+			sysLogPrintf(LOG_NOTE, "zombies: stage 0x%02x: door %d (portal %d, %d door%s, %d link%s) at %.0f %.0f %.0f, zones %d|%d (%d|%d pads), %d points",
+					g_Vars.stagenum, g_ZombieNumDoors, door->portal, door->numleaves, door->numleaves == 1 ? "" : "s",
+					door->numsegs, door->numsegs == 1 ? "" : "s", door->pos.x, door->pos.y, door->pos.z,
+					door->comps[0], door->comps[1], padcount[door->comps[0]], padcount[door->comps[1]], door->cost);
+
+			g_ZombieNumDoors++;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: stage 0x%02x: %d doorways, %d locked, the players' zone %d (%d of %d pads)",
+			g_Vars.stagenum, numcands, g_ZombieNumDoors, g_ZombieStartComp, padcount[g_ZombieStartComp], n);
+}
+
+// Whether any door is still shut (simbrain.c: stock's waypoints till none is)
+s32 zombiesDoorsShut(void)
+{
+	s32 d;
+
+	if (!zombiesIsActive()) {
+		return 0;
+	}
+
+	for (d = 0; d < g_ZombieNumDoors; d++) {
+		if (!g_ZombieDoors[d].open) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+// chraction.c's chrOpenDoor(): a door still to be bought stays shut to them
+s32 zombiesDoorBarsChrs(struct prop *doorprop)
+{
+	s32 d;
+	s32 l;
+
+	if (!zombiesIsActive() || doorprop == NULL) {
+		return 0;
+	}
+
+	for (d = 0; d < g_ZombieNumDoors; d++) {
+		for (l = 0; l < g_ZombieDoors[d].numleaves; l++) {
+			if (g_ZombieDoors[d].leaves[l]->base.prop == doorprop) {
+				return !g_ZombieDoors[d].open;
+			}
+		}
+	}
+
+	return 0;
+}
+
+// A door bought: unlocked, its links back, its zones open, and on its way open
+static void zombiesDoorOpen(s32 d)
+{
+	struct zombiedoor *door = &g_ZombieDoors[d];
+	s32 j;
+
+	if (door->open) {
+		return;
+	}
+
+	door->open = true;
+
+	for (j = 0; j < door->numleaves; j++) {
+		door->leaves[j]->keyflags &= ~ZOMBIE_DOOR_KEY;
+		door->leaves[j]->base.flags2 &= ~OBJFLAG2_SKIPDOORLOCKEDMSG;
+	}
+
+	for (j = 0; j < door->numsegs; j++) {
+		navEnableSegment(&g_StageSetup.waypoints[door->segs[j][0]], &g_StageSetup.waypoints[door->segs[j][1]]);
+	}
+
+	g_ZombieCompOpen[door->comps[0]] = 1;
+	g_ZombieCompOpen[door->comps[1]] = 1;
+
+	sysLogPrintf(LOG_NOTE, "zombies: door %d open (zones %d and %d)", d, door->comps[0], door->comps[1]);
+}
+
+// A bought door stays open: opened, then kept so, and never closed by a use
+static void zombiesDoorKeepOpen(struct zombiedoor *door)
+{
+	s32 j;
+
+	for (j = 0; j < door->numleaves; j++) {
+		struct doorobj *leaf = door->leaves[j];
+
+		if (leaf->frac >= leaf->maxfrac) {
+			leaf->base.flags |= OBJFLAG_DOOR_KEEPOPEN;
+		} else if (leaf->mode == DOORMODE_IDLE || leaf->mode == DOORMODE_CLOSING) {
+			doorsRequestMode(leaf, DOORMODE_OPENING);
+		}
+	}
+}
+
+static void zombiesTickDoors(void)
+{
+	s32 i;
+	s32 d;
+
+	for (d = 0; d < g_ZombieNumDoors; d++) {
+		if (g_ZombieDoors[d].open) {
+			zombiesDoorKeepOpen(&g_ZombieDoors[d]);
+		}
+	}
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		struct player *player = g_Vars.players[i];
+		f32 bestdist = ZOMBIE_DOOR_RANGE * ZOMBIE_DOOR_RANGE;
+		bool held;
+
+		g_ZombieNearDoor[i] = -1;
+
+		if (!zombiesPlayerIsUp(i) || g_ZombieDrink60[i] >= 0 || g_ZombieNearDowned[i] >= 0
+				|| g_ZombieNearWall[i] >= 0 || g_ZombieNearBox[i] || g_ZombieNearJugg[i]
+				|| g_ZombieNearPerk[i] >= 0 || g_ZombieNearPap[i]) {
+			g_ZombieDoorHeld60[i] = 0;
+			continue;
+		}
+
+		for (d = 0; d < g_ZombieNumDoors; d++) {
+			struct coord *pos = &g_ZombieDoors[d].pos;
+			f32 dx = player->prop->pos.x - pos->x;
+			f32 dy = player->prop->pos.y - pos->y;
+			f32 dz = player->prop->pos.z - pos->z;
+
+			if (!g_ZombieDoors[d].open && dx * dx + dz * dz < bestdist && dy < 200 && dy > -200) {
+				bestdist = dx * dx + dz * dz;
+				g_ZombieNearDoor[i] = d;
+			}
+		}
+
+		held = g_ZombieNearDoor[i] >= 0 && zombiesHoldingUse(i);
+
+		if (!held) {
+			g_ZombieDoorHeld60[i] = 0;
+			g_ZombieDoorNeedsRelease[i] = false;
+			continue;
+		}
+
+		if (g_ZombieDoorNeedsRelease[i]) {
+			continue;
+		}
+
+		g_ZombieDoorHeld60[i] += g_Vars.lvupdate60;
+
+		if (g_ZombieDoorHeld60[i] < ZOMBIE_BOX_HOLD60) {
+			continue;
+		}
+
+		g_ZombieDoorNeedsRelease[i] = true;
+		g_ZombieDoorHeld60[i] = 0;
+		g_ZombieSoundFor = i;
+
+		d = g_ZombieNearDoor[i];
+
+		if (g_ZombiePoints[i] < g_ZombieDoors[d].cost) {
+			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		} else {
+			g_ZombiePoints[i] -= g_ZombieDoors[d].cost;
+			zombiesAddPopup(i, -g_ZombieDoors[d].cost);
+			zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+			zombiesDoorOpen(d);
+			zombiesDoorKeepOpen(&g_ZombieDoors[d]);
+			g_ZombieNearDoor[i] = -1;
+		}
+
+		g_ZombieSoundFor = -1;
+	}
+}
+
+static bool zombiesDoorPrompt(s32 playernum, char *text)
+{
+	s32 d;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || (d = g_ZombieNearDoor[playernum]) < 0
+			|| d >= g_ZombieNumDoors || g_ZombieDoors[d].open) {
+		return false;
+	}
+
+	snprintf(text, 64, "Hold %s to open Door [Cost: %d]", zombiesUseName(playernum), g_ZombieDoors[d].cost);
+
+	return true;
+}
+
+/**
+ * scenarios.c's spawn hook: a zombie sent to a barrier stands at its boards;
+ * anyone else on a spawn pad in the zones open so far
+ */
+bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms, struct prop *prop, f32 *angle)
+{
+	s16 pads[MAX_SPAWNPOINTS];
+	s32 n;
+
+	if (g_ZombieSpawnAt >= 0 && g_ZombieSpawnAt < g_ZombieNumBarriers && prop && prop->type == PROPTYPE_CHR) {
+		struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieSpawnAt];
+		s32 i;
+
+		*pos = bar->stand;
+
+		for (i = 0; i < 7 && bar->standrooms[i] != -1; i++) {
+			rooms[i] = bar->standrooms[i];
+		}
+
+		rooms[i] = -1;
+		*angle = atan2f(bar->wall.x, bar->wall.z);
+
+		return true;
+	}
+
+	if (g_ZombieNumDoors == 0) {
+		return false;
+	}
+
+	n = zombiesOpenSpawnPads(pads);
+
+	if (n <= 0) {
+		return false;
+	}
+
+	*angle = playerChooseSpawnLocation(chrradius, pos, rooms, prop, pads, n);
+
+	return true;
+}
+
+/**
+ * Barriers
+ */
+static void zombiesResetBarriers(void)
+{
+	s32 i;
+
+	bzero(g_ZombieBarriers, sizeof(g_ZombieBarriers));
+	g_ZombieNumBarriers = 0;
+	g_ZombieRebuiltRound = -1;
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		g_ZombieNearBarrier[i] = -1;
+		g_ZombieFix60[i] = 0;
+		g_ZombieRebuilt[i] = 0;
+		g_ZombieNearDoor[i] = -1;
+		g_ZombieDoorHeld60[i] = 0;
+		g_ZombieDoorNeedsRelease[i] = false;
+	}
+
+	for (i = 0; i < MAX_BOTS; i++) {
+		g_ZombieAtBarrier[i] = -1;
+	}
+}
+
+// A barrier's boards up: the object it is drawn as, along its wall
+static bool zombiesBarrierMakeObj(struct zombiebarrier *bar)
+{
+	struct defaultobj *obj = &bar->obj;
+	struct prop *prop;
+	struct coord mid;
+	Mtxf mtx;
+
+	bzero(obj, sizeof(*obj));
+	obj->extrascale = 256;
+	obj->type = OBJTYPE_BASIC;
+	obj->modelnum = ZOMBIE_BOX_MODEL;
+	obj->flags = OBJFLAG_INVINCIBLE | OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_UNCOLLECTABLE;
+	obj->flags2 = OBJFLAG2_IMMUNETOGUNFIRE | OBJFLAG2_IMMUNETOEXPLOSIONS | OBJFLAG2_SHOOTTHROUGH
+		| OBJFLAG2_THROWTHROUGH | OBJFLAG2_NOFALL;
+	obj->flags3 = OBJFLAG3_WALKTHROUGH;
+	obj->realrot[0][0] = obj->realrot[1][1] = obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+	obj->pad = -1;
+
+	if (g_ModelStates[obj->modelnum].modeldef == NULL) {
+		if (mempGetStageFreeTotal() < ZOMBIE_BOX_POOLFLOOR) {
+			return false;
+		}
+
+		setupLoadModeldef(obj->modelnum);
+
+		if (g_ModelStates[obj->modelnum].modeldef == NULL) {
+			return false;
+		}
+	}
+
+	prop = objInitWithAutoModel(obj);
+
+	if (prop == NULL || obj->model == NULL) {
+		return false;
+	}
+
+	// the box's crate, long along the wall, the boards' middle; never drawn
+	mtx4LoadYRotation(atan2f(bar->wall.z, -bar->wall.x), &mtx);
+	mtx00015f04(obj->model->scale, &mtx);
+
+	mid = bar->pos;
+	mid.y += 100;
+	mid.x -= bar->wall.x * 10;
+	mid.z -= bar->wall.z * 10;
+
+	func0f06a580(obj, &mid, &mtx, bar->rooms);
+
+	propActivate(prop);
+	propEnable(prop);
+
+	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
+
+	return true;
+}
+
+/**
+ * The barriers on their walls beside the spawn pads: one in each zone the
+ * pads are in first, then the furthest from everything else. The pads, the
+ * walls and the machines are the arena's alone, so a client puts them where
+ * the host does.
+ */
+static void zombiesPlaceBarriers(void)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	struct coord taken[ZOMBIE_MACHINE_IDS + ZOMBIE_WALLBUY_MAX + ZOMBIE_DOOR_MAX + ZOMBIE_BARRIER_MAX + 4];
+	struct coord walldir[MAX_SPAWNPOINTS];
+	f32 walldist[MAX_SPAWNPOINTS];
+	bool usable[MAX_SPAWNPOINTS];
+	s32 ntaken = 0;
+	s32 pass;
+	s32 i;
+	s32 k;
+
+	g_ZombieNumBarriers = 0;
+
+	for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
+		struct defaultobj *obj = zombiesMachineObjAt(k);
+
+		if (obj && obj->prop) {
+			taken[ntaken++] = obj->prop->pos;
+		}
+	}
+
+	for (k = 0; k < g_ZombieNumWallBuys; k++) {
+		if (g_ZombieWallBuys[k].placed) {
+			taken[ntaken++] = g_ZombieWallBuys[k].pos;
+		}
+	}
+
+	for (k = 0; k < g_ZombieNumDoors; k++) {
+		taken[ntaken++] = g_ZombieDoors[k].pos;
+	}
+
+	for (i = 0; i < n; i++) {
+		struct pad pad;
+		RoomNum rooms[2];
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+		rooms[0] = pad.room;
+		rooms[1] = -1;
+
+		usable[i] = pad.room > 0 && zombiesFindWall(&pad.pos, rooms, ZOMBIE_BARRIER_REACH, &walldist[i], &walldir[i]);
+	}
+
+	// first one a zone (pass 0), then any (pass 1)
+	for (pass = 0; pass < 2; pass++) {
+		while (g_ZombieNumBarriers < ZOMBIE_BARRIER_MAX) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNumBarriers];
+			f32 bestscore = -1;
+			s32 best = -1;
+			struct pad pad;
+			RoomNum padrooms[2];
+			f32 out;
+
+			for (i = 0; i < n; i++) {
+				f32 score = 1e20f;
+				s32 comp;
+				s32 t;
+
+				if (!usable[i]) {
+					continue;
+				}
+
+				padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+				comp = zombiesPadComp(g_SpawnPoints[i]);
+
+				if (pass == 0) {
+					for (k = 0; k < g_ZombieNumBarriers; k++) {
+						if (g_ZombieBarriers[k].comp == comp) {
+							break;
+						}
+					}
+
+					if (k < g_ZombieNumBarriers) {
+						continue;
+					}
+				}
+
+				for (t = 0; t < ntaken; t++) {
+					f32 dx = pad.pos.x - taken[t].x;
+					f32 dy = pad.pos.y - taken[t].y;
+					f32 dz = pad.pos.z - taken[t].z;
+					f32 d = dx * dx + dy * dy * 4 + dz * dz;
+
+					if (d < score) {
+						score = d;
+					}
+				}
+
+				if (score < ZOMBIE_BARRIER_APART * ZOMBIE_BARRIER_APART) {
+					continue;
+				}
+
+				if (score > bestscore || (score == bestscore && g_SpawnPoints[i] < g_SpawnPoints[best])) {
+					bestscore = score;
+					best = i;
+				}
+			}
+
+			if (best < 0) {
+				break;
+			}
+
+			usable[best] = false;
+			padUnpack(g_SpawnPoints[best], PADFIELD_POS | PADFIELD_ROOM, &pad);
+			padrooms[0] = pad.room;
+			padrooms[1] = -1;
+
+			bzero(bar, sizeof(*bar));
+
+			for (k = 0; k < ZOMBIE_BARRIER_BOARDS; k++) {
+				bar->anim60[k] = 1000;
+			}
+
+			bar->wall = walldir[best];
+			bar->comp = zombiesPadComp(g_SpawnPoints[best]);
+			bar->boards = ZOMBIE_BARRIER_BOARDS;
+			bar->zombie = -1;
+
+			// the boards against the wall, on the floor under it
+			bar->pos.x = pad.pos.x + bar->wall.x * (walldist[best] - 2);
+			bar->pos.y = pad.pos.y;
+			bar->pos.z = pad.pos.z + bar->wall.z * (walldist[best] - 2);
+			func0f065e74(&pad.pos, padrooms, &bar->pos, bar->rooms);
+			bar->pos.y = zombiesGroundAt(&pad.pos, padrooms);
+
+			if (bar->pos.y < pad.pos.y - 400 || bar->pos.y > pad.pos.y) {
+				bar->pos.y = pad.pos.y - 100;
+			}
+
+			// where a zombie at it stands
+			out = walldist[best] - ZOMBIE_BARRIER_STAND;
+			out = out < 0 ? 0 : out;
+			bar->stand.x = pad.pos.x + bar->wall.x * out;
+			bar->stand.y = pad.pos.y;
+			bar->stand.z = pad.pos.z + bar->wall.z * out;
+			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+
+			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
+				continue;
+			}
+
+			bar->placed = true;
+			taken[ntaken++] = pad.pos;
+			sysLogPrintf(LOG_NOTE, "zombies: barrier %d on stage 0x%02x at %.0f %.0f %.0f (zone %d)",
+					g_ZombieNumBarriers, g_Vars.stagenum, bar->pos.x, bar->pos.y, bar->pos.z, bar->comp);
+			g_ZombieNumBarriers++;
+		}
+	}
+}
+
+// Its boards to count, the one that went or came set going
+static void zombiesBarrierSet(s32 b, s32 boards)
+{
+	struct zombiebarrier *bar = &g_ZombieBarriers[b];
+	s32 k;
+
+	boards = boards < 0 ? 0 : boards > ZOMBIE_BARRIER_BOARDS ? ZOMBIE_BARRIER_BOARDS : boards;
+
+	if (boards == bar->boards) {
+		return;
+	}
+
+	if (boards < bar->boards) {
+		for (k = boards; k < bar->boards; k++) {
+			bar->anim60[k] = 0;
+			bar->torn[k] = true;
+		}
+
+		if (bar->obj.prop) {
+			psCreate(NULL, bar->obj.prop, SFX_WOOD_BREAK, -1, -1, 0, 0, PSTYPE_NONE, NULL, 0.9f + (bar->boards & 1) * 0.15f,
+					NULL, -1, -1, -1, -1);
+		}
+	} else {
+		for (k = bar->boards; k < boards; k++) {
+			bar->anim60[k] = 0;
+			bar->torn[k] = false;
+		}
+
+		if (bar->obj.prop) {
+			psCreate(NULL, bar->obj.prop, SFX_HIT_WOOD_807E, -1, -1, 0, 0, PSTYPE_NONE, NULL, 1.0f,
+					NULL, -1, -1, -1, -1);
+		}
+	}
+
+	bar->boards = boards;
+}
+
+static void zombiesBarrierAnimate(void)
+{
+	s32 b;
+	s32 k;
+
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		for (k = 0; k < ZOMBIE_BARRIER_BOARDS; k++) {
+			if (g_ZombieBarriers[b].anim60[k] < 1000) {
+				g_ZombieBarriers[b].anim60[k] += g_Vars.lvupdate60;
+			}
+		}
+	}
+}
+
+/**
+ * Where the zombie being sent in comes in: a barrier in a zone open so far
+ * with no zombie at it, near a player, three in four of them; -1 a pad
+ */
+static s32 zombiesBarrierPick(void)
+{
+	s32 cands[ZOMBIE_BARRIER_MAX];
+	s32 near[ZOMBIE_BARRIER_MAX];
+	s32 numcands = 0;
+	s32 numnear = 0;
+	s32 b;
+	s32 p;
+
+	if (g_ZombieNumBarriers == 0 || rngRandom() % 4 == 0) {
+		return -1;
+	}
+
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		struct zombiebarrier *bar = &g_ZombieBarriers[b];
+		bool isnear = false;
+
+		if (!bar->placed || bar->zombie >= 0 || !zombiesCompOpen(bar->comp)) {
+			continue;
+		}
+
+		cands[numcands++] = b;
+
+		for (p = 0; p < PLAYERCOUNT(); p++) {
+			if (zombiesPlayerIsUp(p)) {
+				struct coord *pos = &g_Vars.players[p]->prop->pos;
+				f32 dx = pos->x - bar->stand.x;
+				f32 dz = pos->z - bar->stand.z;
+
+				if (dx * dx + dz * dz < ZOMBIE_BARRIER_NEAR * ZOMBIE_BARRIER_NEAR) {
+					isnear = true;
+				}
+			}
+		}
+
+		if (isnear) {
+			near[numnear++] = b;
+		}
+	}
+
+	if (numnear > 0) {
+		return near[rngRandom() % numnear];
+	}
+
+	return numcands > 0 ? cands[rngRandom() % numcands] : -1;
+}
+
+static void zombiesBarrierTake(s32 b, s32 botnum)
+{
+	struct zombiebarrier *bar = &g_ZombieBarriers[b];
+
+	if (bar->boards <= 0) {
+		return;
+	}
+
+	bar->zombie = botnum;
+	bar->tear60 = 0;
+	g_ZombieAtBarrier[botnum] = b;
+}
+
+// zombiesTick(): a zombie at a barrier's boards stays there, its target known
+static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *target)
+{
+	s32 b = g_ZombieAtBarrier[botnum];
+	struct zombiebarrier *bar;
+
+	if (b < 0 || b >= g_ZombieNumBarriers) {
+		g_ZombieAtBarrier[botnum] = -1;
+		return false;
+	}
+
+	bar = &g_ZombieBarriers[b];
+
+	if (bar->zombie != botnum || bar->boards <= 0) {
+		if (bar->zombie == botnum) {
+			bar->zombie = -1;
+		}
+
+		g_ZombieAtBarrier[botnum] = -1;
+		return false;
+	}
+
+	if (zchr->aibot->command != AIBOTCMD_HOLD) {
+		botApplyHold(zchr, &bar->stand, bar->standrooms, atan2f(bar->wall.x, bar->wall.z));
+	}
+
+	if (target) {
+		botSetTarget(zchr, target - g_Vars.props);
+	}
+
+	return true;
+}
+
+static void zombiesTickBarriers(void)
+{
+	s32 i;
+	s32 b;
+
+	zombiesBarrierAnimate();
+
+	if (g_ZombieRebuiltRound != g_ZombieRound) {
+		g_ZombieRebuiltRound = g_ZombieRound;
+
+		for (i = 0; i < MAX_PLAYERS; i++) {
+			g_ZombieRebuilt[i] = 0;
+		}
+	}
+
+	// the zombies at them tearing the boards off
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		struct zombiebarrier *bar = &g_ZombieBarriers[b];
+		struct chrdata *zchr;
+		f32 dx;
+		f32 dz;
+
+		if (bar->zombie < 0) {
+			continue;
+		}
+
+		zchr = bar->zombie < g_BotCount ? g_MpBotChrPtrs[bar->zombie] : NULL;
+
+		if (zchr == NULL || zchr->prop == NULL || chrIsDead(zchr) || g_ZombieAtBarrier[bar->zombie] != b) {
+			if (bar->zombie < MAX_BOTS && g_ZombieAtBarrier[bar->zombie] == b) {
+				g_ZombieAtBarrier[bar->zombie] = -1;
+			}
+
+			bar->zombie = -1;
+			continue;
+		}
+
+		// once it is at the boards
+		dx = zchr->prop->pos.x - bar->stand.x;
+		dz = zchr->prop->pos.z - bar->stand.z;
+
+		if (dx * dx + dz * dz > 80 * 80) {
+			continue;
+		}
+
+		bar->tear60 += g_Vars.lvupdate60;
+
+		if (bar->tear60 >= ZOMBIE_BARRIER_TEAR60) {
+			bar->tear60 = 0;
+			zombiesBarrierSet(b, bar->boards - 1);
+
+			// through: after the players
+			if (bar->boards <= 0) {
+				g_ZombieAtBarrier[bar->zombie] = -1;
+				bar->zombie = -1;
+			}
+		}
+	}
+
+	// the players putting them back
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		struct player *player = g_Vars.players[i];
+		f32 bestdist = ZOMBIE_BARRIER_RANGE * ZOMBIE_BARRIER_RANGE;
+
+		g_ZombieNearBarrier[i] = -1;
+
+		if (!zombiesPlayerIsUp(i) || g_ZombieDrink60[i] >= 0 || g_ZombieNearDowned[i] >= 0
+				|| g_ZombieNearWall[i] >= 0 || g_ZombieNearBox[i] || g_ZombieNearJugg[i]
+				|| g_ZombieNearPerk[i] >= 0 || g_ZombieNearPap[i] || g_ZombieNearDoor[i] >= 0) {
+			g_ZombieFix60[i] = 0;
+			continue;
+		}
+
+		for (b = 0; b < g_ZombieNumBarriers; b++) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[b];
+			f32 dx = player->prop->pos.x - bar->stand.x;
+			f32 dy = player->prop->pos.y - bar->stand.y;
+			f32 dz = player->prop->pos.z - bar->stand.z;
+
+			if (bar->placed && bar->boards < ZOMBIE_BARRIER_BOARDS
+					&& dx * dx + dz * dz < bestdist && dy < 200 && dy > -200) {
+				bestdist = dx * dx + dz * dz;
+				g_ZombieNearBarrier[i] = b;
+			}
+		}
+
+		if (g_ZombieNearBarrier[i] < 0 || !zombiesHoldingUse(i)) {
+			g_ZombieFix60[i] = 0;
+			continue;
+		}
+
+		// a board at a time while it is held
+		g_ZombieFix60[i] += g_Vars.lvupdate60;
+
+		if (g_ZombieFix60[i] >= ZOMBIE_BARRIER_FIX60) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNearBarrier[i]];
+
+			g_ZombieFix60[i] = 0;
+			zombiesBarrierSet(g_ZombieNearBarrier[i], bar->boards + 1);
+
+			if (g_ZombieRebuilt[i] < ZOMBIE_BARRIER_CAP) {
+				g_ZombieRebuilt[i] += ZOMBIE_BARRIER_POINTS;
+				g_ZombiePoints[i] += ZOMBIE_BARRIER_POINTS;
+				zombiesAddPopup(i, ZOMBIE_BARRIER_POINTS);
+			}
+
+			// a zombie at it starts on the new board afresh
+			bar->tear60 = 0;
+		}
+	}
+}
+
+static bool zombiesBarrierPrompt(s32 playernum, char *text)
+{
+	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieNearBarrier[playernum] < 0
+			|| g_ZombieNearBarrier[playernum] >= g_ZombieNumBarriers) {
+		return false;
+	}
+
+	snprintf(text, 64, "Hold %s to rebuild Barrier", zombiesUseName(playernum));
+
+	return true;
+}
+
+/**
+ * The boards as plain shaded boxes (no texture), in the room's light, in
+ * the opaque pass: a dark window behind, a post either side, and the boards
+ * across it at slants of their own. A torn board falls out into the room; a
+ * board put back comes in from it.
+ */
+struct zombieboard {
+	s16 y;     // its middle, over the floor
+	s16 len;
+	s8 tilt;   // in degrees
+	s8 out;    // off the wall
+};
+
+static const struct zombieboard g_ZombieBoards[ZOMBIE_BARRIER_BOARDS] = {
+	{ 58, 118, 7, 4 }, { 80, 112, -9, 7 }, { 102, 122, 4, 4 },
+	{ 124, 114, -6, 7 }, { 146, 120, 10, 4 }, { 166, 110, -4, 7 },
+};
+
+// One face, its corners already about the barrier's foot
+static Gfx *zombiesBoardFace(Gfx *gdl, const f32 c[4][3], u8 r, u8 g, u8 b)
+{
+	Vtx *vtx = gfxAllocate(sizeof(Vtx) * 4);
+	Col *col = gfxAllocate(sizeof(Col) * 4);
+	s32 i;
+
+	if (!vtx || !col) {
+		return gdl;
+	}
+
+	for (i = 0; i < 4; i++) {
+		vtx[i].x = (s16)c[i][0];
+		vtx[i].y = (s16)c[i][1];
+		vtx[i].z = (s16)c[i][2];
+		vtx[i].flags = 0;
+		vtx[i].colour = (u8)(i * 4);
+		vtx[i].s = 0;
+		vtx[i].t = 0;
+		col[i].r = r;
+		col[i].g = g;
+		col[i].b = b;
+		col[i].a = 0xff;
+	}
+
+	gSPColor(gdl++, col, 4);
+	gSPVertex(gdl++, vtx, 4, 0);
+	gSPTri4(gdl++, 0, 1, 2, 0, 2, 3, 0, 0, 0, 0, 0, 0);
+
+	return gdl;
+}
+
+/**
+ * A box: middle (x along the wall, y up, z out of it), half sizes, turned by
+ * tilt about the way out; its five faces but the back, shaded each its own
+ */
+static Gfx *zombiesBoardBox(Gfx *gdl, const struct zombiebarrier *bar, f32 x, f32 y, f32 z,
+		f32 hl, f32 hh, f32 ht, f32 tilt, const u8 rgb[3], f32 light)
+{
+	static const s8 faces[5][4][3] = {
+		{ { -1, -1, 1 }, { 1, -1, 1 }, { 1, 1, 1 }, { -1, 1, 1 } },     // front
+		{ { -1, 1, 1 }, { 1, 1, 1 }, { 1, 1, -1 }, { -1, 1, -1 } },     // top
+		{ { -1, -1, -1 }, { 1, -1, -1 }, { 1, -1, 1 }, { -1, -1, 1 } }, // bottom
+		{ { -1, -1, -1 }, { -1, -1, 1 }, { -1, 1, 1 }, { -1, 1, -1 } }, // left
+		{ { 1, -1, 1 }, { 1, -1, -1 }, { 1, 1, -1 }, { 1, 1, 1 } },     // right
+	};
+	static const f32 shade[5] = { 1.0f, 1.15f, 0.5f, 0.72f, 0.72f };
+	const f32 ax = bar->wall.z;  // along the wall
+	const f32 az = -bar->wall.x;
+	const f32 ox = -bar->wall.x; // out of it
+	const f32 oz = -bar->wall.z;
+	const f32 cs = cosf(tilt);
+	const f32 sn = sinf(tilt);
+	s32 f;
+	s32 i;
+
+	for (f = 0; f < 5; f++) {
+		f32 c[4][3];
+		f32 s = shade[f] * light;
+		s32 r = (s32)(rgb[0] * s);
+		s32 g = (s32)(rgb[1] * s);
+		s32 b = (s32)(rgb[2] * s);
+
+		for (i = 0; i < 4; i++) {
+			f32 lx = faces[f][i][0] * hl;
+			f32 ly = faces[f][i][1] * hh;
+			f32 px = x + lx * cs - ly * sn;
+			f32 py = y + lx * sn + ly * cs;
+			f32 pz = z + faces[f][i][2] * ht;
+
+			c[i][0] = ax * px + ox * pz;
+			c[i][1] = py;
+			c[i][2] = az * px + oz * pz;
+		}
+
+		gdl = zombiesBoardFace(gdl, c, r > 255 ? 255 : r, g > 255 ? 255 : g, b > 255 ? 255 : b);
+	}
+
+	return gdl;
+}
+
+static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	static const u8 wood[3] = { 0x8c, 0x5e, 0x34 };
+	static const u8 post[3] = { 0x5a, 0x3c, 0x22 };
+	static const u8 hole[3] = { 0x0c, 0x0a, 0x08 };
+	struct zombiebarrier *bar = NULL;
+	Gfx *gdl;
+	Mtxf world;
+	Mtxf *mtx;
+	f32 light;
+	s32 b;
+	s32 k;
+
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		if (obj == &g_ZombieBarriers[b].obj) {
+			bar = &g_ZombieBarriers[b];
+			break;
+		}
+	}
+
+	if (bar == NULL) {
+		return false;
+	}
+
+	// nothing in the translucent pass
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	// the room's light, half of it, as the machines take it
+	{
+		u32 room = (renderdata->fogcolour & 0xffffff00) ? renderdata->fogcolour : 0xffffffff;
+		f32 lum = (((room >> 24) & 0xff) + ((room >> 16) & 0xff) + ((room >> 8) & 0xff)) / (3 * 255.0f);
+
+		light = 0.55f + lum * 0.45f;
+	}
+
+	gdl = renderdata->gdl;
+	mtx = gfxAllocateMatrix();
+	mtx4LoadIdentity(&world);
+	world.m[3][0] = bar->pos.x;
+	world.m[3][1] = bar->pos.y;
+	world.m[3][2] = bar->pos.z;
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+	gDPPipeSync(gdl++);
+	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+	gDPSetRenderMode(gdl++, renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF : G_RM_AA_OPA_SURF,
+			renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF2 : G_RM_AA_OPA_SURF2);
+	gDPSetCombineMode(gdl++, G_CC_SHADE, G_CC_SHADE);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
+	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+
+	// the window: dark, a hair off the wall, and its posts
+	gdl = zombiesBoardBox(gdl, bar, 0, 108, 0.8f, 52, 70, 0.6f, 0, hole, 1.0f);
+	gdl = zombiesBoardBox(gdl, bar, -58, 108, 3, 5, 78, 3, 0, post, light);
+	gdl = zombiesBoardBox(gdl, bar, 58, 108, 3, 5, 78, 3, 0, post, light);
+
+	for (k = 0; k < ZOMBIE_BARRIER_BOARDS; k++) {
+		const struct zombieboard *board = &g_ZombieBoards[k];
+		f32 y = board->y;
+		f32 z = board->out + 2;
+		f32 tilt = board->tilt * (M_BADPI / 180.0f);
+		u8 rgb[3];
+		s32 t = bar->anim60[k];
+
+		if (k >= bar->boards) {
+			// torn: falling out and down into the room, turning
+			f32 f;
+
+			if (!bar->torn[k] || t >= ZOMBIE_BOARD_FALL60) {
+				continue;
+			}
+
+			f = t / (f32)ZOMBIE_BOARD_FALL60;
+			z += f * 45;
+			y -= f * f * (board->y - 6);
+			tilt += f * (k & 1 ? 1.2f : -1.2f);
+		} else if (!bar->torn[k] && t < ZOMBIE_BOARD_FIX60) {
+			// put back: in from the room
+			f32 f = 1 - t / (f32)ZOMBIE_BOARD_FIX60;
+
+			z += f * f * 40;
+		}
+
+		// each board a shade of its own
+		rgb[0] = wood[0] - (k % 3) * 9;
+		rgb[1] = wood[1] - (k % 3) * 6;
+		rgb[2] = wood[2] - (k % 3) * 4;
+
+		gdl = zombiesBoardBox(gdl, bar, 0, y, z, board->len / 2, 7, 2, tilt, rgb, light);
+	}
+
+	gDPPipeSync(gdl++);
+	gSPClearGeometryMode(gdl++, G_CULL_BOTH);
+
+	renderdata->gdl = gdl;
+
+	return true;
+}
+
 #ifndef PLATFORM_N64
 f32 videoGetAspect(void);
 #endif
@@ -9353,6 +11219,7 @@ void zombiesTick(void)
 		zombiesResetWallBuys();
 		zombiesResetPerks();
 		zombiesResetPap();
+		zombiesResetBarriers();
 
 		for (i = 0; i < MAX_BOTS; i++) {
 			g_ZombieHealth[i] = 0;
@@ -9384,6 +11251,7 @@ void zombiesTick(void)
 		zombiesPlacePerks();
 		zombiesCornerMachines();
 		zombiesPlaceWallBuys();
+		zombiesPlaceBarriers();
 	}
 
 	if (g_Vars.lvframenum < 60) {
@@ -9479,6 +11347,8 @@ void zombiesTick(void)
 
 	zombiesTickBox();
 	zombiesTickWallBuys();
+	zombiesTickDoors();
+	zombiesTickBarriers();
 	zombiesTickDrops();
 
 	if (g_ZombieRound > 0) {
@@ -9514,6 +11384,11 @@ void zombiesTick(void)
 			// maxdamage as it comes back in, after zombiesSpawnOne() has
 			if (g_ZombieHealth[i] > 0 && zchr->maxdamage != g_ZombieHealth[i]) {
 				zchr->maxdamage = g_ZombieHealth[i];
+			}
+
+			// at a barrier's boards: held there until they are torn off
+			if (zombiesBarrierHolds(i, zchr, target)) {
+				continue;
 			}
 
 			// nobody standing (down alone with Quick Revive): off elsewhere
@@ -10024,7 +11899,8 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
 				viGetViewTop() + viGetViewHeight() * 62 / 100, 0xffffffe0,
 				g_CharsHandelGothicSm, g_FontHandelGothicSm);
-	} else if (zombiesPapPrompt(playernum, text) || zombiesBoxPrompt(playernum, text) || zombiesWallBuyPrompt(playernum, text)) {
+	} else if (zombiesPapPrompt(playernum, text) || zombiesBoxPrompt(playernum, text) || zombiesWallBuyPrompt(playernum, text)
+			|| zombiesDoorPrompt(playernum, text) || zombiesBarrierPrompt(playernum, text)) {
 		s32 textwidth;
 		s32 textheight;
 
@@ -11057,7 +12933,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
  *   is the host's.
  */
-#define ZOMBIE_NET_VERSION 1
+#define ZOMBIE_NET_VERSION 2 // 2 (protocol 34): the doors bought, the barriers' boards
 
 struct zombienetbuf {
 	u8 *w;
@@ -11133,6 +13009,8 @@ static f32 znGetF(struct zombienetbuf *b)
 // resumed match reads them alone (zombiesNetResume())
 #define ZOMBIE_NET_WALLS_AT   28  // the wall buys' mask, past the round's, the power-ups' and the box's
 #define ZOMBIE_NET_PLAYERS_AT 285
+#define ZOMBIE_NET_PLAYER_BYTES 38 // zombiesNetReadPlayer()'s
+#define ZOMBIE_NET_DOORS_AT   (ZOMBIE_NET_PLAYERS_AT + ZOMBIE_NET_PLAYER_BYTES * MAX_PLAYERS) // past the players
 
 // A player's part of the block, as zombiesNetCapture() writes it
 struct zombienetplayer {
@@ -11198,6 +13076,7 @@ static void zombiesNetReadPlayer(struct zombienetbuf *b, struct zombienetplayer 
 static bool g_ZombieResumePending = false;
 static s32 g_ZombieResumeRound = 0;
 static u32 g_ZombieResumeWalls = 0;
+static u32 g_ZombieResumeDoors = 0;
 static struct zombienetplayer g_ZombieResumePlayers[MAX_PLAYERS]; // by this match's playernum
 
 void zombiesNetResume(const u8 *in, s32 size, s32 swap)
@@ -11218,6 +13097,10 @@ void zombiesNetResume(const u8 *in, s32 size, s32 swap)
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		zombiesNetReadPlayer(&b, &old[i]);
 	}
+
+	// the doors bought: the same doors here, made the same way
+	b.at = ZOMBIE_NET_DOORS_AT;
+	g_ZombieResumeDoors = znGet(&b, 2);
 
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		// the seat this player had before: 0 and swap exchanged
@@ -11249,6 +13132,12 @@ static void zombiesNetResumeTake(void)
 	for (k = 0; k < g_ZombieNumWallBuys; k++) {
 		if (g_ZombieResumeWalls & (1 << k)) {
 			zombiesWallBuyShowGun(&g_ZombieWallBuys[k]);
+		}
+	}
+
+	for (k = 0; k < g_ZombieNumDoors; k++) {
+		if (g_ZombieResumeDoors & (1 << k)) {
+			zombiesDoorOpen(k);
 		}
 	}
 
@@ -11323,6 +13212,12 @@ s32 zombiesNetOwnsProp(struct prop *prop)
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieDrops); i++) {
 		if (obj == &g_ZombieDrops[i].obj) {
+			return 1;
+		}
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieBarriers); i++) {
+		if (obj == &g_ZombieBarriers[i].obj) {
 			return 1;
 		}
 	}
@@ -11478,6 +13373,39 @@ void zombiesNetCapture(u8 *out, s32 size)
 		for (k = 0; k < ZOMBIE_PAP_MAX; k++) {
 			znPut(&b, k < count ? znClamp(g_ZombiePapped[i][k], 0, 0xff) : 0, 1);
 		}
+	}
+
+	// (version 2) the doors bought, the barriers' boards, and who is at a
+	// door or a barrier (their prompts)
+	if (b.at != ZOMBIE_NET_DOORS_AT) {
+		static bool warned = false;
+
+		if (!warned) {
+			warned = true;
+			sysLogPrintf(LOG_WARNING, "zombies: the online block's doors start at %d, not ZOMBIE_NET_DOORS_AT %d", b.at, ZOMBIE_NET_DOORS_AT);
+		}
+	}
+
+	mask = 0;
+
+	for (k = 0; k < g_ZombieNumDoors; k++) {
+		if (g_ZombieDoors[k].open) {
+			mask |= 1 << k;
+		}
+	}
+
+	znPut(&b, mask, 2);
+	znPut(&b, g_ZombieNumBarriers, 1);
+
+	for (k = 0; k < ZOMBIE_BARRIER_MAX; k++) {
+		znPut(&b, k < g_ZombieNumBarriers ? g_ZombieBarriers[k].boards : 0, 1);
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const bool in = i < PLAYERCOUNT() && g_Vars.players[i] != NULL;
+
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearDoor[i], -1, 0x7f) : -1), 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearBarrier[i], -1, 0x7f) : -1), 1);
 	}
 
 	if (b.at > size) {
@@ -11746,6 +13674,28 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		}
 	}
 
+	// (version 2) the doors bought (zombiesClientTick() opens them here), the
+	// barriers' boards, each player's door and barrier
+	g_ZombieNetDoorMask = znGet(&b, 2);
+	v = znGet(&b, 1);
+
+	for (k = 0; k < ZOMBIE_BARRIER_MAX; k++) {
+		const s32 boards = znGet(&b, 1);
+
+		// the boards that went or came, falling and coming in here too
+		if (k < v && k < g_ZombieNumBarriers && g_ZombieBarriers[k].placed && !final) {
+			zombiesBarrierSet(k, boards);
+		}
+	}
+
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		const s32 neardoor = (s8)znGet(&b, 1);
+		const s32 nearbarrier = (s8)znGet(&b, 1);
+
+		g_ZombieNearDoor[i] = neardoor >= 0 && neardoor < g_ZombieNumDoors ? neardoor : -1;
+		g_ZombieNearBarrier[i] = nearbarrier >= 0 && nearbarrier < g_ZombieNumBarriers ? nearbarrier : -1;
+	}
+
 	// the round cleared: its sting, as the host's (zombiesTick())
 	if (wasnext < 0 && g_ZombieNextWaveFrame >= 0 && !final && g_ZombieRound > 0) {
 		zombiesRoundSting();
@@ -11801,6 +13751,7 @@ void zombiesClientTick(void)
 		zombiesResetPoints();
 		zombiesResetDowned();
 		zombiesResetGuns();
+		zombiesResetBarriers();
 
 		for (i = 0; i < MAX_PLAYERS; i++) {
 			g_ZombieKnife60[i] = 0;
@@ -11825,6 +13776,7 @@ void zombiesClientTick(void)
 		g_ZombieNetSoundSeen = -1;
 		g_ZombieNetBoxShown = -1;
 		g_ZombieNetWallMask = 0;
+		g_ZombieNetDoorMask = 0;
 		g_ZombieNetChecked = false;
 		g_ZombieNetApplied = g_ZombieNetPopupsTaken = g_ZombieNetSoundsTaken = g_ZombieNetDropsMade = 0;
 	}
@@ -11839,6 +13791,7 @@ void zombiesClientTick(void)
 		zombiesPlacePerks();
 		zombiesCornerMachines();
 		zombiesPlaceWallBuys();
+		zombiesPlaceBarriers();
 	}
 
 	// the sides, as the host's (the radar's and the names' colours)
@@ -11930,6 +13883,16 @@ void zombiesClientTick(void)
 			zombiesWallBuyShowGun(&g_ZombieWallBuys[k]);
 		}
 	}
+
+	// the doors bought: unlocked here too (the doors themselves are the
+	// host's, moved by its records), and the boards falling and coming
+	for (k = 0; k < g_ZombieNumDoors; k++) {
+		if ((g_ZombieNetDoorMask & (1 << k)) && !g_ZombieDoors[k].open) {
+			zombiesDoorOpen(k);
+		}
+	}
+
+	zombiesBarrierAnimate();
 
 	// the power-ups turning and bobbing
 	for (k = 0; k < ARRAYCOUNT(g_ZombieDrops); k++) {

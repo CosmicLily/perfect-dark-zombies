@@ -93,6 +93,7 @@ bool zombiesCanRespawn(struct chrdata *chr);
 bool zombiesIsActive(void);
 f32 zombiesMeleeDamage(void);
 bool zombiesInstaKillOn(void);
+s32 zombiesDoorBarsChrs(struct prop *doorprop);
 f32 zombiesBulletScale(struct prop *aprop);
 void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim);
 
@@ -14683,6 +14684,13 @@ struct prop *chrOpenDoor(struct chrdata *chr, struct coord *rangepos)
 				1, 0, 0) == CDRESULT_COLLISION) {
 		doorprop = cdGetObstacleProp();
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies: a door still to be bought is shut to everyone (zombies.inc)
+	if (doorprop && zombiesDoorBarsChrs(doorprop)) {
+		doorprop = NULL;
+	}
+#endif
 
 	if (doorprop) {
 		struct doorobj *door = doorprop->door;
