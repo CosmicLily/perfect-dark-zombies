@@ -6857,13 +6857,13 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 	},
 #ifndef PLATFORM_N64
 	{
-		// Zombies' own settings and controls (zombies.inc)
+		// Zombies' own controls, each player's (zombies.inc); its rules are the host's, on Game Setup
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Zombies Options\n",
+		(uintptr_t)"Zombies Controls\n",
 		0,
-		(void *)&g_ZombiesSettingsMenuDialog,
+		(void *)&g_ZombiesControlsMenuDialog,
 	},
 #endif
 	{
