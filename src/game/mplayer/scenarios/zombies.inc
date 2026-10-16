@@ -3324,58 +3324,96 @@ void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model)
 }
 
 /**
- * The dolphin dive on the player's body: Black Ops II's dive, its landing flat
- * on the floor and getting up again (pb_dive_prone, pb_dive_prone_land,
- * pb_prone2crouch), retargeted onto the chr skeleton (g_SkelChr) by
- * tools/zombies/divebake.py into the build's zombies/viewmodel/dive.zbd: each
- * of the fourteen animation parts' turn a 60th at a time, and the pelvis's
- * place over the floor. The art stays on the player's disk; without the file
- * the body runs on as it was.
+ * The dolphin dive and lying prone on the player's body: Black Ops II's
+ * (common_zm's pb_* animations) retargeted onto the chr skeleton (g_SkelChr)
+ * by tools/zombies/divebake.py into the build's zombies/viewmodel/dive.zbd:
+ * each of the fourteen animation parts' turn at every frame of Call of Duty's,
+ * and the pelvis's place over the floor. The art stays on the player's disk;
+ * without the file the body runs on as it was.
  *
- * Every machine sees every player's dive alike, from what the snapshots carry
- * for each player: a push (rolltime60) along the body's facing is a dive
- * (bwalkTryDive()), a roll's is across it, and isfalling's end after the hop
- * is the landing. So nothing of it goes on the wire.
+ * Zombies has no prone, so its full crouch (CROUCHPOS_SQUAT) is Call of Duty's
+ * prone: going into it lays the body down (pb_crouch2prone), it lies there
+ * (pb_prone_aim) and crawls as the player moves (pb_prone_crawl, and its back,
+ * left and right, each loop for the inches it carries the body), and coming
+ * out of it gets up (pb_prone2crouch). A dive (pb_dive_prone) holds its last
+ * frame while the player is in the air and lands (pb_dive_prone_land) into
+ * prone, as zombiesTickDive() squats the player on landing.
  *
- * The dive holds its last frame while the player is still in the air; the
- * landing and getting up run at twice Call of Duty's speed, as the player can
- * move again at once. The pose blends in from the run and back out to the
- * body's own animation. Joints are placed down the body's own offsets, the
- * pelvis's height scaled by its legs, so any human body will do; the elbows'
- * and knees' second matrices are the parent's turn half way to the joint's,
- * as modelPositionJointUsingQuatRot() makes them.
+ * Every machine sees every player's alike, from what the snapshots carry for
+ * each player: a push (rolltime60) along the body's facing is a dive
+ * (bwalkTryDive()), a roll's is across it; isfalling's end after the hop is
+ * the landing; crouchpos is the squat; the body's own moves are the crawl. So
+ * nothing of it goes on the wire.
+ *
+ * Landing, getting down and getting up run at twice Call of Duty's speed, as
+ * the player can move again at once. Each change of pose blends from the last
+ * one, and from and back to the body's own animation. Joints are placed down
+ * the body's own offsets, the pelvis's height scaled by its legs, so any human
+ * body will do; the elbows' and knees' second matrices are the parent's turn
+ * half way to the joint's, as modelPositionJointUsingQuatRot() makes them.
  */
 #define ZOMBIE_DIVEBODY_PARTS     14
-#define ZOMBIE_DIVEBODY_CLIPS     3   // the dive, the landing, getting up
-#define ZOMBIE_DIVEBODY_IN        8   // 60ths blending in from the run
-#define ZOMBIE_DIVEBODY_SPEED     2   // the landing's and getting up's speed
-#define ZOMBIE_DIVEBODY_LANDMIX   8   // 60ths from the dive's pose to the landing's
-#define ZOMBIE_DIVEBODY_OUT0      40  // 60ths after landing, blending out ...
-#define ZOMBIE_DIVEBODY_OUT1      52  // ... to the body's own animation
-#define ZOMBIE_DIVEBODY_AIRMAX    90  // a dive's most in the air, landed or not
+#define ZOMBIE_DIVEBODY_MIX       8     // 60ths from one pose to the next
+#define ZOMBIE_DIVEBODY_SPEED     2     // landing, getting down and up, against Call of Duty's
+#define ZOMBIE_DIVEBODY_OUT       12    // 60ths at getting up's end, back to the body's own
+#define ZOMBIE_DIVEBODY_AIRMAX    90    // a dive's most in the air, landed or not
+#define ZOMBIE_DIVEBODY_CRAWLFULL 0.05f // inches a 60th crawling at all
+
+enum {
+	ZDCLIP_DIVE,
+	ZDCLIP_LAND,
+	ZDCLIP_GETUP,
+	ZDCLIP_GETDOWN,
+	ZDCLIP_PRONE,
+	ZDCLIP_CRAWL,
+	ZDCLIP_CRAWLBACK,
+	ZDCLIP_CRAWLLEFT,
+	ZDCLIP_CRAWLRIGHT,
+	ZDCLIP_COUNT
+};
+
+enum {
+	ZDMODE_NONE,
+	ZDMODE_DIVE,
+	ZDMODE_DOWN,
+	ZDMODE_PRONE,
+	ZDMODE_UP,
+};
 
 static struct {
 	bool tried;
-	f32 legs;                                 // the leg length the pelvis is in
-	s32 ticks[ZOMBIE_DIVEBODY_CLIPS];
-	const f32 *data[ZOMBIE_DIVEBODY_CLIPS];   // per tick: pelvis[3], 14 x 3x3 rows
+	f32 legs;                          // the leg length the pelvis is in
+	f32 perinch;                       // the model's units to the inch
+	s32 frames[ZDCLIP_COUNT];
+	bool loops[ZDCLIP_COUNT];
+	f32 fps[ZDCLIP_COUNT];
+	f32 travel[ZDCLIP_COUNT];          // inches a loop carries the body
+	const f32 *data[ZDCLIP_COUNT];     // per frame: pelvis[3], 14 x 3x3 rows
 } g_ZombieDiveBody;
 
+struct zombiedivepose {
+	f32 q[ZOMBIE_DIVEBODY_PARTS + 1][4]; // each part's turn into the model's axes
+	f32 pelvis[3];
+};
+
 static struct {
-	bool on;
-	s32 rolltime;   // the push last seen
-	s32 start60;    // lvframe60 the dive began
-	s32 land60;     // and landed, -1 in the air
+	s32 mode;
+	s32 rolltime;                // the push last seen
+	s32 since60;                 // lvframe60 the mode began
+	s32 land60;                  // a dive's landing, -1 in the air
+	s32 last60;                  // the frame last worked out
+	struct zombiedivepose from;  // the pose and its weight as the mode began
+	f32 fromweight;
+	struct zombiedivepose pose;  // and as last worked out
+	f32 weight;
+	f32 crawl;                   // how far through a crawl's loop, 0 to 1
+	f32 speed[2];                // forward and left, inches a 60th
+	struct coord prevpos;
 } g_ZombieDiveSeen[MAX_PLAYERS];
 
 // part -> its parent part, 0 for the pelvis
 static const u8 g_ZombieDiveParent[ZOMBIE_DIVEBODY_PARTS + 1] = {
 	0, 0, 1, 2, 2, 3, 4, 5, 6, 1, 1, 9, 10, 11, 12,
-};
-
-struct zombiedivepose {
-	f32 q[ZOMBIE_DIVEBODY_PARTS + 1][4]; // each part's turn into the model's axes
-	f32 pelvis[3];
 };
 
 static bool zombiesDiveBodyLoad(void)
@@ -3399,49 +3437,56 @@ static bool zombiesDiveBodyLoad(void)
 
 	data = fsFileLoad(rel, &size);
 
-	if (!data || size < 12 || memcmp(data, "ZBD1", 4) != 0) {
+	if (!data || size < 16 || memcmp(data, "ZBD2", 4) != 0) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is not divebake.py's", rel);
 		return false;
 	}
 
 	memcpy(hdr, data + 4, sizeof(hdr));
 	memcpy(&g_ZombieDiveBody.legs, data + 8, sizeof(f32));
+	memcpy(&g_ZombieDiveBody.perinch, data + 12, sizeof(f32));
 
-	if (hdr[0] != ZOMBIE_DIVEBODY_CLIPS || hdr[1] != ZOMBIE_DIVEBODY_PARTS || g_ZombieDiveBody.legs <= 0) {
+	if (hdr[0] != ZDCLIP_COUNT || hdr[1] != ZOMBIE_DIVEBODY_PARTS
+			|| g_ZombieDiveBody.legs <= 0 || g_ZombieDiveBody.perinch <= 0) {
 		sysLogPrintf(LOG_WARNING, "zombies: %s is not divebake.py's", rel);
 		return false;
 	}
 
-	at = 12;
+	at = 16;
 
-	for (c = 0; c < ZOMBIE_DIVEBODY_CLIPS; c++) {
-		u16 ticks[2];
+	for (c = 0; c < ZDCLIP_COUNT; c++) {
+		u16 head[2];
+		f32 rates[2];
 		u32 len;
 
-		if (at + 4 > size) {
+		if (at + 12 > size) {
 			break;
 		}
 
-		memcpy(ticks, data + at, sizeof(ticks));
-		len = (u32)ticks[0] * (3 + ZOMBIE_DIVEBODY_PARTS * 9) * sizeof(f32);
-		at += 4;
+		memcpy(head, data + at, sizeof(head));
+		memcpy(rates, data + at + 4, sizeof(rates));
+		len = (u32)head[0] * (3 + ZOMBIE_DIVEBODY_PARTS * 9) * sizeof(f32);
+		at += 12;
 
-		if (ticks[0] == 0 || at + len > size) {
+		if (head[0] == 0 || rates[0] <= 0 || at + len > size) {
 			break;
 		}
 
-		g_ZombieDiveBody.ticks[c] = ticks[0];
+		g_ZombieDiveBody.frames[c] = head[0];
+		g_ZombieDiveBody.loops[c] = head[1] & 1;
+		g_ZombieDiveBody.fps[c] = rates[0];
+		g_ZombieDiveBody.travel[c] = rates[1];
 		g_ZombieDiveBody.data[c] = (const f32 *)(data + at);
 		at += len;
 	}
 
-	if (c < ZOMBIE_DIVEBODY_CLIPS) {
+	if (c < ZDCLIP_COUNT) {
 		sysLogPrintf(LOG_WARNING, "zombies: %s is short", rel);
 		g_ZombieDiveBody.data[0] = NULL;
 		return false;
 	}
 
-	sysLogPrintf(LOG_NOTE, "zombies: the dolphin dive on the body, %d + %d + %d 60ths",
-			g_ZombieDiveBody.ticks[0], g_ZombieDiveBody.ticks[1], g_ZombieDiveBody.ticks[2]);
+	sysLogPrintf(LOG_NOTE, "zombies: the dolphin dive and prone on the body, %d clips", ZDCLIP_COUNT);
 
 	return true;
 }
@@ -3464,13 +3509,10 @@ static void zombiesMtxQuat(const Mtxf *m, f32 q[4])
 	quaternion0f097044(&r, q);
 }
 
-static void zombiesDiveSample(s32 clip, s32 tick, struct zombiedivepose *pose)
+static void zombiesDiveFrame(s32 clip, s32 frame, struct zombiedivepose *pose)
 {
-	const f32 *d;
+	const f32 *d = g_ZombieDiveBody.data[clip] + frame * (3 + ZOMBIE_DIVEBODY_PARTS * 9);
 	s32 j;
-
-	tick = tick < 0 ? 0 : tick >= g_ZombieDiveBody.ticks[clip] ? g_ZombieDiveBody.ticks[clip] - 1 : tick;
-	d = g_ZombieDiveBody.data[clip] + tick * (3 + ZOMBIE_DIVEBODY_PARTS * 9);
 
 	pose->pelvis[0] = d[0];
 	pose->pelvis[1] = d[1];
@@ -3503,6 +3545,11 @@ static void zombiesDivePoseMix(struct zombiedivepose *a, struct zombiedivepose *
 		return;
 	}
 
+	if (t >= 1) {
+		*a = *b;
+		return;
+	}
+
 	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++) {
 		f32 q[4];
 
@@ -3519,17 +3566,93 @@ static void zombiesDivePoseMix(struct zombiedivepose *a, struct zombiedivepose *
 	}
 }
 
+// A clip at a frame (fractions between them), a loop's wrapped round
+static void zombiesDiveSampleFrame(s32 clip, f32 f, struct zombiedivepose *pose)
+{
+	const s32 frames = g_ZombieDiveBody.frames[clip];
+	struct zombiedivepose next;
+	s32 i0;
+	s32 i1;
+
+	if (g_ZombieDiveBody.loops[clip]) {
+		f -= (s32)(f / frames) * frames;
+		f = f < 0 ? f + frames : f;
+	} else {
+		f = f < 0 ? 0 : f > frames - 1 ? frames - 1 : f;
+	}
+
+	i0 = (s32)f;
+	i0 = i0 >= frames ? frames - 1 : i0;
+	i1 = i0 + 1 < frames ? i0 + 1 : g_ZombieDiveBody.loops[clip] ? 0 : i0;
+
+	zombiesDiveFrame(clip, i0, pose);
+
+	if (i1 != i0 && f > i0) {
+		zombiesDiveFrame(clip, i1, &next);
+		zombiesDivePoseMix(pose, &next, f - i0);
+	}
+}
+
+// A clip t 60ths in at speed times its own
+static void zombiesDiveSample(s32 clip, f32 t, f32 speed, struct zombiedivepose *pose)
+{
+	zombiesDiveSampleFrame(clip, t * speed * g_ZombieDiveBody.fps[clip] / 60.0f, pose);
+}
+
+// A clip's length in 60ths at speed times its own
+static f32 zombiesDiveClip60(s32 clip, f32 speed)
+{
+	return (g_ZombieDiveBody.frames[clip] - 1) * 60.0f / (g_ZombieDiveBody.fps[clip] * speed);
+}
+
+static void zombiesDiveSetMode(s32 playernum, s32 mode, s32 now)
+{
+	g_ZombieDiveSeen[playernum].from = g_ZombieDiveSeen[playernum].pose;
+	g_ZombieDiveSeen[playernum].fromweight = g_ZombieDiveSeen[playernum].mode == ZDMODE_NONE
+		? 0 : g_ZombieDiveSeen[playernum].weight;
+	g_ZombieDiveSeen[playernum].mode = mode;
+	g_ZombieDiveSeen[playernum].since60 = now;
+}
+
+// Lying prone: still, or crawling the way the body is going, for as far
+static void zombiesDiveProne(s32 playernum, s32 t, struct zombiedivepose *pose)
+{
+	const f32 fwd = g_ZombieDiveSeen[playernum].speed[0];
+	const f32 left = g_ZombieDiveSeen[playernum].speed[1];
+	const f32 speed = sqrtf(fwd * fwd + left * left);
+	struct zombiedivepose crawl;
+	struct zombiedivepose side;
+	s32 fb = fwd >= 0 ? ZDCLIP_CRAWL : ZDCLIP_CRAWLBACK;
+	s32 lr = left >= 0 ? ZDCLIP_CRAWLLEFT : ZDCLIP_CRAWLRIGHT;
+	f32 across = speed > 0 ? fabsf(left) / (fabsf(fwd) + fabsf(left)) : 0;
+	f32 phase = g_ZombieDiveSeen[playernum].crawl;
+
+	zombiesDiveSample(ZDCLIP_PRONE, t, 1, pose);
+
+	if (speed <= 0.001f) {
+		return;
+	}
+
+	zombiesDiveSampleFrame(fb, phase * g_ZombieDiveBody.frames[fb], &crawl);
+	zombiesDiveSampleFrame(lr, phase * g_ZombieDiveBody.frames[lr], &side);
+	zombiesDivePoseMix(&crawl, &side, across);
+	zombiesDivePoseMix(pose, &crawl, speed >= ZOMBIE_DIVEBODY_CRAWLFULL ? 1 : speed / ZOMBIE_DIVEBODY_CRAWLFULL);
+}
+
 /**
- * Where the player whose body this is is in a dive: the pose wanted, and how
- * much of it against the body's own animation (0 to 1). False when it is not
- * diving.
+ * The player whose body this is, diving or prone: the pose wanted, and how
+ * much of it against the body's own animation (0 to 1). False when neither.
  */
-static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, struct zombiedivepose *pose, f32 *weight)
+static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, f32 scale, struct zombiedivepose *pose, f32 *weight)
 {
 	struct player *player;
+	struct zombiedivepose target;
+	f32 targetweight = 1;
 	s32 playernum;
 	s32 now = g_Vars.lvframe60;
-	s32 d;
+	s32 dt;
+	s32 t;
+	bool squat;
 
 	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER) {
 		return false;
@@ -3543,6 +3666,61 @@ static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, struct zombiedive
 
 	player = g_Vars.players[playernum];
 
+	// once a frame, however many screens draw the body
+	if (now == g_ZombieDiveSeen[playernum].last60 && g_ZombieDiveSeen[playernum].mode != ZDMODE_NONE) {
+		*pose = g_ZombieDiveSeen[playernum].pose;
+		*weight = g_ZombieDiveSeen[playernum].weight;
+		return *weight > 0;
+	}
+
+	dt = now - g_ZombieDiveSeen[playernum].last60;
+	dt = dt < 0 || dt > 30 ? 0 : dt;
+	g_ZombieDiveSeen[playernum].last60 = now;
+
+	// the body's own moves, along and across its facing, for a crawl
+	{
+		struct coord *pos = &chr->prop->pos;
+		f32 dx = pos->x - g_ZombieDiveSeen[playernum].prevpos.x;
+		f32 dz = pos->z - g_ZombieDiveSeen[playernum].prevpos.z;
+		f32 inch = g_ZombieDiveBody.perinch * scale;
+
+		g_ZombieDiveSeen[playernum].prevpos = *pos;
+
+		if (dt > 0 && inch > 0) {
+			f32 fwd = (dx * sinf(yrot) + dz * cosf(yrot)) / inch / dt;
+			f32 left = (dx * cosf(yrot) - dz * sinf(yrot)) / inch / dt;
+			f32 k = dt * 0.15f > 1 ? 1 : dt * 0.15f;
+			f32 speed;
+
+			g_ZombieDiveSeen[playernum].speed[0] += (fwd - g_ZombieDiveSeen[playernum].speed[0]) * k;
+			g_ZombieDiveSeen[playernum].speed[1] += (left - g_ZombieDiveSeen[playernum].speed[1]) * k;
+
+			speed = sqrtf(fwd * fwd + left * left) * dt;
+
+			if (g_ZombieDiveSeen[playernum].mode == ZDMODE_PRONE && speed > 0) {
+				s32 fb = g_ZombieDiveSeen[playernum].speed[0] >= 0 ? ZDCLIP_CRAWL : ZDCLIP_CRAWLBACK;
+				s32 lr = g_ZombieDiveSeen[playernum].speed[1] >= 0 ? ZDCLIP_CRAWLLEFT : ZDCLIP_CRAWLRIGHT;
+				f32 a = fabsf(g_ZombieDiveSeen[playernum].speed[1])
+					/ (fabsf(g_ZombieDiveSeen[playernum].speed[0]) + fabsf(g_ZombieDiveSeen[playernum].speed[1]) + 0.0001f);
+				f32 travel = g_ZombieDiveBody.travel[fb] * (1 - a) + g_ZombieDiveBody.travel[lr] * a;
+
+				if (travel > 0) {
+					g_ZombieDiveSeen[playernum].crawl += speed / travel;
+					g_ZombieDiveSeen[playernum].crawl -= (s32)g_ZombieDiveSeen[playernum].crawl;
+				}
+			}
+		}
+	}
+
+	if (player->isdead || g_ZombieDowned[playernum]) {
+		g_ZombieDiveSeen[playernum].mode = ZDMODE_NONE;
+		g_ZombieDiveSeen[playernum].rolltime = player->rolltime60;
+		return false;
+	}
+
+	squat = player->crouchpos == CROUCHPOS_SQUAT && player->bondmovemode == MOVEMODE_WALK
+		&& !player->onladder && zombiesBodyDrinkT(chr, NULL) < 0;
+
 	// a push begun since the last look: along the body's facing, a dive
 	if (player->rolltime60 != g_ZombieDiveSeen[playernum].rolltime) {
 		f32 x = player->rollspeed.x;
@@ -3552,54 +3730,105 @@ static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, struct zombiedive
 		g_ZombieDiveSeen[playernum].rolltime = player->rolltime60;
 
 		if (player->rolltime60 != 0 && len > 0 && (x * sinf(yrot) + z * cosf(yrot)) > 0.5f * len) {
-			g_ZombieDiveSeen[playernum].on = true;
-			g_ZombieDiveSeen[playernum].start60 = now;
+			zombiesDiveSetMode(playernum, ZDMODE_DIVE, now);
 			g_ZombieDiveSeen[playernum].land60 = -1;
 		}
 	}
 
-	if (!g_ZombieDiveSeen[playernum].on) {
-		return false;
-	}
+	t = now - g_ZombieDiveSeen[playernum].since60;
 
-	d = now - g_ZombieDiveSeen[playernum].start60;
-
-	if (player->isdead || g_ZombieDowned[playernum] || d < 0 || d > ZOMBIE_DIVEBODY_AIRMAX + ZOMBIE_DIVEBODY_OUT1) {
-		g_ZombieDiveSeen[playernum].on = false;
-		return false;
-	}
-
-	if (g_ZombieDiveSeen[playernum].land60 < 0 && ((d > 12 && !player->isfalling) || d > ZOMBIE_DIVEBODY_AIRMAX)) {
-		g_ZombieDiveSeen[playernum].land60 = now;
-	}
-
-	*weight = zombiesEase(0, ZOMBIE_DIVEBODY_IN, d);
-	zombiesDiveSample(0, d, pose);
-
-	if (g_ZombieDiveSeen[playernum].land60 >= 0) {
-		s32 l = now - g_ZombieDiveSeen[playernum].land60;
-		s32 t = l * ZOMBIE_DIVEBODY_SPEED;
-		struct zombiedivepose after;
-
-		if (l >= ZOMBIE_DIVEBODY_OUT1) {
-			g_ZombieDiveSeen[playernum].on = false;
-			return false;
+	switch (g_ZombieDiveSeen[playernum].mode) {
+	case ZDMODE_NONE:
+		if (squat) {
+			zombiesDiveSetMode(playernum, ZDMODE_DOWN, now);
+		}
+		break;
+	case ZDMODE_DIVE:
+		if (g_ZombieDiveSeen[playernum].land60 < 0
+				&& ((t > 12 && !player->isfalling) || t > ZOMBIE_DIVEBODY_AIRMAX)) {
+			g_ZombieDiveSeen[playernum].land60 = now;
 		}
 
-		if (t < g_ZombieDiveBody.ticks[1]) {
-			zombiesDiveSample(1, t, &after);
+		if (g_ZombieDiveSeen[playernum].land60 >= 0
+				&& now - g_ZombieDiveSeen[playernum].land60 >= zombiesDiveClip60(ZDCLIP_LAND, ZOMBIE_DIVEBODY_SPEED)) {
+			zombiesDiveSetMode(playernum, squat ? ZDMODE_PRONE : ZDMODE_UP, now);
+		}
+		break;
+	case ZDMODE_DOWN:
+		if (!squat) {
+			zombiesDiveSetMode(playernum, ZDMODE_UP, now);
+		} else if (t >= zombiesDiveClip60(ZDCLIP_GETDOWN, ZOMBIE_DIVEBODY_SPEED)) {
+			zombiesDiveSetMode(playernum, ZDMODE_PRONE, now);
+		}
+		break;
+	case ZDMODE_PRONE:
+		if (!squat) {
+			zombiesDiveSetMode(playernum, ZDMODE_UP, now);
+		}
+		break;
+	case ZDMODE_UP:
+		if (squat) {
+			zombiesDiveSetMode(playernum, ZDMODE_DOWN, now);
+		} else if (t >= zombiesDiveClip60(ZDCLIP_GETUP, ZOMBIE_DIVEBODY_SPEED)) {
+			g_ZombieDiveSeen[playernum].mode = ZDMODE_NONE;
+		}
+		break;
+	}
+
+	t = now - g_ZombieDiveSeen[playernum].since60;
+
+	switch (g_ZombieDiveSeen[playernum].mode) {
+	case ZDMODE_NONE:
+		g_ZombieDiveSeen[playernum].weight = 0;
+		return false;
+	case ZDMODE_DIVE:
+		zombiesDiveSample(ZDCLIP_DIVE, t, 1, &target);
+
+		if (g_ZombieDiveSeen[playernum].land60 >= 0) {
+			struct zombiedivepose land;
+			s32 l = now - g_ZombieDiveSeen[playernum].land60;
+
+			zombiesDiveSample(ZDCLIP_LAND, l, ZOMBIE_DIVEBODY_SPEED, &land);
+			zombiesDivePoseMix(&target, &land, zombiesEase(0, ZOMBIE_DIVEBODY_MIX, l));
+		}
+		break;
+	case ZDMODE_DOWN:
+		zombiesDiveSample(ZDCLIP_GETDOWN, t, ZOMBIE_DIVEBODY_SPEED, &target);
+		break;
+	case ZDMODE_PRONE:
+		zombiesDiveProne(playernum, t, &target);
+		break;
+	case ZDMODE_UP: {
+		f32 end = zombiesDiveClip60(ZDCLIP_GETUP, ZOMBIE_DIVEBODY_SPEED);
+
+		zombiesDiveSample(ZDCLIP_GETUP, t, ZOMBIE_DIVEBODY_SPEED, &target);
+		targetweight = 1 - zombiesEase(end - ZOMBIE_DIVEBODY_OUT, end, t);
+		break;
+	}
+	}
+
+	// from the pose the mode began in, or in from the body's own
+	{
+		f32 e = zombiesEase(0, ZOMBIE_DIVEBODY_MIX, t);
+
+		if (g_ZombieDiveSeen[playernum].fromweight > 0) {
+			*pose = g_ZombieDiveSeen[playernum].from;
+			zombiesDivePoseMix(pose, &target, e);
 		} else {
-			zombiesDiveSample(2, t - g_ZombieDiveBody.ticks[1], &after);
+			*pose = target;
 		}
 
-		zombiesDivePoseMix(pose, &after, zombiesEase(0, ZOMBIE_DIVEBODY_LANDMIX, l));
-		*weight *= 1 - zombiesEase(ZOMBIE_DIVEBODY_OUT0, ZOMBIE_DIVEBODY_OUT1, l);
+		*weight = (g_ZombieDiveSeen[playernum].fromweight + (1 - g_ZombieDiveSeen[playernum].fromweight) * e)
+			* targetweight;
 	}
+
+	g_ZombieDiveSeen[playernum].pose = *pose;
+	g_ZombieDiveSeen[playernum].weight = *weight;
 
 	return *weight > 0;
 }
 
-// The chr's model matrices: the dive's pose, while the player is in one
+// The chr's model matrices: the dive's or prone's pose, while the player is in one
 void zombiesPoseDive(struct chrdata *chr, struct model *model)
 {
 	struct modelnode *nodes[ZOMBIE_DIVEBODY_PARTS + 1] = { NULL };
@@ -3623,7 +3852,7 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
 
 	rwdata = modelGetNodeRwData(model, model->definition->rootnode);
 
-	if (!zombiesDiveBodyPose(chr, rwdata->chrinfo.yrot, &pose, &weight)) {
+	if (!zombiesDiveBodyPose(chr, rwdata->chrinfo.yrot, model->scale, &pose, &weight)) {
 		return;
 	}
 
@@ -3703,8 +3932,12 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
 		struct modelrodata_position *rodata = &nodes[j]->rodata->position;
 		s32 k;
 
-		for (k = 0; k < 2; k++) {
-			s32 index = k ? rodata->mtxindex1 : rodata->mtxindex0;
+		// the pelvis's third: the root's own matrix (chrinfo), which some of
+		// the body hangs from; left be, it stood up out of a body lying down
+		for (k = 0; k < (j == 1 ? 3 : 2); k++) {
+			s32 index = k == 2 ? model->definition->rootnode->rodata->chrinfo.mtxindex
+				: k ? rodata->mtxindex1 : rodata->mtxindex0;
+			f32 at[3] = { pos[j][0], pos[j][1], pos[j][2] };
 			Mtxf local;
 			Mtxf want;
 			Mtxf *mtx;
@@ -3713,12 +3946,19 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
 			f32 q[4];
 			f32 s;
 
-			if (index < 0) {
+			if (index < 0 || index >= n || (k == 2 && index == rodata->mtxindex0)) {
 				continue;
 			}
 
 			if (k == 0) {
 				local = rot[j];
+			} else if (k == 2) {
+				// where the pelvis's offset from it puts it, turned as the pelvis
+				local = rot[j];
+
+				for (i = 0; i < 3; i++) {
+					at[i] -= rot[j].m[0][i] * rodata->pos.x + rot[j].m[1][i] * rodata->pos.y + rot[j].m[2][i] * rodata->pos.z;
+				}
 			} else {
 				// an elbow's or knee's second: its parent's turn half way to its own
 				const s32 p = g_ZombieDiveParent[j];
@@ -3741,9 +3981,9 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
 				mtx00015be4(&rot[p], &rel, &local);
 			}
 
-			local.m[3][0] = pos[j][0];
-			local.m[3][1] = pos[j][1];
-			local.m[3][2] = pos[j][2];
+			local.m[3][0] = at[0];
+			local.m[3][1] = at[1];
+			local.m[3][2] = at[2];
 			local.m[0][3] = local.m[1][3] = local.m[2][3] = 0;
 			local.m[3][3] = 1;
 

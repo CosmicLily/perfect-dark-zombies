@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Black Ops II's dolphin dive retargeted onto Perfect Dark's body (g_SkelChr),
-baked for the game (zombies.inc, zombiesPoseDive()): the dive, its landing
-and getting up again, each joint's turn a 60th of a second.
+Black Ops II's dolphin dive and prone retargeted onto Perfect Dark's body
+(g_SkelChr), baked for the game (zombies.inc, zombiesPoseDive()): the dive,
+its landing, getting down to prone and up again, lying prone and crawling,
+each joint's turn at every frame of Call of Duty's.
 
     python3 tools/zombies/divebake.py <xanim dir> <body.glb> <out.zbd> [check.png]
 
-<xanim dir> is an OpenAssetTools dump of common_zm's xanim/ (pb_dive_prone,
-pb_dive_prone_land, pb_prone2crouch); <body.glb> any Black Ops II body with
-its standard human skeleton (zm_prison's c_zom_inmate_body1_lod0.glb). With
-check.png, a sheet of stick figures from the side: Call of Duty's skeleton
-white, Perfect Dark's retargeted onto it green, every fourth frame of each
-clip. The art stays on the player's disk, out of the tree.
+<xanim dir> is an OpenAssetTools dump of common_zm's xanim/ (CLIPS below);
+<body.glb> any Black Ops II body with its standard human skeleton (zm_prison's
+c_zom_inmate_body1_lod0.glb). With check.png, a sheet of stick figures from
+the side: Call of Duty's skeleton white, Perfect Dark's retargeted onto it
+green, every eighth frame of the short clips. The art stays on the player's
+disk, out of the tree.
 
 The player body's skeleton is the glb's with torso_stabilizer between
 j_mainroot and j_spinelower: the stabilizer takes the pelvis's turn back off
@@ -36,12 +37,21 @@ F_cod * F_pd_rest^T. A hand keeps its forearm's turn. Positions are the
 game's to work out from the body's own offsets (bodies differ); the pelvis's
 place is Call of Duty's, scaled by the legs' lengths.
 
+Laid out, Call of Duty's body is behind its origin (the pelvis 25 inches
+back, the feet 60), and a third person camera behind the player had the
+thighs in its lens. So a body lying down is moved forward by as much as puts
+it midway, head to ankles, on the player: as the dive or getting down lays
+it out, all the while it lies or crawls, and gone again as it gets up.
+
 out.zbd, little endian:
-    "ZBD1", u16 clips (3: dive, land, getup), u16 parts (14), f32 leg length
-    (the model units the pelvis's place is in: thigh + shin of the body here)
-    per clip: u16 ticks, u16 0, then per tick f32 pelvis[3] (the model's
-    units, x left, y up from the floor, z forward), then parts 1 to 14 each a
-    3x3 turn, row major: the joint's rest axes into the model's.
+    "ZBD2", u16 clips (CLIPS' order), u16 parts (14), f32 leg length (the
+    model units the pelvis's place is in: thigh + shin of the body here),
+    f32 the model's units to Call of Duty's inch
+    per clip: u16 frames, u16 flags (1: loops, its frame `frames` its first),
+    f32 frames a second, f32 inches a loop carries the body (a crawl's), then
+    per frame f32 pelvis[3] (the model's units, x left, y up from the floor,
+    z forward), then parts 1 to 14 each a 3x3 turn, row major: the joint's
+    rest axes into the model's.
 """
 
 import math
@@ -54,7 +64,10 @@ from glb2obj import read_glb  # noqa: E402
 from imgio import png_write  # noqa: E402
 from xanim import XAnim  # noqa: E402
 
-CLIPS = ("pb_dive_prone", "pb_dive_prone_land", "pb_prone2crouch")
+CLIPS = ("pb_dive_prone", "pb_dive_prone_land", "pb_prone2crouch", "pb_crouch2prone",
+         "pb_prone_aim", "pb_prone_crawl", "pb_prone_crawl_back", "pb_prone_crawl_left",
+         "pb_prone_crawl_right")
+DIVE, LAND, GETUP, GETDOWN = 0, 1, 2, 3
 
 # Perfect Dark's chr skeleton: animation part -> (parent part, offset in
 # model units), dumped from the player's body
@@ -268,7 +281,7 @@ def posed_pd(R, pelvis):
 # --- the clips ---
 
 def clip_poses(bones, xdir):
-    """each clip: [(frames, fps, [w per tick])], in Call of Duty's axes"""
+    """each clip: (its XAnim, [w per frame]), in Call of Duty's axes"""
     anims = [XAnim(os.path.join(xdir, name)) for name in CLIPS]
     dive = anims[0]
     end = dive.delta_trans[-1][1]
@@ -293,17 +306,15 @@ def clip_poses(bones, xdir):
     out = []
 
     for i, a in enumerate(anims):
-        ticks = (a.frames - 1) * 60 // a.framerate + 1
         ws = []
-        for t in range(ticks):
-            f = min(t * a.framerate / 60.0, a.frames - 1)
-            if i == 0:
+        for f in range(a.frames):
+            if i == DIVE:
                 hop = at(dive.delta_trans, f)
                 tag = (yaw(yaw_at(f) - travel), [0, 0, hop[2] if hop else 0.0])
             else:
                 tag = (yaw(final - travel), [0, 0, 0])
             ws.append(pose(bones, a, f, tag))
-        out.append(ws)
+        out.append((a, ws))
 
     return out
 
@@ -354,39 +365,38 @@ def main():
     k = legs / cod_leg
     clips = clip_poses(bones, xdir)
 
-    data = bytearray(b"ZBD1" + struct.pack("<2Hf", len(clips), 14, legs))
+    data = bytearray(b"ZBD2" + struct.pack("<2H2f", len(clips), 14, legs, k))
     panels = []
 
-    # Laid out, Call of Duty's body is behind its origin (the pelvis 25
-    # inches back, the feet 60), and a third person camera behind the player
-    # had the thighs in its lens. So the body goes forward by as much as puts
-    # it midway, head to ankles, on the player: as the dive lays the body out,
-    # held through the landing, gone again by the time it is up.
+    # the body midway, head to ankles, on the player while it lies (above)
     def middle(w):
         ankles = scale(add(to_pd(w["j_ankle_le"][0]), to_pd(w["j_ankle_ri"][0])), 0.5)
         return (to_pd(w["j_head"][0])[2] + ankles[2]) * 0.5 * k
 
-    laid = [middle(w) for w in clips[0][len(clips[0]) // 2:]] + [middle(w) for w in clips[1]]
+    dive = clips[DIVE][1]
+    laid = [middle(w) for w in dive[len(dive) // 2:]] + [middle(w) for w in clips[LAND][1]]
     forward = -sum(laid) / len(laid)
     print("laid out, the body's middle is %.1f units from the origin; moved forward %.1f" % (-forward, forward))
 
-    def shift(c, t, ticks):
-        if c == 0:
-            return max(0.0, min(forward, -middle(clips[0][t])))
-        if c == 1:
-            return forward
-        return forward * (1.0 - t / float(ticks - 1))
+    def shift(c, t, ws):
+        if c in (DIVE, GETDOWN):
+            return max(0.0, min(forward, -middle(ws[t])))
+        if c == GETUP:
+            return forward * (1.0 - t / float(len(ws) - 1))
+        return forward
 
-    for c, ws in enumerate(clips):
-        data += struct.pack("<2H", len(ws), 0)
+    for c, (a, ws) in enumerate(clips):
+        loops = a.flags & 1
+        travel = math.hypot(*a.delta_trans[-1][1][:2]) if loops and a.delta_trans else 0.0
+        data += struct.pack("<2H2f", len(ws), loops, a.framerate, travel)
         for t, w in enumerate(ws):
             R, pelvis = retarget(w, signs, k)
-            pelvis[2] += shift(c, t, len(ws))
+            pelvis[2] += shift(c, t, ws)
             data += struct.pack("<3f", *pelvis)
             for j in range(1, 15):
                 data += struct.pack("<9f", *(R[j][0] + R[j][1] + R[j][2]))
 
-            if check and t % 8 == 0:
+            if check and t % 8 == 0 and not loops or check and loops and t % 40 == 0:
                 cod = []
                 for n, (p, r) in w.items():
                     par = names.get(n)
@@ -404,7 +414,7 @@ def main():
                     pd.append((pos[j], add(pos[j], apply(R[j], [0, 0, 120])), (240, 80, 80)))
                 panels.append((cod, pd))
 
-        print("%s: %d ticks" % (CLIPS[c], len(ws)))
+        print("%s: %d frames%s" % (CLIPS[c], len(ws), ", loops, %.1f inches a loop" % travel if loops else ""))
 
     open(out, "wb").write(data)
     print("%s: %d bytes, legs %.1f units, %.2f units to the inch" % (out, len(data), legs, k))
