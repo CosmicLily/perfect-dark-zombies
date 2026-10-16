@@ -149,9 +149,37 @@ def dds_read(path):
     if fourcc not in (b"DXT1", b"DXT5"):
         raise ValueError("%s: %s, only DXT1 and DXT5 are read" % (path, fourcc))
 
+    return width, height, _dxt_decode(data, 128, width, height, fourcc)
+
+
+# Black Ops II's image format (IWi, version 0x1b): u8 format (0x0b DXT1, 0x0d
+# DXT5), u8 flags, u16 width, height and depth, then the mips' end offsets
+# from 32, the largest first. The largest is stored last, so it is the file's
+# last width * height (DXT5; half that DXT1) bytes.
+IWI_FORMATS = {0x0b: b"DXT1", 0x0d: b"DXT5"}
+
+
+def iwi_read(path):
+    """A Black Ops II .iwi's largest mip level (DXT1 or DXT5)"""
+    data = open(path, "rb").read()
+
+    if data[:3] != b"IWi" or data[3] != 0x1b:
+        raise ValueError("%s: not a Black Ops II IWi" % path)
+
+    fourcc = IWI_FORMATS.get(data[4])
+
+    if fourcc is None:
+        raise ValueError("%s: IWi format 0x%02x, only DXT1 and DXT5 are read" % (path, data[4]))
+
+    width, height = struct.unpack_from("<HH", data, 6)
+    size = ((width + 3) // 4) * ((height + 3) // 4) * (8 if fourcc == b"DXT1" else 16)
+
+    return width, height, _dxt_decode(data, len(data) - size, width, height, fourcc)
+
+
+def _dxt_decode(data, at, width, height, fourcc):
     size = 8 if fourcc == b"DXT1" else 16
     out = bytearray(width * height * 4)
-    at = 128
     bw = (width + 3) // 4
     bh = (height + 3) // 4
 
@@ -174,8 +202,16 @@ def dds_read(path):
                     o = (y * width + x) * 4
                     out[o:o + 4] = bytes(px[i])
 
-    return width, height, out
+    return out
 
 
 def image_read(path):
-    return dds_read(path) if path.lower().endswith(".dds") else png_read(path)
+    low = path.lower()
+
+    if low.endswith(".dds"):
+        return dds_read(path)
+
+    if low.endswith(".iwi"):
+        return iwi_read(path)
+
+    return png_read(path)

@@ -6,6 +6,9 @@ port/src/zombieperks.c draws (70 square, the badge on a transparent field).
 The art stays on the player's disk, out of the tree.
 
     python3 tools/zombies/perkicons.py <sheet.png> <outdir> <row> <col>=<name> ...
+    python3 tools/zombies/perkicons.py --iwi <outdir> <file.iwi>=<name> ...
+
+The second takes the game's own icon textures, which are better (from_iwi()).
 
 <row> is 0 for the sheet's first row of badges, 1 for the next; <col> counts
 the badges along it from 0. E.g. the second row's Deadshot, PhD and Electric
@@ -49,7 +52,29 @@ def runs(flags, mingap=4, minlen=20):
     return out
 
 
+def from_iwi(outdir, picks):
+    """
+    The game's own icons instead (perkicons.py --iwi <outdir> <file.iwi>=<name>
+    ...): Black Ops II's HUD textures, specialty_*_zombies.iwi and Electric
+    Cherry's minimap_icon_electric_cherry.iwi, 64 square DXT5 with their own
+    alpha, written as they are - sharper than a sheet's copies, which were a
+    compressed picture of them on a background to take out.
+    """
+    from imgio import iwi_read
+
+    for pick in picks:
+        src, name = pick.rsplit("=", 1)
+        w, h, rgba = iwi_read(src)
+        path = "%s/%s.png" % (outdir, name)
+        png_write(path, w, h, rgba)
+        print("wrote", path, "(%dx%d from %s)" % (w, h, src))
+
+
 def main():
+    if sys.argv[1] == "--iwi":
+        from_iwi(sys.argv[2], sys.argv[3:])
+        return
+
     sheet, outdir, row = sys.argv[1], sys.argv[2], int(sys.argv[3])
     picks = dict((int(a.split("=")[0]), a.split("=")[1]) for a in sys.argv[4:])
     w, h, p = png_read(sheet)
