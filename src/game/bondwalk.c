@@ -2088,8 +2088,15 @@ void bwalkApplyCrouchSpeed(void)
 		g_Vars.currentplayer->speedforwards *= 0.5f;
 		g_Vars.currentplayer->speedsideways *= 0.5f;
 	} else if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT) {
-		g_Vars.currentplayer->speedforwards *= 0.35f;
-		g_Vars.currentplayer->speedsideways *= 0.35f;
+#ifndef PLATFORM_N64
+		// Zombies' full crouch is a prone, crawled at a crawl's pace (zombies.inc)
+		extern f32 zombiesProneSpeed(void);
+		const f32 prone = zombiesProneSpeed();
+#else
+		const f32 prone = 1.0f;
+#endif
+		g_Vars.currentplayer->speedforwards *= 0.35f * prone;
+		g_Vars.currentplayer->speedsideways *= 0.35f * prone;
 	}
 }
 

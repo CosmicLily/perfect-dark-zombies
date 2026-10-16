@@ -3828,6 +3828,17 @@ static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, f32 scale, struct
 	return *weight > 0;
 }
 
+/**
+ * bwalkApplyCrouchSpeed()'s, on the full crouch's 0.35: lying prone, the
+ * player crawls at some twice Call of Duty's crawl (about 15 inches a second
+ * against Black Ops II's 8), where the full crouch went 53 and the crawl
+ * played seven times over. Only where the prone is drawn (dive.zbd is there).
+ */
+f32 zombiesProneSpeed(void)
+{
+	return zombiesIsActive() && zombiesDiveBodyLoad() ? 0.3f : 1.0f;
+}
+
 // The chr's model matrices: the dive's or prone's pose, while the player is in one
 void zombiesPoseDive(struct chrdata *chr, struct model *model)
 {
