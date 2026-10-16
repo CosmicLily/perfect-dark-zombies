@@ -357,10 +357,31 @@ def main():
     data = bytearray(b"ZBD1" + struct.pack("<2Hf", len(clips), 14, legs))
     panels = []
 
+    # Laid out, Call of Duty's body is behind its origin (the pelvis 25
+    # inches back, the feet 60), and a third person camera behind the player
+    # had the thighs in its lens. So the body goes forward by as much as puts
+    # it midway, head to ankles, on the player: as the dive lays the body out,
+    # held through the landing, gone again by the time it is up.
+    def middle(w):
+        ankles = scale(add(to_pd(w["j_ankle_le"][0]), to_pd(w["j_ankle_ri"][0])), 0.5)
+        return (to_pd(w["j_head"][0])[2] + ankles[2]) * 0.5 * k
+
+    laid = [middle(w) for w in clips[0][len(clips[0]) // 2:]] + [middle(w) for w in clips[1]]
+    forward = -sum(laid) / len(laid)
+    print("laid out, the body's middle is %.1f units from the origin; moved forward %.1f" % (-forward, forward))
+
+    def shift(c, t, ticks):
+        if c == 0:
+            return max(0.0, min(forward, -middle(clips[0][t])))
+        if c == 1:
+            return forward
+        return forward * (1.0 - t / float(ticks - 1))
+
     for c, ws in enumerate(clips):
         data += struct.pack("<2H", len(ws), 0)
         for t, w in enumerate(ws):
             R, pelvis = retarget(w, signs, k)
+            pelvis[2] += shift(c, t, len(ws))
             data += struct.pack("<3f", *pelvis)
             for j in range(1, 15):
                 data += struct.pack("<9f", *(R[j][0] + R[j][1] + R[j][2]))
