@@ -66,6 +66,7 @@
 #include "gewatch.h"
 #include "geslappers.h"
 #include "game/bondwalk.h"
+#include "game/quaternion.h"
 #include "game/sparks.h"
 #include "game/explosions.h"
 #include "input.h"

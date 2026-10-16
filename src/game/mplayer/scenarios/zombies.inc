@@ -3323,6 +3323,458 @@ void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model)
 	zombiesMtxTurnAbout(&mtx[arm.hand], r, newe);
 }
 
+/**
+ * The dolphin dive on the player's body: Black Ops II's dive, its landing flat
+ * on the floor and getting up again (pb_dive_prone, pb_dive_prone_land,
+ * pb_prone2crouch), retargeted onto the chr skeleton (g_SkelChr) by
+ * tools/zombies/divebake.py into the build's zombies/viewmodel/dive.zbd: each
+ * of the fourteen animation parts' turn a 60th at a time, and the pelvis's
+ * place over the floor. The art stays on the player's disk; without the file
+ * the body runs on as it was.
+ *
+ * Every machine sees every player's dive alike, from what the snapshots carry
+ * for each player: a push (rolltime60) along the body's facing is a dive
+ * (bwalkTryDive()), a roll's is across it, and isfalling's end after the hop
+ * is the landing. So nothing of it goes on the wire.
+ *
+ * The dive holds its last frame while the player is still in the air; the
+ * landing and getting up run at twice Call of Duty's speed, as the player can
+ * move again at once. The pose blends in from the run and back out to the
+ * body's own animation. Joints are placed down the body's own offsets, the
+ * pelvis's height scaled by its legs, so any human body will do; the elbows'
+ * and knees' second matrices are the parent's turn half way to the joint's,
+ * as modelPositionJointUsingQuatRot() makes them.
+ */
+#define ZOMBIE_DIVEBODY_PARTS     14
+#define ZOMBIE_DIVEBODY_CLIPS     3   // the dive, the landing, getting up
+#define ZOMBIE_DIVEBODY_IN        8   // 60ths blending in from the run
+#define ZOMBIE_DIVEBODY_SPEED     2   // the landing's and getting up's speed
+#define ZOMBIE_DIVEBODY_LANDMIX   8   // 60ths from the dive's pose to the landing's
+#define ZOMBIE_DIVEBODY_OUT0      40  // 60ths after landing, blending out ...
+#define ZOMBIE_DIVEBODY_OUT1      52  // ... to the body's own animation
+#define ZOMBIE_DIVEBODY_AIRMAX    90  // a dive's most in the air, landed or not
+
+static struct {
+	bool tried;
+	f32 legs;                                 // the leg length the pelvis is in
+	s32 ticks[ZOMBIE_DIVEBODY_CLIPS];
+	const f32 *data[ZOMBIE_DIVEBODY_CLIPS];   // per tick: pelvis[3], 14 x 3x3 rows
+} g_ZombieDiveBody;
+
+static struct {
+	bool on;
+	s32 rolltime;   // the push last seen
+	s32 start60;    // lvframe60 the dive began
+	s32 land60;     // and landed, -1 in the air
+} g_ZombieDiveSeen[MAX_PLAYERS];
+
+// part -> its parent part, 0 for the pelvis
+static const u8 g_ZombieDiveParent[ZOMBIE_DIVEBODY_PARTS + 1] = {
+	0, 0, 1, 2, 2, 3, 4, 5, 6, 1, 1, 9, 10, 11, 12,
+};
+
+struct zombiedivepose {
+	f32 q[ZOMBIE_DIVEBODY_PARTS + 1][4]; // each part's turn into the model's axes
+	f32 pelvis[3];
+};
+
+static bool zombiesDiveBodyLoad(void)
+{
+	const char *rel = "$E/zombies/viewmodel/dive.zbd";
+	u8 *data;
+	u32 size = 0;
+	u32 at;
+	u16 hdr[2];
+	s32 c;
+
+	if (g_ZombieDiveBody.tried) {
+		return g_ZombieDiveBody.data[0] != NULL;
+	}
+
+	g_ZombieDiveBody.tried = true;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0) {
+		return false;
+	}
+
+	data = fsFileLoad(rel, &size);
+
+	if (!data || size < 12 || memcmp(data, "ZBD1", 4) != 0) {
+		return false;
+	}
+
+	memcpy(hdr, data + 4, sizeof(hdr));
+	memcpy(&g_ZombieDiveBody.legs, data + 8, sizeof(f32));
+
+	if (hdr[0] != ZOMBIE_DIVEBODY_CLIPS || hdr[1] != ZOMBIE_DIVEBODY_PARTS || g_ZombieDiveBody.legs <= 0) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is not divebake.py's", rel);
+		return false;
+	}
+
+	at = 12;
+
+	for (c = 0; c < ZOMBIE_DIVEBODY_CLIPS; c++) {
+		u16 ticks[2];
+		u32 len;
+
+		if (at + 4 > size) {
+			break;
+		}
+
+		memcpy(ticks, data + at, sizeof(ticks));
+		len = (u32)ticks[0] * (3 + ZOMBIE_DIVEBODY_PARTS * 9) * sizeof(f32);
+		at += 4;
+
+		if (ticks[0] == 0 || at + len > size) {
+			break;
+		}
+
+		g_ZombieDiveBody.ticks[c] = ticks[0];
+		g_ZombieDiveBody.data[c] = (const f32 *)(data + at);
+		at += len;
+	}
+
+	if (c < ZOMBIE_DIVEBODY_CLIPS) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is short", rel);
+		g_ZombieDiveBody.data[0] = NULL;
+		return false;
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: the dolphin dive on the body, %d + %d + %d 60ths",
+			g_ZombieDiveBody.ticks[0], g_ZombieDiveBody.ticks[1], g_ZombieDiveBody.ticks[2]);
+
+	return true;
+}
+
+// A rotation matrix's quaternion (the game's: w first); the matrix may be scaled
+static void zombiesMtxQuat(const Mtxf *m, f32 q[4])
+{
+	Mtxf r;
+	s32 c;
+	s32 i;
+
+	for (c = 0; c < 3; c++) {
+		f32 len = sqrtf(m->m[c][0] * m->m[c][0] + m->m[c][1] * m->m[c][1] + m->m[c][2] * m->m[c][2]);
+
+		for (i = 0; i < 3; i++) {
+			r.m[c][i] = len > 0 ? m->m[c][i] / len : (c == i ? 1.0f : 0.0f);
+		}
+	}
+
+	quaternion0f097044(&r, q);
+}
+
+static void zombiesDiveSample(s32 clip, s32 tick, struct zombiedivepose *pose)
+{
+	const f32 *d;
+	s32 j;
+
+	tick = tick < 0 ? 0 : tick >= g_ZombieDiveBody.ticks[clip] ? g_ZombieDiveBody.ticks[clip] - 1 : tick;
+	d = g_ZombieDiveBody.data[clip] + tick * (3 + ZOMBIE_DIVEBODY_PARTS * 9);
+
+	pose->pelvis[0] = d[0];
+	pose->pelvis[1] = d[1];
+	pose->pelvis[2] = d[2];
+	d += 3;
+
+	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++, d += 9) {
+		Mtxf m;
+		s32 r;
+		s32 c;
+
+		// divebake.py's rows; a Mtxf is by columns
+		for (r = 0; r < 3; r++) {
+			for (c = 0; c < 3; c++) {
+				m.m[c][r] = d[r * 3 + c];
+			}
+		}
+
+		quaternion0f097044(&m, pose->q[j]);
+	}
+}
+
+// a = a towards b by t
+static void zombiesDivePoseMix(struct zombiedivepose *a, struct zombiedivepose *b, f32 t)
+{
+	s32 j;
+	s32 i;
+
+	if (t <= 0) {
+		return;
+	}
+
+	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++) {
+		f32 q[4];
+
+		quaternion0f0976c0(a->q[j], b->q[j]);
+		quaternionSlerp(a->q[j], b->q[j], t, q);
+
+		for (i = 0; i < 4; i++) {
+			a->q[j][i] = q[i];
+		}
+	}
+
+	for (i = 0; i < 3; i++) {
+		a->pelvis[i] += (b->pelvis[i] - a->pelvis[i]) * t;
+	}
+}
+
+/**
+ * Where the player whose body this is is in a dive: the pose wanted, and how
+ * much of it against the body's own animation (0 to 1). False when it is not
+ * diving.
+ */
+static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, struct zombiedivepose *pose, f32 *weight)
+{
+	struct player *player;
+	s32 playernum;
+	s32 now = g_Vars.lvframe60;
+	s32 d;
+
+	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER) {
+		return false;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(chr->prop);
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || !g_Vars.players[playernum]) {
+		return false;
+	}
+
+	player = g_Vars.players[playernum];
+
+	// a push begun since the last look: along the body's facing, a dive
+	if (player->rolltime60 != g_ZombieDiveSeen[playernum].rolltime) {
+		f32 x = player->rollspeed.x;
+		f32 z = player->rollspeed.z;
+		f32 len = sqrtf(x * x + z * z);
+
+		g_ZombieDiveSeen[playernum].rolltime = player->rolltime60;
+
+		if (player->rolltime60 != 0 && len > 0 && (x * sinf(yrot) + z * cosf(yrot)) > 0.5f * len) {
+			g_ZombieDiveSeen[playernum].on = true;
+			g_ZombieDiveSeen[playernum].start60 = now;
+			g_ZombieDiveSeen[playernum].land60 = -1;
+		}
+	}
+
+	if (!g_ZombieDiveSeen[playernum].on) {
+		return false;
+	}
+
+	d = now - g_ZombieDiveSeen[playernum].start60;
+
+	if (player->isdead || g_ZombieDowned[playernum] || d < 0 || d > ZOMBIE_DIVEBODY_AIRMAX + ZOMBIE_DIVEBODY_OUT1) {
+		g_ZombieDiveSeen[playernum].on = false;
+		return false;
+	}
+
+	if (g_ZombieDiveSeen[playernum].land60 < 0 && ((d > 12 && !player->isfalling) || d > ZOMBIE_DIVEBODY_AIRMAX)) {
+		g_ZombieDiveSeen[playernum].land60 = now;
+	}
+
+	*weight = zombiesEase(0, ZOMBIE_DIVEBODY_IN, d);
+	zombiesDiveSample(0, d, pose);
+
+	if (g_ZombieDiveSeen[playernum].land60 >= 0) {
+		s32 l = now - g_ZombieDiveSeen[playernum].land60;
+		s32 t = l * ZOMBIE_DIVEBODY_SPEED;
+		struct zombiedivepose after;
+
+		if (l >= ZOMBIE_DIVEBODY_OUT1) {
+			g_ZombieDiveSeen[playernum].on = false;
+			return false;
+		}
+
+		if (t < g_ZombieDiveBody.ticks[1]) {
+			zombiesDiveSample(1, t, &after);
+		} else {
+			zombiesDiveSample(2, t - g_ZombieDiveBody.ticks[1], &after);
+		}
+
+		zombiesDivePoseMix(pose, &after, zombiesEase(0, ZOMBIE_DIVEBODY_LANDMIX, l));
+		*weight *= 1 - zombiesEase(ZOMBIE_DIVEBODY_OUT0, ZOMBIE_DIVEBODY_OUT1, l);
+	}
+
+	return *weight > 0;
+}
+
+// The chr's model matrices: the dive's pose, while the player is in one
+void zombiesPoseDive(struct chrdata *chr, struct model *model)
+{
+	struct modelnode *nodes[ZOMBIE_DIVEBODY_PARTS + 1] = { NULL };
+	struct modelnode *node;
+	union modelrwdata *rwdata;
+	struct zombiedivepose pose;
+	Mtxf base;
+	Mtxf rot[ZOMBIE_DIVEBODY_PARTS + 1];
+	f32 pos[ZOMBIE_DIVEBODY_PARTS + 1][3];
+	f32 weight;
+	f32 legs;
+	s32 n;
+	s32 j;
+	s32 i;
+
+	if (!model || !model->definition || !model->matrices || model->definition->skel != &g_SkelChr
+			|| (model->definition->rootnode->type & 0xff) != MODELNODETYPE_CHRINFO
+			|| !zombiesDiveBodyLoad()) {
+		return;
+	}
+
+	rwdata = modelGetNodeRwData(model, model->definition->rootnode);
+
+	if (!zombiesDiveBodyPose(chr, rwdata->chrinfo.yrot, &pose, &weight)) {
+		return;
+	}
+
+	// the body's own position nodes by part, not the head's grafted under it
+	for (node = model->definition->rootnode; node;) {
+		u32 type = node->type & 0xff;
+
+		if (type == MODELNODETYPE_POSITION && node->rodata->position.part >= 1
+				&& node->rodata->position.part <= ZOMBIE_DIVEBODY_PARTS) {
+			nodes[node->rodata->position.part] = node;
+		}
+
+		if (node->child && type != MODELNODETYPE_HEADSPOT) {
+			node = node->child;
+		} else {
+			while (node) {
+				if (node->next) {
+					node = node->next;
+					break;
+				}
+
+				node = node->parent;
+			}
+		}
+	}
+
+	n = model->definition->nummatrices;
+
+	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++) {
+		if (!nodes[j] || nodes[j]->rodata->position.mtxindex0 < 0 || nodes[j]->rodata->position.mtxindex0 >= n
+				|| nodes[j]->rodata->position.mtxindex1 >= n) {
+			return;
+		}
+	}
+
+	// the legs' length here against the body divebake.py had
+	legs = 0;
+
+	for (j = 11; j <= 14; j++) {
+		struct coord *p = &nodes[j]->rodata->position.pos;
+		legs += sqrtf(p->x * p->x + p->y * p->y + p->z * p->z) * 0.5f;
+	}
+
+	// the floor under the body, its facing and its scale, into the view
+	{
+		struct coord floor;
+		Mtxf local;
+
+		floor.x = rwdata->chrinfo.pos.x;
+		floor.y = rwdata->chrinfo.ground;
+		floor.z = rwdata->chrinfo.pos.z;
+
+		mtx4LoadYRotationWithTranslation(&floor, rwdata->chrinfo.yrot, &local);
+		mtx00015f4c(model->scale, &local);
+		mtx00015be4(camGetWorldToScreenMtxf(), &local, &base);
+	}
+
+	// each part's turn and place in the model's own space, down the offsets
+	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++) {
+		quaternionToMtx(pose.q[j], &rot[j]);
+
+		if (j == 1) {
+			for (i = 0; i < 3; i++) {
+				pos[j][i] = pose.pelvis[i] * legs / g_ZombieDiveBody.legs;
+			}
+		} else {
+			const s32 p = g_ZombieDiveParent[j];
+			struct coord *off = &nodes[j]->rodata->position.pos;
+
+			for (i = 0; i < 3; i++) {
+				pos[j][i] = pos[p][i] + rot[p].m[0][i] * off->x + rot[p].m[1][i] * off->y + rot[p].m[2][i] * off->z;
+			}
+		}
+	}
+
+	for (j = 1; j <= ZOMBIE_DIVEBODY_PARTS; j++) {
+		struct modelrodata_position *rodata = &nodes[j]->rodata->position;
+		s32 k;
+
+		for (k = 0; k < 2; k++) {
+			s32 index = k ? rodata->mtxindex1 : rodata->mtxindex0;
+			Mtxf local;
+			Mtxf want;
+			Mtxf *mtx;
+			f32 qlive[4];
+			f32 qwant[4];
+			f32 q[4];
+			f32 s;
+
+			if (index < 0) {
+				continue;
+			}
+
+			if (k == 0) {
+				local = rot[j];
+			} else {
+				// an elbow's or knee's second: its parent's turn half way to its own
+				const s32 p = g_ZombieDiveParent[j];
+				Mtxf rel;
+				f32 qr[4];
+				f32 half[4];
+				s32 a;
+				s32 b;
+
+				for (a = 0; a < 3; a++) {
+					for (b = 0; b < 3; b++) {
+						rel.m[b][a] = rot[p].m[a][0] * rot[j].m[b][0] + rot[p].m[a][1] * rot[j].m[b][1]
+							+ rot[p].m[a][2] * rot[j].m[b][2];
+					}
+				}
+
+				quaternion0f097044(&rel, qr);
+				quaternion0f097518(qr, 0.5f, half);
+				quaternionToMtx(half, &rel);
+				mtx00015be4(&rot[p], &rel, &local);
+			}
+
+			local.m[3][0] = pos[j][0];
+			local.m[3][1] = pos[j][1];
+			local.m[3][2] = pos[j][2];
+			local.m[0][3] = local.m[1][3] = local.m[2][3] = 0;
+			local.m[3][3] = 1;
+
+			mtx00015be4(&base, &local, &want);
+
+			// blended from the body's own pose in the view: the same scale
+			// both ways, so the turn and the place each go their own way
+			mtx = &model->matrices[index];
+
+			if (weight >= 1) {
+				*mtx = want;
+				continue;
+			}
+
+			s = sqrtf(want.m[0][0] * want.m[0][0] + want.m[0][1] * want.m[0][1] + want.m[0][2] * want.m[0][2]);
+			zombiesMtxQuat(mtx, qlive);
+			zombiesMtxQuat(&want, qwant);
+			quaternion0f0976c0(qlive, qwant);
+			quaternionSlerp(qlive, qwant, weight, q);
+			quaternionToMtx(q, &local);
+
+			for (i = 0; i < 3; i++) {
+				mtx->m[0][i] = local.m[0][i] * s;
+				mtx->m[1][i] = local.m[1][i] * s;
+				mtx->m[2][i] = local.m[2][i] * s;
+				mtx->m[3][i] += (want.m[3][i] - mtx->m[3][i]) * weight;
+			}
+		}
+	}
+}
+
 // The drink on the player's body, seen from their third person camera, so the
 // HUD's bottle is not wanted
 static bool zombiesBodyDrinkSeen(s32 playernum)
