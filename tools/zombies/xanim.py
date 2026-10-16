@@ -8,25 +8,31 @@ Black Ops II's raw animations (an OpenAssetTools fastfile dump's xanim/ files,
 The layout, little endian, as worked out from the dumps (version 19):
 
     u16 version (19), u16 frames, u16 bones, u8 flags, u8 ?, u16 framerate
+        flags: 1 looping (keys run to frame `frames`, the first again),
+               2 the root's motion follows (a player body's pb_*, a prop's)
+    when flags & 2, tag_origin's motion: rotation keys (below) of one s16
+        each, the yaw quaternion's z, then translation keys (below);
+        pb_dive_prone's carries the body 119 forward and 44 up and down
     u8[(bones + 7) / 8] a bitfield (unknown; set on a few bones)
     u8[(bones + 7) / 8] simple: the bone's rotations are about z alone
     bone names, nul terminated
     per bone:
         u16 rotation keys
-            when more than one, u8 frame of each (u16 past 255 frames)
-            each key: 2 s16 (z, w) when simple, else 3 s16 (x, y, z), w
-            the positive root of the rest; a short is a 32767th
+            the frame of each when more than one and fewer than the frames
+            (frames + 1 looping): u8, u16 past 256; a key every frame has none
+            each key: s16 z when simple, else 3 s16 (x, y, z); w is the
+            positive root of the rest; a short is a 32767th
         u16 translation keys
             one: 3 f32
-            more: u8 frame of each, u8 flag, f32 min[3], f32 size[3], and
+            more: frames as above, u8 flag, f32 min[3], f32 size[3], and
                   per key u16[3] when the flag is 0 (u8[3] otherwise),
                   min + size * value / 65535 (/ 255)
     u8 notetracks, each a nul terminated name and a u16 frame
        ("sndnt#evt_perk_bottle_open" 16, "sndnt#evt_perk_swallow" 29,
        "sndnt#evt_bottle_break" 57 in the drink)
 
-A prop's animation (p_zombie_perkacola_drink, flags 2) carries more before its
-bitfields and is not read.
+Every animation in common_zm and zm_prison reads to its last byte but three
+of the dreamcatcher's (flags 0x84).
 
 A bone with no keys keeps its pose in the model; one with one key holds it.
 A track is local to the bone's parent, as the model's skeleton has it.
@@ -48,8 +54,21 @@ class XAnim:
             raise ValueError("%s: xanim version %d, 19 is read" % (path, self.version))
 
         nb = (numbones + 7) // 8
-        simple = d[10 + nb:10 + 2 * nb]
-        at = 10 + 2 * nb
+        at = 10
+        self.delta_yaw = []    # [(frame, z)]: the yaw quaternion's z
+        self.delta_trans = []  # [(frame, (x, y, z))]: tag_origin's motion
+
+        if self.flags & 2:
+            n = struct.unpack_from("<H", d, at)[0]
+            at += 2
+            frames, at = self._indices(d, at, n)
+            for f in frames:
+                self.delta_yaw.append((f, struct.unpack_from("<h", d, at)[0] / 32767.0))
+                at += 2
+            self.delta_trans, at = self._translations(d, at)
+
+        simple = d[at + nb:at + 2 * nb]
+        at += 2 * nb
         self.names = []
 
         for _ in range(numbones):
@@ -57,8 +76,6 @@ class XAnim:
             self.names.append(d[at:e].decode())
             at = e + 1
 
-        idx = "B" if self.frames <= 256 else "H"
-        isz = struct.calcsize(idx)
         self.rot = {}    # name -> [(frame, (x, y, z, w))]
         self.trans = {}  # name -> [(frame, (x, y, z))]
 
@@ -68,15 +85,14 @@ class XAnim:
             at += 2
 
             if n:
-                frames = list(struct.unpack_from("<%d%s" % (n, idx), d, at)) if n > 1 else [0]
-                at += isz * n if n > 1 else 0
+                frames, at = self._indices(d, at, n)
                 keys = []
 
                 for f in frames:
                     if is_simple:
-                        z, w = struct.unpack_from("<hh", d, at)
-                        at += 4
-                        q = (0.0, 0.0, z / 32767.0, w / 32767.0)
+                        z = struct.unpack_from("<h", d, at)[0] / 32767.0
+                        at += 2
+                        q = (0.0, 0.0, z, math.sqrt(max(0.0, 1.0 - z * z)))
                     else:
                         x, y, z = (v / 32767.0 for v in struct.unpack_from("<hhh", d, at))
                         at += 6
@@ -86,29 +102,8 @@ class XAnim:
 
                 self.rot[name] = keys
 
-            n = struct.unpack_from("<H", d, at)[0]
-            at += 2
-
-            if n == 1:
-                self.trans[name] = [(0, struct.unpack_from("<3f", d, at))]
-                at += 12
-            elif n > 1:
-                frames = struct.unpack_from("<%d%s" % (n, idx), d, at)
-                at += isz * n
-                flag = d[at]
-                at += 1
-                lo = struct.unpack_from("<3f", d, at)
-                size = struct.unpack_from("<3f", d, at + 12)
-                at += 24
-                fmt, top = ("<3H", 65535.0) if flag == 0 else ("<3B", 255.0)
-                step = struct.calcsize(fmt)
-                keys = []
-
-                for f in frames:
-                    v = struct.unpack_from(fmt, d, at)
-                    at += step
-                    keys.append((f, tuple(lo[k] + size[k] * v[k] / top for k in range(3))))
-
+            keys, at = self._translations(d, at)
+            if keys:
                 self.trans[name] = keys
 
         # what happens when: "sndnt#evt_perk_swallow" at frame 29 of the drink
@@ -124,6 +119,43 @@ class XAnim:
             at = e + 3
 
         self.leftover = len(d) - at
+
+    def _indices(self, d, at, n):
+        """the frames of n keys: none written for one key or a key every frame"""
+        # a looping animation (flag 1) keys one frame more, its first again
+        slots = self.frames + (self.flags & 1)
+        if n <= 1:
+            return [0] * n, at
+        if n >= slots:
+            return list(range(n)), at
+        idx = "B" if slots <= 256 else "H"
+        return list(struct.unpack_from("<%d%s" % (n, idx), d, at)), at + struct.calcsize(idx) * n
+
+    def _translations(self, d, at):
+        n = struct.unpack_from("<H", d, at)[0]
+        at += 2
+
+        if n == 1:
+            return [(0, struct.unpack_from("<3f", d, at))], at + 12
+        if n == 0:
+            return [], at
+
+        frames, at = self._indices(d, at, n)
+        flag = d[at]
+        at += 1
+        lo = struct.unpack_from("<3f", d, at)
+        size = struct.unpack_from("<3f", d, at + 12)
+        at += 24
+        fmt, top = ("<3H", 65535.0) if flag == 0 else ("<3B", 255.0)
+        step = struct.calcsize(fmt)
+        keys = []
+
+        for f in frames:
+            v = struct.unpack_from(fmt, d, at)
+            at += step
+            keys.append((f, tuple(lo[k] + size[k] * v[k] / top for k in range(3))))
+
+        return keys, at
 
     def sample(self, name, frame):
         """(quaternion or None, translation or None) of a bone at a frame"""
