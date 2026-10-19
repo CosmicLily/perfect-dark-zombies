@@ -6004,41 +6004,65 @@ f32 zombiesSprintGunFrac(void)
 }
 
 /**
- * The crosshair, as Black Ops II's from the hip (sight.c draws it): four
- * lines round the aim whose gap is the spread. It opens as the player moves
- * and pops wider with every round fired (a magazine going down, so an
- * automatic's every shot counts), settling back once the firing stops;
- * crouched it is tighter, prone tighter still, and a shotgun's is wide. Red
- * over a zombie. Gone at the sights (the game's own sight is drawn there),
- * while sprinting, and while the gun is down (a drink, a throw, the knife).
- * Gaps are the sight's own units, before its size setting.
+ * The crosshair from the hip (sight.c draws it): Perfect Dark's own small
+ * cross in the player's sight colour, its four arms pushed out by the spread
+ * as Black Ops II's are. It opens a little as the player moves and pops with
+ * every round fired (a magazine going down, so an automatic's every shot
+ * counts), settling back once the firing stops; crouched it is tighter,
+ * prone tighter still, and a shotgun's is wider. Gone at the sights (the
+ * game's own sight is drawn there), while sprinting, and while the gun is
+ * down for a drink or the knife.
+ *
+ * A grenade held keeps it up and beats on the fuse from the pin: a pop a
+ * second, then four in its last second, so the player knows when it will go.
+ * Spreads are the sight's own units, before its size setting.
  */
-#define ZOMBIE_XHAIR_GAP     4.0f  // standing still
-#define ZOMBIE_XHAIR_MOVE    6.0f  // more at a full run
-#define ZOMBIE_XHAIR_POP     3.5f  // more a round
-#define ZOMBIE_XHAIR_MAX     18.0f
-#define ZOMBIE_XHAIR_SETTLE  8.0f  // the pop's fall a second (a fraction of it)
+#define ZOMBIE_XHAIR_MOVE    1.5f  // out at a full run
+#define ZOMBIE_XHAIR_POP     0.8f  // out a round
+#define ZOMBIE_XHAIR_BEAT    2.0f  // out a beat of a grenade's fuse
+#define ZOMBIE_XHAIR_MAX     4.0f
+#define ZOMBIE_XHAIR_SETTLE  9.0f  // the pop's fall a second (a fraction of it)
 #define ZOMBIE_XHAIR_EASE    12.0f // the move's way to its target a second
+#define ZOMBIE_XHAIR_BEAT60  60    // a beat a second ...
+#define ZOMBIE_XHAIR_RUSH60  15    // ... and four in the fuse's last
 
 static f32 g_ZombieXhairPop[MAX_PLAYERS];
 static f32 g_ZombieXhairMove[MAX_PLAYERS];
-static s32 g_ZombieXhairAmmo[MAX_PLAYERS];  // the magazines as last seen, with ...
+static s32 g_ZombieXhairAmmo[MAX_PLAYERS];   // the magazines as last seen, with ...
 static s32 g_ZombieXhairWeapon[MAX_PLAYERS]; // ... the gun they were (none at first: no pop)
-
+static s32 g_ZombieXhairBeat[MAX_PLAYERS];   // the fuse's beats so far, -1 none
 
 f32 zombiesGunLowerFrac(void);
 
-// sight.c: 0 for the game's own sight, 1 for none, 2 for Zombies' at *gap
-// in *colour
-s32 zombiesCrosshair(f32 *gap, u32 *colour)
+// Which beat of the fuse a grenade cooked this long is on, -1 before the pin
+static s32 zombiesFuseBeat(s32 cook)
+{
+	const s32 rush = ZOMBIE_GRENADE_FUSE60 - ZOMBIE_XHAIR_BEAT60;
+
+	if (cook < 0) {
+		return -1;
+	}
+
+	if (cook < rush) {
+		return cook / ZOMBIE_XHAIR_BEAT60;
+	}
+
+	return (rush + ZOMBIE_XHAIR_BEAT60 - 1) / ZOMBIE_XHAIR_BEAT60 + (cook - rush) / ZOMBIE_XHAIR_RUSH60;
+}
+
+// sight.c: 0 for the game's own sight, 1 for none, 2 for Zombies' with its
+// arms *spread out
+s32 zombiesCrosshair(f32 *spread)
 {
 	const s32 playernum = g_Vars.currentplayernum;
 	struct player *player = g_Vars.currentplayer;
 	const f32 dt = g_Vars.lvupdate60freal / 60.0f;
+	bool holding;
 	f32 move;
 	f32 k;
 	s32 ammo = 0;
 	s32 weaponnum;
+	s32 beat;
 	s32 h;
 
 	if (!zombiesIsActive() || !player || playernum < 0 || playernum >= MAX_PLAYERS) {
@@ -6063,6 +6087,16 @@ s32 zombiesCrosshair(f32 *gap, u32 *colour)
 	g_ZombieXhairAmmo[playernum] = ammo;
 	g_ZombieXhairWeapon[playernum] = weaponnum;
 
+	// a grenade's fuse beating
+	holding = g_ZombieThrowStage[playernum] == ZTHROW_PIN || g_ZombieThrowStage[playernum] == ZTHROW_HOLD;
+	beat = holding ? zombiesFuseBeat(g_ZombieCook60[playernum]) : -1;
+
+	if (beat > g_ZombieXhairBeat[playernum]) {
+		g_ZombieXhairPop[playernum] += ZOMBIE_XHAIR_BEAT;
+	}
+
+	g_ZombieXhairBeat[playernum] = beat;
+
 	// the pop settling, the move easing to how fast the player goes
 	k = dt * ZOMBIE_XHAIR_SETTLE;
 	g_ZombieXhairPop[playernum] -= g_ZombieXhairPop[playernum] * (k > 1 ? 1 : k);
@@ -6077,29 +6111,23 @@ s32 zombiesCrosshair(f32 *gap, u32 *colour)
 		return 0;
 	}
 
-	if (g_ZombieGameOver || zombiesGunLowerFrac() > 0 || zombiesSprintGunFrac() > 0.05f) {
+	if (g_ZombieGameOver || (zombiesGunLowerFrac() > 0 && !holding) || zombiesSprintGunFrac() > 0.05f) {
 		return 1;
 	}
 
-	*gap = ZOMBIE_XHAIR_GAP + g_ZombieXhairMove[playernum] + g_ZombieXhairPop[playernum];
+	*spread = g_ZombieXhairMove[playernum] + g_ZombieXhairPop[playernum];
 
 	if (player->crouchpos == CROUCHPOS_SQUAT) {
-		*gap *= 0.55f;
+		*spread *= 0.55f;
 	} else if (player->crouchpos == CROUCHPOS_DUCK) {
-		*gap *= 0.75f;
+		*spread *= 0.75f;
 	}
 
-	if (weaponHost(weaponnum) == WEAPON_SHOTGUN) {
-		*gap *= 1.6f;
+	if (!holding && weaponHost(weaponnum) == WEAPON_SHOTGUN) {
+		*spread += 1.5f;
 	}
 
-	*gap = *gap > ZOMBIE_XHAIR_MAX ? ZOMBIE_XHAIR_MAX : *gap;
-
-	*colour = 0xffffffc8;
-
-	if (player->lookingatprop.prop && player->lookingatprop.prop->type == PROPTYPE_CHR) {
-		*colour = 0xff3a3ad8;
-	}
+	*spread = *spread > ZOMBIE_XHAIR_MAX ? ZOMBIE_XHAIR_MAX : *spread;
 
 	return 2;
 }
