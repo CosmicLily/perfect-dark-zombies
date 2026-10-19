@@ -244,6 +244,18 @@ static bool g_ZombieSoundMine = false; // ... and that player's machine made the
 static u32 g_ZombieNetRand = 0x5eed;   // a client's own numbers, never the match's
 static s32 g_ZombieNetRemaining = 0;   // a client's "Zombies: N", the host's count
 
+/**
+ * Grenades, as Call of Duty's frags: two more at each round's start, four at
+ * the most, Max Ammo filling them, thrown with a press of BUTTON_GRENADE
+ * (zombiesGrenadePress()) without putting the gun away. Online a client's
+ * count is the host's.
+ */
+#define ZOMBIE_GRENADES_ROUND  2
+#define ZOMBIE_GRENADES_MAX    4
+#define ZOMBIE_GRENADE_WAIT60  45 // one throw to the next
+static s32 g_ZombieGrenades[MAX_PLAYERS];
+static s32 g_ZombieGrenadeWait60[MAX_PLAYERS];
+
 static void zombiesResetPoints(void)
 {
 	s32 i;
@@ -251,6 +263,8 @@ static void zombiesResetPoints(void)
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		g_ZombiePoints[i] = g_ZombieCfgStartPoints;
 		g_ZombieStackTop[i] = -1;
+		g_ZombieGrenades[i] = 0; // round 1's two come with it (zombiesTick())
+		g_ZombieGrenadeWait60[i] = 0;
 	}
 
 	for (i = 0; i < ZOMBIE_MAX_POPUPS; i++) {
@@ -317,6 +331,7 @@ static void zombiesMaybeDrop(struct chrdata *victim);
 #define ZOMBIE_POWERUP_TIME60 1800 // 30 seconds, as Call of Duty's
 static s32 g_ZombieInstaKill60 = 0;
 static s32 g_ZombieDoublePoints60 = 0;
+static s32 g_ZombieFireSale60 = 0;
 
 bool zombiesIsActive(void);
 
@@ -5994,6 +6009,45 @@ void zombiesQuickMelee(void)
 	g_ZombieSoundFor = -1;
 }
 
+bool bgunZombiesThrowGrenade(void);
+
+// bondmove.c, on a press of BUTTON_GRENADE: the current player throws a
+// grenade, if it has one. The host's alone online: the grenade is a
+// projectile, which the host makes, and the count rides in its block.
+void zombiesGrenadePress(void)
+{
+	s32 playernum = g_Vars.currentplayernum;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || g_NetReplaying || NET_CLIENT
+			|| g_ZombieGameOver) {
+		return;
+	}
+
+	if (!zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
+			|| g_ZombieGrenadeWait60[playernum] > 0) {
+		return;
+	}
+
+	if (g_ZombieGrenades[playernum] <= 0) {
+		g_ZombieSoundFor = playernum;
+		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		g_ZombieSoundFor = -1;
+		g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
+		return;
+	}
+
+	if (!bgunZombiesThrowGrenade()) {
+		return;
+	}
+
+	g_ZombieGrenades[playernum]--;
+	g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
+
+	g_ZombieSoundFor = playernum;
+	zombiesPlaySound(SFX_THROW, 1.0f);
+	g_ZombieSoundFor = -1;
+}
+
 // Another gun put in the hand meanwhile (the box, a wall buy) is kept: the
 // knife goes no further and nothing is given back over it
 static void zombiesKnifeCancel(s32 playernum)
@@ -7265,6 +7319,7 @@ s32 zombiesStartAmmo(s32 weaponnum)
 #define ZOMBIE_BOX_MODEL      MODEL_MULTI_AMMO_CRATE
 #define ZOMBIE_BOX_LENGTH     160.0f  // how long the box is, in world units
 #define ZOMBIE_BOX_COST       950
+static s32 zombiesBoxCost(void); // ZOMBIE_BOX_COST, or Fire Sale's
 #define ZOMBIE_BOX_RANGE      140.0f  // how near the box buying and taking work
 #define ZOMBIE_BOX_HOLD60     15      // how long B is held to buy or take
 #define ZOMBIE_BOX_SPIN60     210     // the guns going round (3.5 seconds)
@@ -8838,14 +8893,14 @@ static void zombiesTickBox(void)
 			g_ZombieBoxHeld60[i] = 0;
 			g_ZombieSoundFor = i;
 
-			if (g_ZombiePoints[i] < ZOMBIE_BOX_COST || g_ZombieBoxNumGuns <= 0) {
+			if (g_ZombiePoints[i] < zombiesBoxCost() || g_ZombieBoxNumGuns <= 0) {
 				zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
 				g_ZombieSoundFor = -1;
 				continue;
 			}
 
-			g_ZombiePoints[i] -= ZOMBIE_BOX_COST;
-			zombiesAddPopup(i, -ZOMBIE_BOX_COST);
+			g_ZombiePoints[i] -= zombiesBoxCost();
+			zombiesAddPopup(i, -zombiesBoxCost());
 			zombiesPlaySound(SFX_MENU_SELECT, 0.8f);
 			g_ZombieSoundFor = -1;
 
@@ -8928,7 +8983,7 @@ static void zombiesTickBox(void)
 
 /**
  * And the rest of Call of Duty's power-ups, from the same drops: which one a
- * drop is goes round all four in a shuffled order before any comes again, as
+ * drop is goes round all of them in a shuffled order before any comes again, as
  * Call of Duty deals them.
  *
  * - Insta-Kill: for ZOMBIE_POWERUP_TIME60 any player's hit kills any zombie
@@ -8939,19 +8994,29 @@ static void zombiesTickBox(void)
  *   The zombies it kills give no points of their own and drop nothing; the
  *   screen flashes white.
  *
+ * - Carpenter: every barrier's boards back up at once, and each player
+ *   standing gets 200. Not dealt on an arena with no barriers.
+ * - Fire Sale: for ZOMBIE_POWERUP_TIME60 the Mystery Box is
+ *   ZOMBIE_FIRESALE_COST a go.
+ *
  * Each has its own thing on the floor until there are models of their own:
  * Max Ammo a green crate, Insta-Kill a red knife, Double Points gold pills,
- * the Nuke an orange N-Bomb. The two that last count down at the bottom of
- * the screen, blinking for their last five seconds.
+ * the Nuke an orange N-Bomb, Carpenter a hammer, Fire Sale a red card. The
+ * three that last count down at the bottom of the screen, blinking for their
+ * last five seconds.
  */
 #define ZOMBIEPOWERUP_MAXAMMO      0
 #define ZOMBIEPOWERUP_INSTAKILL    1
 #define ZOMBIEPOWERUP_DOUBLEPOINTS 2
 #define ZOMBIEPOWERUP_NUKE         3
-#define ZOMBIEPOWERUP_COUNT        4
+#define ZOMBIEPOWERUP_CARPENTER    4
+#define ZOMBIEPOWERUP_FIRESALE     5
+#define ZOMBIEPOWERUP_COUNT        6
 
-#define ZOMBIE_NUKE_POINTS  400
-#define ZOMBIE_NUKE_FLASH60 45     // the white of the flash, fading
+#define ZOMBIE_NUKE_POINTS      400
+#define ZOMBIE_NUKE_FLASH60     45  // the white of the flash, fading
+#define ZOMBIE_CARPENTER_POINTS 200
+#define ZOMBIE_FIRESALE_COST    10
 
 struct zombiepowerup {
 	s32 mpweaponnum;   // whose pickup model it is, -1 for none
@@ -8959,15 +9024,18 @@ struct zombiepowerup {
 	u8 colour[3];      // what it is lit, whatever light it is in
 	u32 radar;
 	char *banner;
+	bool stand;        // stood on end as it turns, as a gun's pickup is (a flat thing seen edge on otherwise)
 };
 
 static struct zombiepowerup g_ZombiePowerups[ZOMBIEPOWERUP_COUNT] = {
-	{ -1,                   0,                  { 0x70, 0xff, 0x70 }, 0x40ff4000, "MAX AMMO!"      },
-	{ MPWEAPON_COMBATKNIFE, 0,                  { 0xff, 0x50, 0x50 }, 0xff404000, "INSTA-KILL!"    },
+	{ -1,                   0,                     { 0x70, 0xff, 0x70 }, 0x40ff4000, "MAX AMMO!",      false },
+	{ MPWEAPON_COMBATKNIFE, 0,                     { 0xff, 0x50, 0x50 }, 0xff404000, "INSTA-KILL!",    true  },
 	// Hold the Briefcase's case: a case of cash, in gold (the Combat Boost's
 	// pills said nothing about points)
-	{ -1,                   MODEL_CHRBRIEFCASE, { 0xff, 0xe0, 0x40 }, 0xffe04000, "DOUBLE POINTS!" },
-	{ MPWEAPON_NBOMB,       0,                  { 0xff, 0x90, 0x30 }, 0xff902000, "KABOOM!"        },
+	{ -1,                   MODEL_CHRBRIEFCASE,    { 0xff, 0xe0, 0x40 }, 0xffe04000, "DOUBLE POINTS!", false },
+	{ MPWEAPON_NBOMB,       0,                     { 0xff, 0x90, 0x30 }, 0xff902000, "KABOOM!",        true  },
+	{ -1,                   MODEL_CHRLUMPHAMMER,   { 0x80, 0xc0, 0xff }, 0x80c0ff00, "CARPENTER!",     true  },
+	{ -1,                   MODEL_KEYCARD,         { 0xff, 0x40, 0x30 }, 0xff403000, "FIRE SALE!",     true  },
 };
 
 struct zombiedrop {
@@ -8999,11 +9067,29 @@ static void zombiesResetDrops(void)
 	g_ZombiePowerupBagLeft = 0;
 	g_ZombieInstaKill60 = 0;
 	g_ZombieDoublePoints60 = 0;
+	g_ZombieFireSale60 = 0;
 	g_ZombieNukeFlash60 = -1;
 }
 
-// The next power-up: all of them in a shuffled order, then shuffled again
+static s32 zombiesNextPowerupInBag(void);
+static s32 g_ZombieNumBarriers;
+
+// The next power-up: all of them in a shuffled order, then shuffled again.
+// Carpenter is passed over where there are no barriers to put back.
 static s32 zombiesNextPowerup(void)
+{
+	s32 kind = zombiesNextPowerupInBag();
+	s32 tries;
+
+	// (a fresh shuffle can put it first again)
+	for (tries = 0; tries < 4 && kind == ZOMBIEPOWERUP_CARPENTER && g_ZombieNumBarriers == 0; tries++) {
+		kind = zombiesNextPowerupInBag();
+	}
+
+	return kind;
+}
+
+static s32 zombiesNextPowerupInBag(void)
 {
 	if (g_ZombiePowerupBagLeft <= 0) {
 		s32 i;
@@ -9185,7 +9271,7 @@ static bool zombiesDropMake(struct zombiedrop *drop, s32 kind, struct coord *pos
 			drop->lift = -bbox->ymin * obj->model->scale;
 
 			// a pickup on end: its long side up, half of it under its middle
-			if (g_ZombiePowerups[drop->kind].mpweaponnum >= 0) {
+			if (g_ZombiePowerups[drop->kind].stand) {
 				bool longx = bbox->xmax - bbox->xmin > bbox->zmax - bbox->zmin;
 
 				drop->tilt = longx ? 2 : 1;
@@ -9234,6 +9320,8 @@ static void zombiesMaxAmmo(void)
 		for (i = 0; i < invGetCount(); i++) {
 			zombiesFillGun(invGetWeaponNumByIndex(i), ZOMBIE_AMMO_CLIPS, false);
 		}
+
+		g_ZombieGrenades[p] = ZOMBIE_GRENADES_MAX;
 	}
 
 	setCurrentPlayerNum(prevplayernum);
@@ -9287,6 +9375,31 @@ static void zombiesNuke(void)
 	g_ZombieNukeFlash60 = 0;
 }
 
+static void zombiesBarrierSet(s32 b, s32 boards);
+
+// Every barrier's boards back up at once, and each player standing gets 200
+static void zombiesCarpenter(void)
+{
+	s32 i;
+
+	for (i = 0; i < g_ZombieNumBarriers; i++) {
+		zombiesBarrierSet(i, 0x7fff); // a full set: it holds to its own count
+	}
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		if (zombiesPlayerIsUp(i)) {
+			g_ZombiePoints[i] += ZOMBIE_CARPENTER_POINTS;
+			zombiesAddPopup(i, ZOMBIE_CARPENTER_POINTS);
+		}
+	}
+}
+
+// What the Mystery Box costs now: Fire Sale's 10 while it lasts
+static s32 zombiesBoxCost(void)
+{
+	return g_ZombieFireSale60 > 0 ? ZOMBIE_FIRESALE_COST : ZOMBIE_BOX_COST;
+}
+
 // A power-up picked up: what it does
 static void zombiesPowerupTaken(s32 kind)
 {
@@ -9304,6 +9417,12 @@ static void zombiesPowerupTaken(s32 kind)
 	case ZOMBIEPOWERUP_NUKE:
 		zombiesNuke();
 		zombiesPlaySound(SFX_EXPLOSION_8098, 1.0f);
+		break;
+	case ZOMBIEPOWERUP_CARPENTER:
+		zombiesCarpenter();
+		break;
+	case ZOMBIEPOWERUP_FIRESALE:
+		g_ZombieFireSale60 = ZOMBIE_POWERUP_TIME60;
 		break;
 	}
 
@@ -9333,7 +9452,7 @@ static Gfx *zombiesRenderNukeFlash(Gfx *gdl)
 
 static Gfx *zombiesDrawTextBL(Gfx *gdl, char *text, s32 x, s32 bottomy, u32 colour, struct fontchar *chars, struct font *font);
 
-// Insta-Kill's and Double Points' time left, low in the middle of the view,
+// Insta-Kill's, Double Points' and Fire Sale's time left, low in the middle of the view,
 // blinking for the last five seconds
 static Gfx *zombiesRenderPowerupTimers(Gfx *gdl)
 {
@@ -9343,9 +9462,9 @@ static Gfx *zombiesRenderPowerupTimers(Gfx *gdl)
 	s32 line = 0;
 	s32 k;
 
-	for (k = 0; k < 2; k++) {
-		s32 left = k == 0 ? g_ZombieInstaKill60 : g_ZombieDoublePoints60;
-		u32 colour = k == 0 ? 0xff6060e0 : 0xffe040e0;
+	for (k = 0; k < 3; k++) {
+		s32 left = k == 0 ? g_ZombieInstaKill60 : k == 1 ? g_ZombieDoublePoints60 : g_ZombieFireSale60;
+		u32 colour = k == 0 ? 0xff6060e0 : k == 1 ? 0xffe040e0 : 0xff8040e0;
 		s32 textwidth;
 		s32 textheight;
 
@@ -9358,7 +9477,7 @@ static Gfx *zombiesRenderPowerupTimers(Gfx *gdl)
 			continue;
 		}
 
-		sprintf(text, "%s %d", k == 0 ? "INSTA-KILL" : "DOUBLE POINTS", (left + 59) / 60);
+		sprintf(text, "%s %d", k == 0 ? "INSTA-KILL" : k == 1 ? "DOUBLE POINTS" : "FIRE SALE", (left + 59) / 60);
 
 #ifndef PLATFORM_N64
 		gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
@@ -9443,6 +9562,7 @@ static void zombiesTickDrops(void)
 	// the power-ups that last, running down
 	g_ZombieInstaKill60 = g_ZombieInstaKill60 > g_Vars.lvupdate60 ? g_ZombieInstaKill60 - g_Vars.lvupdate60 : 0;
 	g_ZombieDoublePoints60 = g_ZombieDoublePoints60 > g_Vars.lvupdate60 ? g_ZombieDoublePoints60 - g_Vars.lvupdate60 : 0;
+	g_ZombieFireSale60 = g_ZombieFireSale60 > g_Vars.lvupdate60 ? g_ZombieFireSale60 - g_Vars.lvupdate60 : 0;
 
 	if (g_ZombieNukeFlash60 >= 0) {
 		g_ZombieNukeFlash60 += g_Vars.lvupdate60;
@@ -12133,7 +12253,7 @@ static bool zombiesBoxPrompt(s32 playernum, char *text)
 	}
 
 	if (g_ZombieBoxState == ZOMBIEBOX_IDLE) {
-		sprintf(text, "Hold %s for Mystery Box [Cost: %d]", zombiesUseName(playernum), ZOMBIE_BOX_COST);
+		sprintf(text, "Hold %s for Mystery Box [Cost: %d]", zombiesUseName(playernum), zombiesBoxCost());
 		return true;
 	}
 
@@ -12409,6 +12529,10 @@ void zombiesTick(void)
 
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		g_ZombieOutOfPlay[i] = i < PLAYERCOUNT() && netPlayerOutOfPlay(i);
+
+		if (g_ZombieGrenadeWait60[i] > 0) {
+			g_ZombieGrenadeWait60[i] -= g_Vars.lvupdate60;
+		}
 	}
 
 	zombiesTickPopups();
@@ -12564,6 +12688,12 @@ void zombiesTick(void)
 		if (g_Vars.lvframenum >= 120) {
 			// the Zombies Options page's Starting Round
 			g_ZombieRound = g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1;
+
+			// round 1's grenades
+			for (i = 0; i < MAX_PLAYERS; i++) {
+				g_ZombieGrenades[i] = ZOMBIE_GRENADES_ROUND;
+			}
+
 			// a match carried on under a new host: its round, and what each had
 			zombiesNetResumeTake();
 			g_ZombieRoundStartFrame = g_Vars.lvframenum;
@@ -12640,6 +12770,15 @@ void zombiesTick(void)
 	} else if (g_Vars.lvframenum >= g_ZombieNextWaveFrame) {
 		g_ZombieRound++;
 		zombiesRespawnTheDead();
+
+		for (i = 0; i < MAX_PLAYERS; i++) {
+			g_ZombieGrenades[i] += ZOMBIE_GRENADES_ROUND;
+
+			if (g_ZombieGrenades[i] > ZOMBIE_GRENADES_MAX) {
+				g_ZombieGrenades[i] = ZOMBIE_GRENADES_MAX;
+			}
+		}
+
 		g_ZombieDropsThisRound = 0;
 		g_ZombieRoundStartFrame = g_Vars.lvframenum;
 		g_ZombieNextWaveFrame = -1;
@@ -12776,6 +12915,8 @@ static Gfx *zombiesDrawTextBR(Gfx *gdl, char *text, s32 rightx, s32 bottomy, u32
 	return zombiesDrawTextBL(gdl, text, rightx - textwidth, bottomy, colour, chars, font);
 }
 
+static Gfx *zombiesFillRect(Gfx *gdl, f32 x1, f32 y1, f32 x2, f32 y2, u32 colour);
+
 // Compact ammo readout, e.g. "35/200", or "8|8/80" when dual wielding.
 // Called from the game's own ammo HUD code in bondgun.c.
 Gfx *zombiesDrawAmmo(Gfx *gdl, s32 clipl, s32 clipr, s32 reserve, s32 bottom, s32 scalex)
@@ -12795,12 +12936,37 @@ Gfx *zombiesDrawAmmo(Gfx *gdl, s32 clipl, s32 clipr, s32 reserve, s32 bottom, s3
 	} else if (reserve >= 0) {
 		sprintf(text, "%d", reserve);
 	} else {
-		return gdl;
+		text[0] = '\0';
 	}
 
 	// over the function's name, under the gun's (zombiesHudAmmoBottom())
 	ammobottom = zombiesHudAmmoBottom(bottom);
 	zombiesHudNameBottom(bottom);
+
+	// the grenades left, to the ammo's left as Black Ops has them: one
+	// upright pip each
+	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+		s32 textwidth = 0;
+		s32 textheight;
+		s32 x;
+		s32 k;
+
+		if (text[0]) {
+			textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+		}
+
+		x = rightx - textwidth - 10;
+
+		for (k = 0; k < g_ZombieGrenades[g_Vars.currentplayernum] && k < ZOMBIE_GRENADES_MAX; k++) {
+			gdl = zombiesFillRect(gdl, x - 5, ammobottom - 11, x, ammobottom - 2, 0xd0d8c0d0);
+			gdl = zombiesFillRect(gdl, x - 4, ammobottom - 13, x - 1, ammobottom - 11, 0xd0d8c0d0);
+			x -= 8;
+		}
+	}
+
+	if (!text[0]) {
+		return gdl;
+	}
 
 	return zombiesDrawTextBR(gdl, text, rightx, ammobottom, 0xffffffc0, g_CharsHandelGothicSm, g_FontHandelGothicSm);
 }
@@ -14136,7 +14302,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
  *   is the host's.
  */
-#define ZOMBIE_NET_VERSION 3 // 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
+#define ZOMBIE_NET_VERSION 4 // 4 (protocol 36): Fire Sale's time, each player's grenades; 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
 
 struct zombienetbuf {
 	u8 *w;
@@ -14453,6 +14619,7 @@ void zombiesNetCapture(u8 *out, s32 size)
 	znPut(&b, znClamp(g_ZombieGameOver60, 0, 0xffff), 2);
 	znPut(&b, znClamp(g_ZombieInstaKill60, 0, 0xffff), 2);
 	znPut(&b, znClamp(g_ZombieDoublePoints60, 0, 0xffff), 2);
+	znPut(&b, znClamp(g_ZombieFireSale60, 0, 0xffff), 2); // (version 4)
 	znPut(&b, (u16)(s16)znClamp(g_ZombieMaxAmmoBanner60, -1, 0x7fff), 2);
 	znPut(&b, znClamp(g_ZombieBannerKind, 0, ZOMBIEPOWERUP_COUNT - 1), 1);
 	znPut(&b, (u16)(s16)znClamp(g_ZombieNukeFlash60, -1, 0x7fff), 2);
@@ -14611,6 +14778,11 @@ void zombiesNetCapture(u8 *out, s32 size)
 		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearBarrier[i], -1, 0x7f) : -1), 1);
 	}
 
+	// (version 4) each player's grenades
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		znPut(&b, znClamp(g_ZombieGrenades[i], 0, ZOMBIE_GRENADES_MAX), 1);
+	}
+
 	if (b.at > size) {
 		static bool warned = false;
 
@@ -14699,6 +14871,7 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 	g_ZombieGameOver60 = znGet(&b, 2);
 	g_ZombieInstaKill60 = znGet(&b, 2);
 	g_ZombieDoublePoints60 = znGet(&b, 2);
+	g_ZombieFireSale60 = znGet(&b, 2);
 	g_ZombieMaxAmmoBanner60 = (s16)znGet(&b, 2);
 	g_ZombieBannerKind = znClamp(znGet(&b, 1), 0, ZOMBIEPOWERUP_COUNT - 1);
 	g_ZombieNukeFlash60 = (s16)znGet(&b, 2);
@@ -14899,6 +15072,11 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		g_ZombieNearBarrier[i] = nearbarrier >= 0 && nearbarrier < g_ZombieNumBarriers ? nearbarrier : -1;
 	}
 
+	// (version 4) each player's grenades
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		g_ZombieGrenades[i] = znClamp(znGet(&b, 1), 0, ZOMBIE_GRENADES_MAX);
+	}
+
 	// the round cleared: its sting, as the host's (zombiesTick())
 	if (wasnext < 0 && g_ZombieNextWaveFrame >= 0 && !final && g_ZombieRound > 0) {
 		zombiesRoundSting();
@@ -15028,6 +15206,7 @@ void zombiesClientTick(void)
 
 	g_ZombieInstaKill60 = g_ZombieInstaKill60 > adv ? g_ZombieInstaKill60 - adv : 0;
 	g_ZombieDoublePoints60 = g_ZombieDoublePoints60 > adv ? g_ZombieDoublePoints60 - adv : 0;
+	g_ZombieFireSale60 = g_ZombieFireSale60 > adv ? g_ZombieFireSale60 - adv : 0;
 
 	if (g_ZombieNukeFlash60 >= 0) {
 		g_ZombieNukeFlash60 += adv;
@@ -15216,7 +15395,8 @@ extern struct menudialogdef g_ExtGameOptionsMenuDialog;
  * controller button each; one left alone keeps the normal controls' keys,
  * less any the layout gives to something else. As it comes: Space and A to
  * jump, F and X to interact, R and X to reload, X and the D-pad left for the
- * secondary function, Shift and the left stick to sprint, C and B to crouch.
+ * secondary function, Shift and the left stick to sprint, C and B to crouch,
+ * G and the right bumper to throw a grenade, E and the right stick to knife.
  */
 MenuItemHandlerResult menuhandlerZombiesLayoutBind(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerZombiesLayoutReset(s32 operation, struct menuitem *item, union handlerdata *data);
@@ -15234,6 +15414,7 @@ struct menuitem g_ZombiesControlsMenuItems[] = {
 	ZOMBIE_LAYOUT_ROW("Secondary Function\n", 6),
 	ZOMBIE_LAYOUT_ROW("Sprint\n", 7),
 	ZOMBIE_LAYOUT_ROW("Crouch\n", 8),
+	ZOMBIE_LAYOUT_ROW("Grenade\n", 9),
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{
 		MENUITEMTYPE_SELECTABLE,

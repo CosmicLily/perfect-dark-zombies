@@ -62,6 +62,7 @@ bool zombiesTryDive(void);
 void zombiesTickDive(void);
 void zombiesSprintPress(void);
 void zombiesSprintTick(void);
+void zombiesGrenadePress(void);
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -1915,11 +1916,17 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								g_Vars.currentplayer->thirdperson = !g_Vars.currentplayer->thirdperson && modIsThirdPersonAllowed();
 							}
 
-							// In Zombies a button that is the knife's as well
-							// (the controller's right stick) is the knife's
-							// alone: Call of Duty has no roll
+							// In Zombies the roll's button is the grenade
+							// (BUTTON_GRENADE, Zombies' layout): Call of Duty
+							// has no roll. A button that is the knife's as
+							// well (the controller's right stick) is the
+							// knife's alone.
 							if ((pressed & BUTTON_ROLL) && !((pressed & BUTTON_MELEE) && zombiesIsActive())) {
-								bwalkTryRoll();
+								if (zombiesIsActive()) {
+									zombiesGrenadePress();
+								} else {
+									bwalkTryRoll();
+								}
 							}
 
 							// Spectator is taken here for the same reason as the

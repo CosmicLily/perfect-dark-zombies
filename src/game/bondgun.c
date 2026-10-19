@@ -6232,6 +6232,90 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Zombies' grenade (zombiesGrenadePress()): a frag thrown from just under the
+ * current player's eye the way it looks, the gun staying in the hand, as Call
+ * of Duty's quick throw. The look is the player's own vectors (bond2), which
+ * the host has for a remote player as for its own. False if none was made.
+ */
+bool bgunZombiesThrowGrenade(void)
+{
+	struct prop *playerprop = g_Vars.currentplayer->prop;
+	struct coord *prevpos = &g_Vars.currentplayer->bondprevpos;
+	struct coord *extrapos = &g_Vars.currentplayer->bondextrapos;
+	struct gset gset = { WEAPON_GRENADE, 0, 0, FUNC_PRIMARY };
+	struct coord dir = g_Vars.currentplayer->bond2.unk1c;
+	struct coord side;
+	struct coord want;
+	struct coord spawnpos;
+	struct coord velocity;
+	RoomNum spawnrooms[8];
+	struct defaultobj *obj;
+	Mtxf mtx;
+	f32 len = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+	if (playerprop == NULL || len < 0.001f) {
+		return false;
+	}
+
+	dir.x /= len;
+	dir.y /= len;
+	dir.z /= len;
+
+	// the right hand's side of the look, flat
+	side.x = -dir.z;
+	side.y = 0;
+	side.z = dir.x;
+
+	want.x = playerprop->pos.x + dir.x * 25 + side.x * 8;
+	want.y = playerprop->pos.y + dir.y * 25 - 12;
+	want.z = playerprop->pos.z + dir.z * 25 + side.z * 8;
+
+	playerSetPerimEnabled(playerprop, false);
+
+	if (cdTestLos11(&playerprop->pos, playerprop->rooms, &want, spawnrooms, CDTYPE_ALL) != CDRESULT_COLLISION) {
+		spawnpos = want;
+	} else {
+		spawnpos = playerprop->pos;
+		roomsCopy(playerprop->rooms, spawnrooms);
+	}
+
+	playerSetPerimEnabled(playerprop, true);
+
+	// as hard as the hand's own throw (bgunCreateThrownProjectile()), the
+	// grenade's arc on top
+	velocity.x = dir.x * 16.666666f;
+	velocity.y = dir.y * 16.666666f + 1.6666666f;
+	velocity.z = dir.z * 16.666666f;
+
+	if (g_Vars.lvupdate240 > 0) {
+		velocity.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_Vars.lvupdate60freal;
+		velocity.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_Vars.lvupdate60freal;
+		velocity.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_Vars.lvupdate60freal;
+	}
+
+	mtx4LoadIdentity(&mtx);
+
+	obj = bgunCreateThrownProjectile2(playerprop->chr, &gset, &spawnpos, spawnrooms, &mtx, &velocity);
+
+	if (obj == NULL) {
+		return false;
+	}
+
+	if (obj->type == OBJTYPE_WEAPON) {
+		((struct weaponobj *)obj)->gunfunc = FUNC_PRIMARY;
+	}
+
+	if (obj->hidden & OBJHFLAG_PROJECTILE) {
+		obj->projectile->flags |= PROJECTILEFLAG_LAUNCHING;
+		obj->projectile->nextsteppos = spawnpos;
+	}
+
+	return true;
+}
+#endif
+
 void bgunUpdateHeldRocket(s32 handnum)
 {
 	struct hand *hand = &g_Vars.currentplayer->hands[handnum];

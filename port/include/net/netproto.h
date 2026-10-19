@@ -220,7 +220,10 @@
 //    has nine perks - each player's perk mask is u16 and the order nine
 //    bytes (42 a player, from 297) - and three more machines' places
 //    (Deadshot Daiquiri, PhD Flopper, Electric Cherry) before Pack-a-Punch's
-#define NET_PROTOCOL_VERSION 35
+// 36 (Zombies' Carpenter, Fire Sale and grenades, 2026-10-19): the Zombies body's version
+//    4 has Fire Sale's time (u16, after Double Points') and each player's grenades
+//    (u8 each, after the players' doors and barriers); a power-up's kind goes to 5
+#define NET_PROTOCOL_VERSION 36
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2

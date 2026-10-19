@@ -91,7 +91,7 @@ static s32 bindsLoaded = 0;
  * normal keys, NONE for one with none, else its keys; no line at all is the
  * default below.
  */
-#define ZLAYOUT_COUNT 9
+#define ZLAYOUT_COUNT 10
 
 static const struct {
 	u32 ck;
@@ -106,6 +106,7 @@ static const struct {
 	{ CK_LTRIG, "SecondaryFunction" },
 	{ CK_0400,  "Sprint" }, // the spectate button's (BUTTON_SPRINT): no spectating in Zombies
 	{ CK_4000,  "Crouch" }, // the half crouch's
+	{ CK_0800,  "Grenade" }, // the roll's (BUTTON_GRENADE): no roll in Zombies
 };
 
 static u32 zbinds[MAXCONTROLLERS][ZLAYOUT_COUNT][INPUT_MAX_BINDS];
@@ -976,6 +977,16 @@ static void inputZombiesLayoutDefaults(s32 ctrl)
 	zover[ctrl][8] = 1; // crouch, Call of Duty's: C, B (Ctrl still lies prone)
 	zbinds[ctrl][8][0] = kb ? SDL_SCANCODE_C : pad + SDL_CONTROLLER_BUTTON_B;
 	zbinds[ctrl][8][1] = kb ? pad + SDL_CONTROLLER_BUTTON_B : 0;
+
+	zover[ctrl][9] = 1; // grenade, Call of Duty's: G, the right bumper
+	zbinds[ctrl][9][0] = kb ? SDL_SCANCODE_G : pad + SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+	zbinds[ctrl][9][1] = kb ? pad + SDL_CONTROLLER_BUTTON_RIGHTSHOULDER : 0;
+
+	// the knife off G for it: E (Black Ops II's melee on a keyboard), and
+	// the right stick it has anyway
+	zover[ctrl][4] = 1;
+	zbinds[ctrl][4][0] = kb ? SDL_SCANCODE_E : pad + SDL_CONTROLLER_BUTTON_RIGHTSTICK;
+	zbinds[ctrl][4][1] = kb ? pad + SDL_CONTROLLER_BUTTON_RIGHTSTICK : 0;
 }
 
 static void inputZombiesLayoutLoad(s32 ctrl)
@@ -988,6 +999,12 @@ static void inputZombiesLayoutLoad(s32 ctrl)
 
 		if (!zbindStrs[ctrl][z][0]) {
 			continue; // no line: the default
+		}
+
+		// a layout saved before the grenade had a line: a knife left to the
+		// normal keys (G) takes its new default, G being the grenade's now
+		if (z == 4 && !zbindStrs[ctrl][9][0] && !strcasecmp(zbindStrs[ctrl][z], "INHERIT")) {
+			continue;
 		}
 
 		strncpy(str, zbindStrs[ctrl][z], sizeof(str) - 1);

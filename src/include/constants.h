@@ -5301,6 +5301,7 @@ enum weaponnum {
 #define BUTTON_MELEE          CONT_0100 // Zombies' knife
 #define BUTTON_INTERACT       CONT_0200 // Zombies' buy and take, F, without the activate that jumps
 #define BUTTON_SPRINT         BUTTON_SPECTATE // Zombies' sprint, in Zombies' layout (no spectating there)
+#define BUTTON_GRENADE        BUTTON_ROLL // Zombies' grenade, in Zombies' layout (no roll there)
 #define BUTTON_FIRELEFT       CONT_0040 // Akimbo Triggers: the left hand's own trigger
 #define BUTTON_FIREMODELEFT   CONT_0080 // Akimbo Triggers: the left hand's own fire mode toggle
 
