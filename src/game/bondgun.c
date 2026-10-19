@@ -6234,12 +6234,13 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 
 #ifndef PLATFORM_N64
 /**
- * Zombies' grenade (zombiesGrenadePress()): a frag thrown from just under the
- * current player's eye the way it looks, the gun staying in the hand, as Call
- * of Duty's quick throw. The look is the player's own vectors (bond2), which
- * the host has for a remote player as for its own. False if none was made.
+ * Zombies' grenade (zombiesThrowRelease()): a frag thrown from just under the
+ * current player's eye the way it looks, speed a 60th along the look and
+ * upspeed up besides, its fuse fuse60 (what cooking it left). The look is the
+ * player's own vectors (bond2), which the host has for a remote player as
+ * for its own. False if none was made.
  */
-bool bgunZombiesThrowGrenade(void)
+bool bgunZombiesThrowGrenade(f32 speed, f32 upspeed, s32 fuse60)
 {
 	struct prop *playerprop = g_Vars.currentplayer->prop;
 	struct coord *prevpos = &g_Vars.currentplayer->bondprevpos;
@@ -6283,11 +6284,9 @@ bool bgunZombiesThrowGrenade(void)
 
 	playerSetPerimEnabled(playerprop, true);
 
-	// as hard as the hand's own throw (bgunCreateThrownProjectile()), the
-	// grenade's arc on top
-	velocity.x = dir.x * 16.666666f;
-	velocity.y = dir.y * 16.666666f + 1.6666666f;
-	velocity.z = dir.z * 16.666666f;
+	velocity.x = dir.x * speed;
+	velocity.y = dir.y * speed + upspeed;
+	velocity.z = dir.z * speed;
 
 	if (g_Vars.lvupdate240 > 0) {
 		velocity.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_Vars.lvupdate60freal;
@@ -6305,6 +6304,7 @@ bool bgunZombiesThrowGrenade(void)
 
 	if (obj->type == OBJTYPE_WEAPON) {
 		((struct weaponobj *)obj)->gunfunc = FUNC_PRIMARY;
+		((struct weaponobj *)obj)->timer240 = TICKS(fuse60 * 4);
 	}
 
 	if (obj->hidden & OBJHFLAG_PROJECTILE) {

@@ -256,6 +256,36 @@ static s32 g_ZombieNetRemaining = 0;   // a client's "Zombies: N", the host's co
 static s32 g_ZombieGrenades[MAX_PLAYERS];
 static s32 g_ZombieGrenadeWait60[MAX_PLAYERS];
 
+/**
+ * The throw, as Black Ops II's frag (its weapon file, frag_grenade_zm): the
+ * gun down in its quickDropTime, the pin pulled (viewmodel_m67_pullpin, 27
+ * frames at 30, the pin out at its 13th), the arm held back while the button
+ * is (cookOffHold: the fuse burning from the pin, and a grenade cooked to
+ * its 3.5 seconds going off in the hand), then thrown (viewmodel_m67_throw,
+ * 15 frames: its grenade is already out of the hand, so it leaves as the
+ * throw starts) and the gun back up. The 60ths
+ * are tools/zombies/vmbake.py's grenade.zpd's. Its speed is the weapon
+ * file's: 920 inches a second forward and 120 up.
+ */
+#define ZTHROW_NONE 0
+#define ZTHROW_DOWN 1
+#define ZTHROW_PIN  2
+#define ZTHROW_HOLD 3
+#define ZTHROW_OUT  4
+#define ZTHROW_UP   5
+#define ZOMBIE_THROW_DOWN60    9   // quickDropTime 0.15
+#define ZOMBIE_THROW_PIN60     53  // the pin pulled and the arm back
+#define ZOMBIE_THROW_PINOUT60  26  // ... the pin out: the fuse lit
+#define ZOMBIE_THROW_OUT60     29  // the throw
+#define ZOMBIE_THROW_RELEASE60 3   // ... the grenade gone
+#define ZOMBIE_THROW_UP60      12
+#define ZOMBIE_GRENADE_FUSE60  210 // fuseTime 3.5
+#define ZOMBIE_GRENADE_SPEED   38.9f // 920 inches a second, a 60th
+#define ZOMBIE_GRENADE_UPSPEED 5.08f // 120
+static s32 g_ZombieThrowStage[MAX_PLAYERS];
+static s32 g_ZombieThrow60[MAX_PLAYERS];  // in the stage
+static s32 g_ZombieCook60[MAX_PLAYERS];   // since the pin came out, -1 not yet
+
 static void zombiesResetPoints(void)
 {
 	s32 i;
@@ -265,6 +295,8 @@ static void zombiesResetPoints(void)
 		g_ZombieStackTop[i] = -1;
 		g_ZombieGrenades[i] = 0; // round 1's two come with it (zombiesTick())
 		g_ZombieGrenadeWait60[i] = 0;
+		g_ZombieThrowStage[i] = ZTHROW_NONE;
+		g_ZombieCook60[i] = -1;
 	}
 
 	for (i = 0; i < ZOMBIE_MAX_POPUPS; i++) {
@@ -2830,6 +2862,219 @@ bool zombiesDrinkViewmodelActive(s32 playernum)
 	return zombiesDrinkHandModel(g_Vars.players[playernum]) != NULL;
 }
 
+/**
+ * A grenade's throw in the player's own hands (zombiesTickThrow()): Black Ops
+ * II's pin pulled and throw, retargeted onto the character's hands as the
+ * drink is, and the frag in them, from tools/zombies/vmbake.py's grenade.zpd
+ * (its last header field the 60th the throw starts at) and frag_body.obj and
+ * frag_top.obj (the grenade and its pin). Without them the gun still goes
+ * down for the throw, and nothing is drawn in its place.
+ */
+static struct {
+	bool tried;
+	s32 ticks;
+	s32 throwstart;
+	const f32 *mtx;
+} g_ZombieThrowPose;
+
+static struct zombiemesh g_ZombieFragMeshes[ZOMBIE_DRINK_PARTS];
+
+static bool zombiesThrowPoseLoad(void)
+{
+	const char *rel = "$E/zombies/viewmodel/grenade.zpd";
+	u8 *data;
+	u32 size = 0;
+	u16 hdr[4];
+
+	if (g_ZombieThrowPose.tried) {
+		return g_ZombieThrowPose.mtx != NULL;
+	}
+
+	g_ZombieThrowPose.tried = true;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0) {
+		return false;
+	}
+
+	data = fsFileLoad(rel, &size);
+
+	if (!data || size < 12 || memcmp(data, "ZPD1", 4) != 0) {
+		return false;
+	}
+
+	memcpy(hdr, data + 4, sizeof(hdr));
+
+	if (hdr[1] != ZOMBIE_DRINK_JOINTS || hdr[2] != ZOMBIE_DRINK_PARTS || hdr[0] == 0 || hdr[3] == 0 || hdr[3] >= hdr[0]
+			|| size < 12 + (u32)hdr[0] * (ZOMBIE_DRINK_JOINTS + ZOMBIE_DRINK_PARTS) * 12 * sizeof(f32)) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is not vmbake.py's", rel);
+		return false;
+	}
+
+	g_ZombieThrowPose.ticks = hdr[0];
+	g_ZombieThrowPose.throwstart = hdr[3];
+	g_ZombieThrowPose.mtx = (const f32 *)(data + 12);
+
+	sysLogPrintf(LOG_NOTE, "zombies: the grenade thrown in the player's own hands, %d 60ths", hdr[0]);
+
+	return true;
+}
+
+static struct zombiemesh *zombiesFragMesh(s32 part)
+{
+	struct zombiemesh *zm = &g_ZombieFragMeshes[part];
+
+	if (!zm->tried) {
+		zombiesMeshBuildFrom(zm, part ? "$E/zombies/viewmodel/frag_top.obj" : "$E/zombies/viewmodel/frag_body.obj",
+				part ? "the frag's pin" : "the frag");
+	}
+
+	return zm->gdl ? zm : NULL;
+}
+
+// The grenade.zpd 60th a throw is at, -1 for none drawn; *grenade whether
+// the frag is still in the hand
+static s32 zombiesThrowTick(s32 playernum, bool *grenade)
+{
+	const s32 t = g_ZombieThrow60[playernum];
+	s32 tick;
+
+	*grenade = true;
+
+	switch (g_ZombieThrowStage[playernum]) {
+	case ZTHROW_PIN:
+		tick = t;
+		break;
+	case ZTHROW_HOLD:
+		tick = g_ZombieThrowPose.throwstart - 1;
+		break;
+	case ZTHROW_OUT:
+		tick = g_ZombieThrowPose.throwstart + t;
+		*grenade = t < ZOMBIE_THROW_RELEASE60;
+		break;
+	default:
+		return -1;
+	}
+
+	if (tick >= g_ZombieThrowPose.ticks) {
+		tick = g_ZombieThrowPose.ticks - 1;
+	}
+
+	if (g_ZombieThrowStage[playernum] == ZTHROW_PIN && tick >= g_ZombieThrowPose.throwstart) {
+		tick = g_ZombieThrowPose.throwstart - 1;
+	}
+
+	return tick;
+}
+
+static Gfx *zombiesRenderThrowViewmodel(Gfx *gdl)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	struct model *handmodel;
+	struct modelrenderdata renderdata = {NULL, true, 3};
+	const f32 *frame;
+	Mtxf *matrices;
+	Mtxf *saved;
+	bool grenade;
+	s32 tick;
+	s32 n;
+	s32 j;
+
+	if (!zombiesThrowPoseLoad()) {
+		return gdl;
+	}
+
+	tick = zombiesThrowTick(playernum, &grenade);
+	handmodel = zombiesDrinkHandModel(player);
+
+	if (tick < 0 || handmodel == NULL) {
+		return gdl;
+	}
+
+	frame = g_ZombieThrowPose.mtx + tick * (ZOMBIE_DRINK_JOINTS + ZOMBIE_DRINK_PARTS) * 12;
+	n = handmodel->definition->nummatrices;
+
+	if (n < ZOMBIE_DRINK_JOINTS) {
+		n = ZOMBIE_DRINK_JOINTS;
+	}
+
+	if (!gfxHasVtxSpace(n * sizeof(Mtxf))) {
+		return gdl;
+	}
+
+	matrices = gfxAllocate(n * sizeof(Mtxf));
+
+	// both hands: the left pulls the pin
+	for (j = 0; j < n; j++) {
+		zombiesDrinkMtx(frame + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
+	}
+
+	gSPPerspNormalize(gdl++, mtx00016dcc(0, 300));
+
+	renderdata.gdl = gdl;
+	renderdata.unk30 = 4;
+	renderdata.envcolour = player->gunshadecol[0] << 24 | player->gunshadecol[1] << 16
+		| player->gunshadecol[2] << 8 | player->gunshadecol[3];
+	renderdata.zbufferenabled = true;
+
+	mtx00016760();
+	handtintTick();
+
+	saved = handmodel->matrices;
+	handmodel->matrices = matrices;
+	modelUpdateRelations(handmodel);
+
+	// the left hand switched on (a gun's hand model holds it off): it pulls
+	// the pin, and is put back as it was
+	{
+		struct modelnode *node = modelGetPart(handmodel->definition, MODELPART_HAND_LEFT);
+		struct modelrwdata_toggle *left = NULL;
+		bool wasvisible = false;
+
+		if (node && (node->type & 0xff) == MODELNODETYPE_TOGGLE) {
+			left = modelGetNodeRwData(handmodel, node);
+		}
+
+		if (left) {
+			wasvisible = left->visible;
+			left->visible = true;
+		}
+
+		xblaMeshPassBegin();
+		modelRender(&renderdata, handmodel);
+		xblaMeshPassBegin();
+
+		if (left) {
+			left->visible = wasvisible;
+		}
+	}
+
+	handmodel->matrices = saved;
+	gdl = renderdata.gdl;
+
+	if (grenade) {
+		for (j = 0; j < ZOMBIE_DRINK_PARTS; j++) {
+			struct zombiemesh *zm = zombiesFragMesh(j);
+			Mtxf *mtx;
+
+			if (!zm) {
+				continue;
+			}
+
+			mtx = gfxAllocateMatrix();
+			zombiesDrinkMtx(frame + (ZOMBIE_DRINK_JOINTS + j) * 12, g_ZombieBottleObjAxes, mtx);
+			gdl = zombiesBottleDraw(gdl, zm, mtx, 0xff, 0xff, 0xff);
+		}
+	}
+
+	mtxF2LBulk(matrices, n);
+	mtx00016784();
+
+	gSPPerspNormalize(gdl++, viGetPerspScale());
+
+	return gdl;
+}
+
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 {
 	const f32 (*objaxes)[3] = g_ZombieBottleObjAxes;
@@ -2846,6 +3091,14 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	s32 j;
 
 	if (!zombiesDrinkViewmodelActive(playernum)) {
+		// a grenade's throw, where the drink would be: the same hands, and
+		// only where bgunRender() draws them
+		if (zombiesIsActive() && playernum >= 0 && playernum < MAX_PLAYERS
+				&& g_ZombieThrowStage[playernum] != ZTHROW_NONE
+				&& player->thirdpersondist <= 0 && player->visionmode != VISIONMODE_XRAY && !geWatchHidesGun()) {
+			return zombiesRenderThrowViewmodel(gdl);
+		}
+
 		return gdl;
 	}
 
@@ -4051,6 +4304,401 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
 	}
 }
 
+/**
+ * A grenade's throw on the body, seen in third person or by anybody else:
+ * Black Ops II's torso clips (pt_hold_throw while the pin is pulled and the
+ * arm held back, then pt_grenade_stand_throw, pt_crouch_grenade_throw or
+ * pt_prone_grenade_throw as the body stands, crouches or lies), retargeted by
+ * tools/zombies/throwbake.py into the build's zombies/viewmodel/throw.ztb. The
+ * chest's turn is the clip's in the pelvis's frame and each arm part's in the
+ * chest's, so whatever the body's own animation (or a prone, zombiesPoseDive())
+ * has the legs and hips doing, the throw is laid on it; the arms are placed
+ * down the body's own offsets from the chest. Without the file the body
+ * throws with nothing.
+ */
+#define ZOMBIE_THROWBODY_PARTS 7 // the chest (part 2) and the arms (3 to 8)
+#define ZOMBIE_THROWBODY_IN    9 // 60ths from the body's own pose into the clip
+#define ZOMBIE_THROWBODY_LETGO 10 // the frag gone from the body's hand: the arm out (the stand throw's 7th frame)
+
+enum {
+	ZTCLIP_HOLD,
+	ZTCLIP_STAND,
+	ZTCLIP_CROUCH,
+	ZTCLIP_PRONE,
+	ZTCLIP_COUNT
+};
+
+static struct {
+	bool tried;
+	s32 frames[ZTCLIP_COUNT];
+	f32 fps[ZTCLIP_COUNT];
+	const f32 *data[ZTCLIP_COUNT]; // per frame: 7 x 3x3 rows
+} g_ZombieThrowBody;
+
+static bool zombiesThrowBodyLoad(void)
+{
+	const char *rel = "$E/zombies/viewmodel/throw.ztb";
+	u8 *data;
+	u32 size = 0;
+	u32 at;
+	u16 hdr[2];
+	s32 c;
+
+	if (g_ZombieThrowBody.tried) {
+		return g_ZombieThrowBody.data[0] != NULL;
+	}
+
+	g_ZombieThrowBody.tried = true;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0) {
+		return false;
+	}
+
+	data = fsFileLoad(rel, &size);
+
+	if (!data || size < 8 || memcmp(data, "ZTB1", 4) != 0) {
+		return false;
+	}
+
+	memcpy(hdr, data + 4, sizeof(hdr));
+
+	if (hdr[0] != ZTCLIP_COUNT || hdr[1] != ZOMBIE_THROWBODY_PARTS) {
+		sysLogPrintf(LOG_WARNING, "zombies: %s is not throwbake.py's", rel);
+		return false;
+	}
+
+	at = 8;
+
+	for (c = 0; c < ZTCLIP_COUNT; c++) {
+		u16 frames;
+		f32 fps;
+
+		if (at + 8 > size) {
+			return false;
+		}
+
+		memcpy(&frames, data + at, 2);
+		memcpy(&fps, data + at + 4, 4);
+		at += 8;
+
+		if (frames == 0 || fps <= 0 || at + (u32)frames * ZOMBIE_THROWBODY_PARTS * 9 * sizeof(f32) > size) {
+			sysLogPrintf(LOG_WARNING, "zombies: %s is short", rel);
+			return false;
+		}
+
+		g_ZombieThrowBody.frames[c] = frames;
+		g_ZombieThrowBody.fps[c] = fps;
+		g_ZombieThrowBody.data[c] = (const f32 *)(data + at);
+		at += frames * ZOMBIE_THROWBODY_PARTS * 9 * sizeof(f32);
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: the grenade thrown on the body, %d clips", ZTCLIP_COUNT);
+
+	return true;
+}
+
+// A clip's parts at frame f (fractions between frames), as quaternions
+static void zombiesThrowBodySample(s32 clip, f32 f, f32 q[ZOMBIE_THROWBODY_PARTS][4])
+{
+	const s32 frames = g_ZombieThrowBody.frames[clip];
+	s32 frame[2];
+	f32 qq[2][4];
+	s32 j;
+	s32 e;
+
+	f = f < 0 ? 0 : f > frames - 1 ? frames - 1 : f;
+	frame[0] = (s32)f;
+	frame[1] = frame[0] + 1 < frames ? frame[0] + 1 : frame[0];
+
+	for (j = 0; j < ZOMBIE_THROWBODY_PARTS; j++) {
+		for (e = 0; e < 2; e++) {
+			const f32 *d = g_ZombieThrowBody.data[clip] + (frame[e] * ZOMBIE_THROWBODY_PARTS + j) * 9;
+			Mtxf m;
+			s32 r;
+			s32 c;
+
+			// throwbake.py's rows; a Mtxf is by columns
+			for (r = 0; r < 3; r++) {
+				for (c = 0; c < 3; c++) {
+					m.m[c][r] = d[r * 3 + c];
+				}
+			}
+
+			quaternion0f097044(&m, qq[e]);
+		}
+
+		quaternion0f0976c0(qq[0], qq[1]);
+		quaternionSlerp(qq[0], qq[1], f - frame[0], q[j]);
+	}
+}
+
+// Which clip, how far in and how much of it a player's throw is now: false
+// for none
+static bool zombiesThrowBodyAt(s32 playernum, s32 *clip, f32 *frame, f32 *weight)
+{
+	const s32 t = g_ZombieThrow60[playernum];
+	s32 crouch;
+	f32 f;
+
+	*weight = 1;
+
+	switch (g_ZombieThrowStage[playernum]) {
+	case ZTHROW_DOWN:
+		*clip = ZTCLIP_HOLD;
+		*frame = 0;
+		*weight = (f32)t / ZOMBIE_THROWBODY_IN;
+		break;
+	case ZTHROW_PIN:
+		*clip = ZTCLIP_HOLD;
+		*frame = (f32)t / ZOMBIE_THROW_PIN60 * (g_ZombieThrowBody.frames[ZTCLIP_HOLD] - 1);
+		break;
+	case ZTHROW_HOLD:
+		*clip = ZTCLIP_HOLD;
+		*frame = g_ZombieThrowBody.frames[ZTCLIP_HOLD] - 1;
+		break;
+	case ZTHROW_OUT:
+	case ZTHROW_UP:
+		crouch = g_Vars.players[playernum]->crouchpos;
+		// Zombies' full crouch is Call of Duty's prone
+		*clip = crouch == CROUCHPOS_SQUAT ? ZTCLIP_PRONE : crouch == CROUCHPOS_DUCK ? ZTCLIP_CROUCH : ZTCLIP_STAND;
+		f = (f32)(g_ZombieThrowStage[playernum] == ZTHROW_UP ? ZOMBIE_THROW_OUT60 + t : t)
+			/ (ZOMBIE_THROW_OUT60 + ZOMBIE_THROW_UP60);
+		*frame = f * (g_ZombieThrowBody.frames[*clip] - 1);
+
+		if (g_ZombieThrowStage[playernum] == ZTHROW_UP) {
+			*weight = 1 - (f32)t / ZOMBIE_THROW_UP60;
+		}
+		break;
+	default:
+		return false;
+	}
+
+	*weight = *weight < 0 ? 0 : *weight > 1 ? 1 : *weight;
+	*weight = *weight * *weight * (3 - 2 * *weight);
+
+	return *weight > 0;
+}
+
+// The matrix at index: rot (unit axes) times s at pos, mixed into the one
+// there by weight
+static void zombiesThrowBodySet(struct model *model, s32 index, Mtxf *rot, f32 s, const f32 pos[3], f32 weight)
+{
+	Mtxf *mtx = &model->matrices[index];
+	Mtxf local;
+	f32 qlive[4];
+	f32 qwant[4];
+	f32 q[4];
+	s32 i;
+
+	if (weight >= 1) {
+		quaternion0f097044(rot, q);
+	} else {
+		zombiesMtxQuat(mtx, qlive);
+		quaternion0f097044(rot, qwant);
+		quaternion0f0976c0(qlive, qwant);
+		quaternionSlerp(qlive, qwant, weight, q);
+	}
+
+	quaternionToMtx(q, &local);
+
+	for (i = 0; i < 3; i++) {
+		mtx->m[0][i] = local.m[0][i] * s;
+		mtx->m[1][i] = local.m[1][i] * s;
+		mtx->m[2][i] = local.m[2][i] * s;
+		mtx->m[3][i] += (pos[i] - mtx->m[3][i]) * weight;
+	}
+}
+
+// A player's body throwing (the gun put away, zombiesBodyHidesHeld()), and
+// whether the frag is in its hand
+static bool zombiesBodyThrowing(struct chrdata *chr, bool *inhand)
+{
+	s32 playernum;
+	s32 stage;
+
+	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER) {
+		return false;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(chr->prop);
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS) {
+		return false;
+	}
+
+	stage = g_ZombieThrowStage[playernum];
+
+	if (inhand) {
+		*inhand = stage == ZTHROW_PIN || stage == ZTHROW_HOLD
+			|| (stage == ZTHROW_OUT && g_ZombieThrow60[playernum] < ZOMBIE_THROWBODY_LETGO);
+	}
+
+	return stage == ZTHROW_PIN || stage == ZTHROW_HOLD || stage == ZTHROW_OUT;
+}
+
+// chr.c, after the body's animation, a dive's pose and a drink's arm
+void zombiesPoseThrowArms(struct chrdata *chr, struct model *model)
+{
+	struct modelnode *nodes[9] = { NULL };
+	struct modelnode *node;
+	f32 q[ZOMBIE_THROWBODY_PARTS][4];
+	Mtxf rot[9];
+	f32 pos[9][3];
+	f32 frame;
+	f32 weight;
+	f32 s;
+	s32 playernum;
+	s32 clip;
+	s32 n;
+	s32 j;
+	s32 i;
+
+	if (!zombiesIsActive() || !chr || !chr->prop || chr->prop->type != PROPTYPE_PLAYER
+			|| !model || !model->definition || !model->matrices || model->definition->skel != &g_SkelChr) {
+		return;
+	}
+
+	playernum = playermgrGetPlayerNumByProp(chr->prop);
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieThrowStage[playernum] == ZTHROW_NONE
+			|| !zombiesThrowBodyLoad() || !zombiesThrowBodyAt(playernum, &clip, &frame, &weight)) {
+		return;
+	}
+
+	// the body's own position nodes by part, not the head's grafted under it
+	for (node = model->definition->rootnode; node;) {
+		u32 type = node->type & 0xff;
+
+		if (type == MODELNODETYPE_POSITION && node->rodata->position.part >= 1 && node->rodata->position.part <= 8) {
+			nodes[node->rodata->position.part] = node;
+		}
+
+		if (node->child && type != MODELNODETYPE_HEADSPOT) {
+			node = node->child;
+		} else {
+			while (node) {
+				if (node->next) {
+					node = node->next;
+					break;
+				}
+
+				node = node->parent;
+			}
+		}
+	}
+
+	n = model->definition->nummatrices;
+
+	for (j = 1; j <= 8; j++) {
+		if (!nodes[j] || nodes[j]->rodata->position.mtxindex0 < 0 || nodes[j]->rodata->position.mtxindex0 >= n
+				|| nodes[j]->rodata->position.mtxindex1 >= n) {
+			return;
+		}
+	}
+
+	zombiesThrowBodySample(clip, frame, q);
+
+	// the pelvis as the body has it, in the view: its turn and its scale
+	{
+		Mtxf *m1 = &model->matrices[nodes[1]->rodata->position.mtxindex0];
+		f32 q1[4];
+
+		s = sqrtf(m1->m[0][0] * m1->m[0][0] + m1->m[0][1] * m1->m[0][1] + m1->m[0][2] * m1->m[0][2]);
+		zombiesMtxQuat(m1, q1);
+		quaternionToMtx(q1, &rot[1]);
+	}
+
+	// the chest turned on it, where the body has it
+	{
+		Mtxf m;
+
+		quaternionToMtx(q[0], &m);
+		mtx00015be4(&rot[1], &m, &rot[2]);
+
+		for (i = 0; i < 3; i++) {
+			pos[2][i] = model->matrices[nodes[2]->rodata->position.mtxindex0].m[3][i];
+		}
+	}
+
+	// the arms on the chest. A shoulder stays where the body has it against
+	// the chest, turned with it: the chest's matrix is not where the
+	// shoulders' offsets are from (a shoulder 33 units off it by them, 19 as
+	// the body has it, and the arms came out long). The elbows and hands go
+	// down the body's own offsets, which do hold.
+	{
+		Mtxf *m2 = &model->matrices[nodes[2]->rodata->position.mtxindex0];
+		Mtxf live2;
+		f32 q2[4];
+
+		zombiesMtxQuat(m2, q2);
+		quaternionToMtx(q2, &live2);
+
+		for (j = 3; j <= 8; j++) {
+			const s32 p = g_ZombieDiveParent[j];
+			struct coord *off = &nodes[j]->rodata->position.pos;
+			Mtxf m;
+
+			quaternionToMtx(q[j - 2], &m);
+			mtx00015be4(&rot[2], &m, &rot[j]);
+
+			if (p == 2) {
+				f32 *at = model->matrices[nodes[j]->rodata->position.mtxindex0].m[3];
+				f32 d[3];
+				f32 local[3];
+
+				for (i = 0; i < 3; i++) {
+					d[i] = at[i] - m2->m[3][i];
+				}
+
+				for (i = 0; i < 3; i++) {
+					local[i] = live2.m[i][0] * d[0] + live2.m[i][1] * d[1] + live2.m[i][2] * d[2];
+				}
+
+				for (i = 0; i < 3; i++) {
+					pos[j][i] = pos[2][i] + rot[2].m[0][i] * local[0] + rot[2].m[1][i] * local[1] + rot[2].m[2][i] * local[2];
+				}
+			} else {
+				for (i = 0; i < 3; i++) {
+					pos[j][i] = pos[p][i] + (rot[p].m[0][i] * off->x + rot[p].m[1][i] * off->y + rot[p].m[2][i] * off->z) * s;
+				}
+			}
+		}
+	}
+
+	for (j = 2; j <= 8; j++) {
+		struct modelrodata_position *rodata = &nodes[j]->rodata->position;
+
+		zombiesThrowBodySet(model, rodata->mtxindex0, &rot[j], s, pos[j], weight);
+
+		// an elbow's second: its parent's turn half way to its own
+		if (rodata->mtxindex1 >= 0 && rodata->mtxindex1 != rodata->mtxindex0) {
+			const s32 p = g_ZombieDiveParent[j];
+			Mtxf rel;
+			Mtxf half;
+			f32 qr[4];
+			f32 qh[4];
+			s32 a;
+			s32 b;
+
+			for (a = 0; a < 3; a++) {
+				for (b = 0; b < 3; b++) {
+					rel.m[b][a] = rot[p].m[a][0] * rot[j].m[b][0] + rot[p].m[a][1] * rot[j].m[b][1]
+						+ rot[p].m[a][2] * rot[j].m[b][2];
+				}
+			}
+
+			rel.m[3][0] = rel.m[3][1] = rel.m[3][2] = 0;
+			rel.m[0][3] = rel.m[1][3] = rel.m[2][3] = 0;
+			rel.m[3][3] = 1;
+			quaternion0f097044(&rel, qr);
+			quaternion0f097518(qr, 0.5f, qh);
+			quaternionToMtx(qh, &rel);
+			mtx00015be4(&rot[p], &rel, &half);
+			zombiesThrowBodySet(model, rodata->mtxindex1, &half, s, pos[j], weight);
+		}
+	}
+}
+
 // The drink on the player's body, seen from their third person camera, so the
 // HUD's bottle is not wanted
 static bool zombiesBodyDrinkSeen(s32 playernum)
@@ -4078,7 +4726,7 @@ bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop)
 {
 	s32 t = zombiesBodyDrinkT(chr, NULL);
 
-	if (t < 0 || !prop) {
+	if ((t < 0 && !zombiesBodyThrowing(chr, NULL)) || !prop) {
 		return false;
 	}
 
@@ -4109,7 +4757,58 @@ Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model)
 
 	t = zombiesBodyDrinkT(chr, &perk);
 
-	if (t < 0 || t >= ZOMBIE_BODYDRINK_THROW || !zombiesBodyArm(model, &arm)) {
+	// a grenade in the hand instead, being thrown
+	if (t < 0) {
+		bool inhand = false;
+
+		if (zombiesBodyThrowing(chr, &inhand) && inhand && zombiesFragMesh(0) && zombiesBodyArm(model, &arm)) {
+			mtx = model->matrices;
+
+			for (i = 0; i < 3; i++) {
+				e[i] = mtx[arm.elbow[0]].m[3][i];
+				h[i] = mtx[arm.hand].m[3][i];
+			}
+
+			lower = sqrtf((h[0] - e[0]) * (h[0] - e[0]) + (h[1] - e[1]) * (h[1] - e[1]) + (h[2] - e[2]) * (h[2] - e[2]));
+			scale = sqrtf(mtx[arm.hand].m[1][0] * mtx[arm.hand].m[1][0]
+					+ mtx[arm.hand].m[1][1] * mtx[arm.hand].m[1][1]
+					+ mtx[arm.hand].m[1][2] * mtx[arm.hand].m[1][2]);
+
+			if (lower <= 0 || scale <= 0) {
+				return gdl;
+			}
+
+			for (i = 0; i < 3; i++) {
+				palm[i] = h[i] + (h[i] - e[i]) * ZOMBIE_BODYDRINK_PALM * scale / lower;
+			}
+
+			// the frag in the hand's frame, its OBJ's tenths of an inch to
+			// model units
+			out = gfxAllocateMatrix();
+
+			for (j = 0; j < 3; j++) {
+				for (i = 0; i < 3; i++) {
+					out->m[j][i] = (mtx[arm.hand].m[0][i] * g_ZombieBottleObjAxes[0][j]
+						+ mtx[arm.hand].m[1][i] * g_ZombieBottleObjAxes[1][j]
+						+ mtx[arm.hand].m[2][i] * g_ZombieBottleObjAxes[2][j]) * arm.perinch / 10.0f;
+				}
+
+				out->m[j][3] = 0;
+			}
+
+			out->m[3][0] = palm[0];
+			out->m[3][1] = palm[1];
+			out->m[3][2] = palm[2];
+			out->m[3][3] = 1;
+
+			gdl = zombiesBottleDraw(gdl, zombiesFragMesh(0), out,
+					0x80 + (chr->shadecol[0] >> 1), 0x80 + (chr->shadecol[1] >> 1), 0x80 + (chr->shadecol[2] >> 1));
+		}
+
+		return gdl;
+	}
+
+	if (t >= ZOMBIE_BODYDRINK_THROW || !zombiesBodyArm(model, &arm)) {
 		return gdl;
 	}
 
@@ -5068,6 +5767,11 @@ static void zombiesTickPerkMachines(s32 playernum)
 		return;
 	}
 
+	// not with a grenade in the hand
+	if (g_ZombieThrowStage[playernum] != ZTHROW_NONE) {
+		return;
+	}
+
 	g_ZombiePerkNeedsRelease[playernum] = true;
 	g_ZombiePerkHeld60[playernum] = 0;
 	cost = zombiesPerkCost(near);
@@ -5853,6 +6557,8 @@ static f32 zombiesPapLowerFrac(s32 playernum);
 
 // How far down the current player's gun is held for a drink, 0 to 1.
 // bondgun.c asks, to lower the arms and hold the trigger.
+static f32 zombiesThrowLowerFrac(s32 playernum);
+
 f32 zombiesGunLowerFrac(void)
 {
 	s32 playernum = g_Vars.currentplayernum;
@@ -5889,6 +6595,11 @@ f32 zombiesGunLowerFrac(void)
 
 		// eased in and out
 		drink = drink * drink * (3 - 2 * drink);
+	}
+
+	// a grenade's throw
+	if (zombiesThrowLowerFrac(playernum) > drink) {
+		drink = zombiesThrowLowerFrac(playernum);
 	}
 
 	// The knife coming up into its slash, and the gun after it coming back
@@ -5974,7 +6685,8 @@ void zombiesQuickMelee(void)
 	}
 
 	if (!zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
-			|| g_ZombieKnifeCooldown60[playernum] > 0 || zombiesPapLowerFrac(playernum) > 0) {
+			|| g_ZombieKnifeCooldown60[playernum] > 0 || zombiesPapLowerFrac(playernum) > 0
+			|| g_ZombieThrowStage[playernum] != ZTHROW_NONE) {
 		return;
 	}
 
@@ -6009,43 +6721,169 @@ void zombiesQuickMelee(void)
 	g_ZombieSoundFor = -1;
 }
 
-bool bgunZombiesThrowGrenade(void);
+bool bgunZombiesThrowGrenade(f32 speed, f32 upspeed, s32 fuse60);
 
-// bondmove.c, on a press of BUTTON_GRENADE: the current player throws a
-// grenade, if it has one. The host's alone online: the grenade is a
-// projectile, which the host makes, and the count rides in its block.
+static bool zombiesHoldingGrenade(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	bool held;
+
+	setCurrentPlayerNum(playernum);
+	held = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), BUTTON_GRENADE) != 0;
+	setCurrentPlayerNum(prevplayernum);
+
+	return held;
+}
+
+// bondmove.c, on a press of BUTTON_GRENADE: the current player starts a
+// throw, if it has a grenade. Online a client plays its own throw at once,
+// as it does its knife (zombiesClientTick()); the grenade is the host's, a
+// projectile, and the count rides in its block.
 void zombiesGrenadePress(void)
 {
 	s32 playernum = g_Vars.currentplayernum;
 
-	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || g_NetReplaying || NET_CLIENT
-			|| g_ZombieGameOver) {
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || g_NetReplaying || g_ZombieGameOver) {
 		return;
 	}
 
 	if (!zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
+			|| g_ZombieThrowStage[playernum] != ZTHROW_NONE || zombiesPapLowerFrac(playernum) > 0
 			|| g_ZombieGrenadeWait60[playernum] > 0) {
 		return;
 	}
 
 	if (g_ZombieGrenades[playernum] <= 0) {
+		if (!NET_CLIENT) {
+			g_ZombieSoundFor = playernum;
+			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+			g_ZombieSoundFor = -1;
+			g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
+		}
+
+		return;
+	}
+
+	g_ZombieThrowStage[playernum] = ZTHROW_DOWN;
+	g_ZombieThrow60[playernum] = 0;
+	g_ZombieCook60[playernum] = -1;
+}
+
+// The grenade out of the hand, cooked as long as it was: the host's alone
+static void zombiesThrowRelease(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	s32 fuse = ZOMBIE_GRENADE_FUSE60 - (g_ZombieCook60[playernum] > 0 ? g_ZombieCook60[playernum] : 0);
+
+	if (NET_CLIENT) {
+		return;
+	}
+
+	setCurrentPlayerNum(playernum);
+
+	if (bgunZombiesThrowGrenade(ZOMBIE_GRENADE_SPEED, ZOMBIE_GRENADE_UPSPEED, fuse > 0 ? fuse : 0)) {
+		if (g_ZombieGrenades[playernum] > 0) {
+			g_ZombieGrenades[playernum]--;
+		}
+
 		g_ZombieSoundFor = playernum;
-		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		zombiesPlaySound(SFX_THROW, 1.0f);
 		g_ZombieSoundFor = -1;
-		g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
+	}
+
+	setCurrentPlayerNum(prevplayernum);
+}
+
+// A throw on: its stages, the button held keeping the arm back
+static void zombiesTickThrow(s32 playernum)
+{
+	s32 *t = &g_ZombieThrow60[playernum];
+	s32 *stage = &g_ZombieThrowStage[playernum];
+	s32 prev = *t;
+
+	if (*stage == ZTHROW_NONE) {
 		return;
 	}
 
-	if (!bgunZombiesThrowGrenade()) {
+	// downed: the throw is gone, the grenade with it (unless it was out)
+	if (!zombiesPlayerIsUp(playernum) || g_ZombieGameOver) {
+		*stage = ZTHROW_NONE;
+		g_ZombieCook60[playernum] = -1;
 		return;
 	}
 
-	g_ZombieGrenades[playernum]--;
-	g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
+	*t += g_Vars.lvupdate60;
 
-	g_ZombieSoundFor = playernum;
-	zombiesPlaySound(SFX_THROW, 1.0f);
-	g_ZombieSoundFor = -1;
+	if (g_ZombieCook60[playernum] >= 0) {
+		g_ZombieCook60[playernum] += g_Vars.lvupdate60;
+	}
+
+	switch (*stage) {
+	case ZTHROW_DOWN:
+		if (*t >= ZOMBIE_THROW_DOWN60) {
+			*stage = ZTHROW_PIN;
+			*t = 0;
+		}
+		break;
+	case ZTHROW_PIN:
+		if (prev < ZOMBIE_THROW_PINOUT60 && *t >= ZOMBIE_THROW_PINOUT60) {
+			g_ZombieCook60[playernum] = *t - ZOMBIE_THROW_PINOUT60;
+		}
+
+		if (*t >= ZOMBIE_THROW_PIN60) {
+			*stage = ZTHROW_HOLD;
+			*t = 0;
+		}
+		break;
+	case ZTHROW_HOLD:
+		// let go, or cooked to the end of its fuse: thrown
+		if (!zombiesHoldingGrenade(playernum) || g_ZombieCook60[playernum] >= ZOMBIE_GRENADE_FUSE60 - ZOMBIE_THROW_RELEASE60) {
+			*stage = ZTHROW_OUT;
+			*t = 0;
+		}
+		break;
+	case ZTHROW_OUT:
+		if (prev < ZOMBIE_THROW_RELEASE60 && *t >= ZOMBIE_THROW_RELEASE60) {
+			zombiesThrowRelease(playernum);
+			g_ZombieCook60[playernum] = -1;
+		}
+
+		if (*t >= ZOMBIE_THROW_OUT60) {
+			*stage = ZTHROW_UP;
+			*t = 0;
+		}
+		break;
+	case ZTHROW_UP:
+		if (*t >= ZOMBIE_THROW_UP60) {
+			*stage = ZTHROW_NONE;
+		}
+		break;
+	}
+}
+
+// zombiesGunLowerFrac(): how far down the throw has the gun
+static f32 zombiesThrowLowerFrac(s32 playernum)
+{
+	f32 f;
+
+	switch (g_ZombieThrowStage[playernum]) {
+	case ZTHROW_DOWN:
+		f = (f32)g_ZombieThrow60[playernum] / ZOMBIE_THROW_DOWN60;
+		break;
+	case ZTHROW_PIN:
+	case ZTHROW_HOLD:
+	case ZTHROW_OUT:
+		return 1;
+	case ZTHROW_UP:
+		f = 1 - (f32)g_ZombieThrow60[playernum] / ZOMBIE_THROW_UP60;
+		break;
+	default:
+		return 0;
+	}
+
+	f = f < 0 ? 0 : f > 1 ? 1 : f;
+
+	return f * f * (3 - 2 * f);
 }
 
 // Another gun put in the hand meanwhile (the box, a wall buy) is kept: the
@@ -6361,6 +7199,10 @@ static void zombiesTickJuggernog(s32 playernum)
 	g_ZombieUseHeld60[playernum] += g_Vars.lvupdate60;
 
 	if (g_ZombieUseHeld60[playernum] < ZOMBIE_JUGG_HOLD60) {
+		return;
+	}
+
+	if (g_ZombieThrowStage[playernum] != ZTHROW_NONE) {
 		return;
 	}
 
@@ -12665,6 +13507,7 @@ void zombiesTick(void)
 		zombiesTickPap(i);
 		zombiesTickWhere(i);
 		zombiesTickKnife(i);
+		zombiesTickThrow(i);
 	}
 
 	g_ZombieSoundFor = -1;
@@ -14302,7 +15145,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
  *   is the host's.
  */
-#define ZOMBIE_NET_VERSION 4 // 4 (protocol 36): Fire Sale's time, each player's grenades; 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
+#define ZOMBIE_NET_VERSION 4 // 4 (protocol 36): Fire Sale's time, each player's grenades and throw; 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
 
 struct zombienetbuf {
 	u8 *w;
@@ -14778,9 +15621,11 @@ void zombiesNetCapture(u8 *out, s32 size)
 		znPut(&b, (u8)(s8)(in ? znClamp(g_ZombieNearBarrier[i], -1, 0x7f) : -1), 1);
 	}
 
-	// (version 4) each player's grenades
+	// (version 4) each player's grenades, and its throw's stage and 60ths
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		znPut(&b, znClamp(g_ZombieGrenades[i], 0, ZOMBIE_GRENADES_MAX), 1);
+		znPut(&b, znClamp(g_ZombieThrowStage[i], 0, ZTHROW_UP), 1);
+		znPut(&b, znClamp(g_ZombieThrow60[i], 0, 0xff), 1);
 	}
 
 	if (b.at > size) {
@@ -15072,9 +15917,19 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		g_ZombieNearBarrier[i] = nearbarrier >= 0 && nearbarrier < g_ZombieNumBarriers ? nearbarrier : -1;
 	}
 
-	// (version 4) each player's grenades
+	// (version 4) each player's grenades, and its throw's stage and 60ths
 	for (i = 0; i < MAX_PLAYERS; i++) {
-		g_ZombieGrenades[i] = znClamp(znGet(&b, 1), 0, ZOMBIE_GRENADES_MAX);
+		const s32 grenades = znGet(&b, 1);
+		const s32 stage = znClamp(znGet(&b, 1), 0, ZTHROW_UP);
+		const s32 t = znGet(&b, 1);
+
+		g_ZombieGrenades[i] = znClamp(grenades, 0, ZOMBIE_GRENADES_MAX);
+
+		// the others' throws, for their bodies; this machine's is its own
+		if (i != g_NetLocalSlot) {
+			g_ZombieThrowStage[i] = stage;
+			g_ZombieThrow60[i] = t;
+		}
 	}
 
 	// the round cleared: its sting, as the host's (zombiesTick())
@@ -15297,6 +16152,7 @@ void zombiesClientTick(void)
 	// this machine's own knife, swung as its walk is predicted
 	if (me >= 0 && me < PLAYERCOUNT() && g_Vars.players[me] && g_Vars.players[me]->prop) {
 		zombiesTickKnife(me);
+		zombiesTickThrow(me);
 	}
 
 	// back in at the next round: no longer watching anyone. Offline the

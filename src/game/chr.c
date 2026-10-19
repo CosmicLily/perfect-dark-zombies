@@ -67,6 +67,7 @@
 // Zombies: a perk drunk on the body (zombies.inc)
 void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model);
 void zombiesPoseDive(struct chrdata *chr, struct model *model);
+void zombiesPoseThrowArms(struct chrdata *chr, struct model *model);
 bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop);
 Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model);
 
@@ -3584,11 +3585,12 @@ s32 chrTick(struct prop *prop)
 			modelSetMatricesWithAnim(&sp210, model);
 
 #ifndef PLATFORM_N64
-			// Zombies: a dolphin dive's pose, and a perk drunk, the arm bent
-			// to it (zombies.inc)
+			// Zombies: a dolphin dive's pose, a perk drunk, the arm bent
+			// to it, and a grenade's throw (zombies.inc)
 			if (!deferred) {
 				zombiesPoseDive(chr, model);
 				zombiesPoseDrinkArm(chr, model);
+				zombiesPoseThrowArms(chr, model);
 			}
 #endif
 

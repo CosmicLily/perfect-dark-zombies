@@ -222,7 +222,8 @@
 //    (Deadshot Daiquiri, PhD Flopper, Electric Cherry) before Pack-a-Punch's
 // 36 (Zombies' Carpenter, Fire Sale and grenades, 2026-10-19): the Zombies body's version
 //    4 has Fire Sale's time (u16, after Double Points') and each player's grenades
-//    (u8 each, after the players' doors and barriers); a power-up's kind goes to 5
+//    and its throw (u8 grenades, u8 the throw's stage, u8 its 60ths, after the
+//    players' doors and barriers); a power-up's kind goes to 5
 #define NET_PROTOCOL_VERSION 36
 
 #define NETMSG_CONNECT    1

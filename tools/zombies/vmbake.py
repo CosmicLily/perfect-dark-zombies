@@ -6,6 +6,7 @@ joint a 60th of a second, and each bottle as two meshes the game's OBJ reader
 takes. The art stays on the player's disk, out of the tree.
 
     python3 tools/zombies/vmbake.py <viewmodel dir>
+    python3 tools/zombies/vmbake.py <viewmodel dir> grenade
 
 <viewmodel dir> is vmconv.py's: arms.zvm, drink.zan and bottle_<perk>.zvm.
 Written beside them:
@@ -21,6 +22,15 @@ Written beside them:
               the bottle and its cap, which comes off, in the bottle's own
               bind space in tenths of an inch (the game keeps a vertex at a
               quarter of a unit), its pictures vmconv.py's.
+
+grenade bakes the grenade's quick throw (zombies.inc, zombiesRenderThrow())
+from pullpin.zan, throw.zan and frag.zvm (Black Ops II's viewmodel_m67_pullpin,
+viewmodel_m67_throw and t6_wpn_grenade_frag_view):
+
+  grenade.zpd as drink.zpd, the pin pulled and then the throw one after the
+              other, its last u16 the 60th the throw starts at; the parts
+              the grenade and its pin (j_grenade_activate_clip).
+  frag_body.obj, frag_top.obj and frag.mtl: the grenade and its pin.
 """
 
 import math
@@ -69,9 +79,9 @@ def hand_matrices(P):
     return out
 
 
-def write_bottle(d, perk, bottle):
+def write_bottle(d, perk, bottle, topbone="j_top"):
     bones, verts, tris, draws = bottle
-    top = [b[0] for b in bones].index("j_top")
+    top = [b[0] for b in bones].index(topbone)
 
     # a vertex is the cap's when the cap's bone holds most of it
     def is_top(v):
@@ -103,8 +113,54 @@ def write_bottle(d, perk, bottle):
         print("%s_%s.obj: %d triangles" % (perk, part, numtris))
 
 
+def bake(arms, prop, parts, clips):
+    """the hands and the prop's parts a 60th at a time through each clip in
+    turn: the data, and the 60th each clip starts at"""
+    data = bytearray()
+    starts = []
+    ticks = 0
+
+    for frames, fps, tracks in clips:
+        starts.append(ticks)
+        n = (frames - 1) * 60 // fps + 1
+        for t in range(n):
+            skins = pose([arms, prop], tracks, t * fps / 60.0)
+            P = bone_positions(arms, skins[0])
+            for m in hand_matrices(P):
+                data += struct.pack("<12f", *(m[0] + m[1] + m[2]))
+            for b in parts:
+                sm = skins[1][b]
+                m = [[sm[r][c] / OBJ_UNITS for c in range(3)] + [sm[r][3]] for r in range(3)]
+                data += struct.pack("<12f", *(m[0] + m[1] + m[2]))
+        ticks += n
+
+    return data, starts, ticks
+
+
+def grenade(d):
+    arms = load_zvm(os.path.join(d, "arms.zvm"))
+    frag = load_zvm(os.path.join(d, "frag.zvm"))
+    names = [b[0] for b in frag[0]]
+    # the grenade is its clip (tag_clip, every vertex of its body): j_gun
+    # stands still where the arms' tag_weapon holds it
+    parts = [names.index("tag_clip"), names.index("j_grenade_activate_clip")]
+    clips = [load_zan(os.path.join(d, name + ".zan")) for name in ("pullpin", "throw")]
+    data, starts, ticks = bake(arms, frag, parts, clips)
+
+    out = bytearray(b"ZPD1" + struct.pack("<4H", ticks, 33, len(parts), starts[1])) + data
+    open(os.path.join(d, "grenade.zpd"), "wb").write(out)
+    print("grenade.zpd: %d ticks, the throw from %d, %d bytes" % (ticks, starts[1], len(out)))
+
+    write_bottle(d, "frag", frag, "j_grenade_activate_clip")
+
+
 def main():
     d = sys.argv[1]
+
+    if sys.argv[2:] == ["grenade"]:
+        grenade(d)
+        return
+
     arms = load_zvm(os.path.join(d, "arms.zvm"))
     bottles = sorted(f[:-4] for f in os.listdir(d) if f.startswith("bottle_") and f.endswith(".zvm"))
     bottle = load_zvm(os.path.join(d, bottles[0] + ".zvm"))
