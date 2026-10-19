@@ -5176,6 +5176,73 @@ f32 zombiesHandRate(s32 handstate)
 
 static bool g_ZombieSprintPress[MAX_PLAYERS];
 
+/**
+ * The gun in hand's weight on the legs, as Black Ops II's weapon files have
+ * it (Mob of the Dead's dump): moveSpeedScale on foot - pistols, SMGs,
+ * shotguns and the knife 1, rifles and snipers 0.95, LMGs and launchers 0.9,
+ * the Death Machine 0.6 - and adsMoveSpeedScale down the sights, pistols and
+ * SMGs 2, rifles 1, the LSAT 0.8. Black Ops II multiplies that second by a
+ * speed of its own for aiming, which is not in the weapon files; it is taken
+ * as ZOMBIE_ADS_SPEED, so a rifle aimed goes at some half its pace and a
+ * pistol at nine tenths. Perfect Dark's guns take the class of the nearest
+ * Black Ops II one.
+ */
+#define ZOMBIE_ADS_SPEED 0.45f
+
+struct zombiegunlegs {
+	s32 weaponnum;
+	f32 move;
+	f32 ads;
+};
+
+static const struct zombiegunlegs g_ZombieGunLegs[] = {
+	// rifles and snipers (AK-47, FAL, M14, DSR-50, Barrett)
+	{ WEAPON_DRAGON,         0.95f, 1.0f },
+	{ WEAPON_K7AVENGER,      0.95f, 1.0f },
+	{ WEAPON_AR34,           0.95f, 1.0f },
+	{ WEAPON_SUPERDRAGON,    0.95f, 1.0f },
+	{ WEAPON_SNIPERRIFLE,    0.95f, 1.0f },
+	{ WEAPON_FARSIGHT,       0.95f, 1.0f },
+	{ WEAPON_CROSSBOW,       0.95f, 1.0f },
+	{ WEAPON_KF7SPECIAL,     0.95f, 1.0f },
+	{ WEAPON_AR53,           0.95f, 1.0f },
+	// light machine guns (the LSAT)
+	{ WEAPON_RCP120,         0.9f,  0.8f },
+	{ WEAPON_REAPER,         0.9f,  0.8f },
+	// launchers (the RPG)
+	{ WEAPON_DEVASTATOR,     0.9f,  1.0f },
+	{ WEAPON_ROCKETLAUNCHER, 0.9f,  1.0f },
+	{ WEAPON_SLAYER,         0.9f,  1.0f },
+	// shotguns (the Rottweil 72 aims as a rifle; the 870 and Saiga as SMGs)
+	{ WEAPON_SHOTGUN,        1.0f,  2.0f },
+};
+
+static f32 zombiesGunMoveScale(void)
+{
+	struct player *player = g_Vars.currentplayer;
+	const s32 weaponnum = weaponHost(player->gunctrl.weaponnum);
+	f32 move = 1.0f;
+	f32 ads = 2.0f; // pistols, SMGs, the knife, the hands and anything else
+	f32 aimed;
+	s32 i;
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieGunLegs); i++) {
+		if (g_ZombieGunLegs[i].weaponnum == weaponnum) {
+			move = g_ZombieGunLegs[i].move;
+			ads = g_ZombieGunLegs[i].ads;
+			break;
+		}
+	}
+
+	// down the sights: Perfect Dark's aim mode, or COD Style Aiming's sights
+	if (player->insightaimmode || player->codaimfrac > 0.5f) {
+		aimed = ZOMBIE_ADS_SPEED * ads;
+		move *= aimed < 1.0f ? aimed : 1.0f;
+	}
+
+	return move;
+}
+
 // bondwalk.c asks: Call of Duty's legs, and Stamin-Up's quicker ones, for the
 // current player
 f32 zombiesMoveScale(void)
@@ -5187,11 +5254,34 @@ f32 zombiesMoveScale(void)
 		return ZOMBIE_DOWNED_SPEED;
 	}
 
-	if (zombiesIsActive() && zombiesPlayerHasPerk(g_Vars.currentplayernum, ZOMBIEPERK_STAMINUP)) {
-		return ZOMBIE_COD_WALK * ZOMBIE_STAMINUP_SPEED;
+	if (!zombiesIsActive()) {
+		return 1;
 	}
 
-	return zombiesIsActive() ? ZOMBIE_COD_WALK : 1;
+	return ZOMBIE_COD_WALK * zombiesGunMoveScale()
+		* (zombiesPlayerHasPerk(g_Vars.currentplayernum, ZOMBIEPERK_STAMINUP) ? ZOMBIE_STAMINUP_SPEED : 1);
+}
+
+/**
+ * bondgun.c: how far into its sprint the current player's gun is, 0 to 1,
+ * for the sprint's pose - the gun tipped down and swung across the body, as
+ * Black Ops II's viewmodels hold theirs (sprint_in, _loop, _out, which are
+ * made for its own guns and not ours, so the pose is laid on in code). It
+ * follows the sprint's own ease (speedboost, ZOMBIE_SPRINT_EASE: a sixth of a
+ * second in and out, where Black Ops II's sprintInTime is 0.15 to 0.3).
+ */
+f32 zombiesSprintGunFrac(void)
+{
+	f32 f;
+
+	if (!zombiesIsActive() || !g_Vars.currentplayer) {
+		return 0;
+	}
+
+	f = (g_Vars.currentplayer->speedboost - 1.0f) / (ZOMBIE_SPRINT_SCALE - 1.0f);
+	f = f < 0 ? 0 : f > 1 ? 1 : f;
+
+	return f * f * (3 - 2 * f);
 }
 
 // bondmove.c: the Sprint button pressed (BUTTON_SPRINT), for the next tick

@@ -96,6 +96,15 @@ f32 zombiesPapPitch(s32 weaponnum);
 Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum);
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl);
 void zombiesReloadStarted(s32 handnum);
+f32 zombiesSprintGunFrac(void);
+
+// Zombies' sprint pose at its fullest (zombiesSprintGunFrac()): radians in the
+// camera's axes, and units across and down
+#define ZOMBIE_SPRINT_GUN_PITCH -0.35f
+#define ZOMBIE_SPRINT_GUN_YAW    0.55f
+#define ZOMBIE_SPRINT_GUN_ROLL   0.30f
+#define ZOMBIE_SPRINT_GUN_X     -1.5f
+#define ZOMBIE_SPRINT_GUN_Y      2.0f
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
@@ -10003,6 +10012,33 @@ void bgun0f0a5550(s32 handnum)
 	mtx4LoadRotation(&sp1a4, &sp124);
 	mtx4MultMtx4(&sp124, &sp164, &sp284);
 	mtx4MultMtx4InPlace(&sp284, &sp234);
+
+#ifndef PLATFORM_N64
+	// Zombies' sprint: the gun tipped down and swung across the body, as
+	// Call of Duty's are held at a sprint (zombiesSprintGunFrac()), turned
+	// in the camera's own axes about the gun's place and dropped a little
+	{
+		const f32 sprint = zombiesSprintGunFrac();
+
+		if (sprint > 0.0f) {
+			struct coord rot;
+			Mtxf turn;
+			Mtxf turned;
+
+			rot.x = ZOMBIE_SPRINT_GUN_PITCH * sprint;
+			rot.y = ZOMBIE_SPRINT_GUN_YAW * sprint;
+			rot.z = ZOMBIE_SPRINT_GUN_ROLL * sprint;
+
+			mtx4LoadRotation(&rot, &turn);
+			mtx4MultMtx4(&turn, &sp234, &turned);
+			mtx4Copy(&turned, &sp234);
+
+			sp274.f[0] += ZOMBIE_SPRINT_GUN_X * sprint;
+			sp274.f[1] += ZOMBIE_SPRINT_GUN_Y * sprint;
+		}
+	}
+#endif
+
 	mtx4Copy(&sp234, &sp2c4);
 	mtx4SetTranslation(&sp274, &sp2c4);
 
