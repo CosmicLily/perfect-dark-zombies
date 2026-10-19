@@ -91,7 +91,7 @@ static s32 bindsLoaded = 0;
  * normal keys, NONE for one with none, else its keys; no line at all is the
  * default below.
  */
-#define ZLAYOUT_COUNT 7
+#define ZLAYOUT_COUNT 9
 
 static const struct {
 	u32 ck;
@@ -104,6 +104,8 @@ static const struct {
 	{ CK_0100,  "Knife" },
 	{ CK_0200,  "Interact" },
 	{ CK_LTRIG, "SecondaryFunction" },
+	{ CK_0400,  "Sprint" }, // the spectate button's (BUTTON_SPRINT): no spectating in Zombies
+	{ CK_4000,  "Crouch" }, // the half crouch's
 };
 
 static u32 zbinds[MAXCONTROLLERS][ZLAYOUT_COUNT][INPUT_MAX_BINDS];
@@ -966,6 +968,14 @@ static void inputZombiesLayoutDefaults(s32 ctrl)
 	zover[ctrl][6] = 1; // secondary function
 	zbinds[ctrl][6][0] = kb ? SDL_SCANCODE_X : pad + SDL_CONTROLLER_BUTTON_DPAD_LEFT;
 	zbinds[ctrl][6][1] = kb ? pad + SDL_CONTROLLER_BUTTON_DPAD_LEFT : 0;
+
+	zover[ctrl][7] = 1; // sprint, Call of Duty's: Shift, the left stick
+	zbinds[ctrl][7][0] = kb ? SDL_SCANCODE_LSHIFT : pad + SDL_CONTROLLER_BUTTON_LEFTSTICK;
+	zbinds[ctrl][7][1] = kb ? pad + SDL_CONTROLLER_BUTTON_LEFTSTICK : 0;
+
+	zover[ctrl][8] = 1; // crouch, Call of Duty's: C, B (Ctrl still lies prone)
+	zbinds[ctrl][8][0] = kb ? SDL_SCANCODE_C : pad + SDL_CONTROLLER_BUTTON_B;
+	zbinds[ctrl][8][1] = kb ? pad + SDL_CONTROLLER_BUTTON_B : 0;
 }
 
 static void inputZombiesLayoutLoad(s32 ctrl)

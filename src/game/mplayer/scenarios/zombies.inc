@@ -1269,6 +1269,7 @@ static void zombiesPlaceJuggernog(void)
 #define ZOMBIE_DOUBLETAP_DAMAGE 2.0f
 #define ZOMBIE_STAMINUP_SPEED   1.15f
 #define ZOMBIE_DOWNED_SPEED     0.35f  // a downed player's crawl, of their squatting pace
+#define ZOMBIE_COD_WALK         1.66f  // Call of Duty's 190 inches a second (zombiesMoveScale())
 
 struct zombieperkdef {
 	char *name;
@@ -3830,13 +3831,22 @@ static bool zombiesDiveBodyPose(struct chrdata *chr, f32 yrot, f32 scale, struct
 
 /**
  * bwalkApplyCrouchSpeed()'s, on the full crouch's 0.35: lying prone, the
- * player crawls at some twice Call of Duty's crawl (about 15 inches a second
- * against Black Ops II's 8), where the full crouch went 53 and the crawl
- * played seven times over. Only where the prone is drawn (dive.zbd is there).
+ * player crawls at some twice Call of Duty's crawl (about 12 inches a second
+ * against Black Ops II's 8), where the full crouch went 37 and the crawl
+ * played four and a half times over; Call of Duty's legs (ZOMBIE_COD_WALK)
+ * taken back off. Only where the prone is drawn (dive.zbd is there), and not
+ * for the downed, whose crawl is ZOMBIE_DOWNED_SPEED's.
  */
 f32 zombiesProneSpeed(void)
 {
-	return zombiesIsActive() && zombiesDiveBodyLoad() ? 0.3f : 1.0f;
+	const s32 playernum = g_Vars.currentplayernum;
+
+	if (!zombiesIsActive() || !zombiesDiveBodyLoad()
+			|| (playernum >= 0 && playernum < MAX_PLAYERS && g_ZombieDowned[playernum])) {
+		return 1.0f;
+	}
+
+	return 0.3f / ZOMBIE_COD_WALK;
 }
 
 // The chr's model matrices: the dive's or prone's pose, while the player is in one
@@ -5137,7 +5147,33 @@ f32 zombiesHandRate(s32 handstate)
 	return 1;
 }
 
-// bondwalk.c asks: Stamin-Up's quicker legs for the current player
+/**
+ * Call of Duty's legs. Black Ops II's player runs 190 inches a second (g_speed),
+ * and Perfect Dark's at full speed some 114 of the same inches, the body's own
+ * size taken as Call of Duty's (tools/zombies/divebake.py's units to the inch):
+ * ZOMBIE_COD_WALK makes up the difference, forwards, back and across alike, and
+ * Perfect Dark's own ramp to a quarter more after three seconds at full speed
+ * (speedboost) is not Zombies'. Sprint is in its place: pressed (Shift, the
+ * left stick) while going forward on foot it is half as fast again forwards,
+ * Black Ops II's player_sprintSpeedScale, for four seconds (eight with
+ * Stamin-Up), and ends on letting forward go, a crouch, aiming, firing or the
+ * breath running out, which comes back a 60th a 60th while not sprinting.
+ *
+ * Its state is in the two player fields Perfect Dark's ramp had, which online
+ * already go in every snapshot and come back in a client's replays
+ * (netsnap.c, netpredict.c): speedboost the forward speed's scale, easing to
+ * the sprint's and back, and speedmaxtime60 the breath, 1 + 60ths used while
+ * sprinting and minus the 60ths used when not.
+ */
+#define ZOMBIE_SPRINT_SCALE    1.5f
+#define ZOMBIE_SPRINT_TIME     240   // 60ths of sprint in a breath
+#define ZOMBIE_SPRINT_START    30    // 60ths of it needed to start
+#define ZOMBIE_SPRINT_EASE     0.05f // the scale's change a 60th
+
+static bool g_ZombieSprintPress[MAX_PLAYERS];
+
+// bondwalk.c asks: Call of Duty's legs, and Stamin-Up's quicker ones, for the
+// current player
 f32 zombiesMoveScale(void)
 {
 	s32 playernum = g_Vars.currentplayernum;
@@ -5148,10 +5184,79 @@ f32 zombiesMoveScale(void)
 	}
 
 	if (zombiesIsActive() && zombiesPlayerHasPerk(g_Vars.currentplayernum, ZOMBIEPERK_STAMINUP)) {
-		return ZOMBIE_STAMINUP_SPEED;
+		return ZOMBIE_COD_WALK * ZOMBIE_STAMINUP_SPEED;
 	}
 
-	return 1;
+	return zombiesIsActive() ? ZOMBIE_COD_WALK : 1;
+}
+
+// bondmove.c: the Sprint button pressed (BUTTON_SPRINT), for the next tick
+void zombiesSprintPress(void)
+{
+	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+		g_ZombieSprintPress[g_Vars.currentplayernum] = true;
+	}
+}
+
+// bondmove.c, a tick of the current player's walk: the sprint, in Perfect
+// Dark's speed ramp's place
+void zombiesSprintTick(void)
+{
+	struct player *player = g_Vars.currentplayer;
+	const s32 playernum = g_Vars.currentplayernum;
+	s32 breath = ZOMBIE_SPRINT_TIME;
+	bool sprinting = player->speedmaxtime60 > 0;
+	s32 used = sprinting ? player->speedmaxtime60 - 1 : -player->speedmaxtime60;
+	bool pressed = false;
+	bool can;
+	f32 target;
+	f32 step;
+
+	if (playernum >= 0 && playernum < MAX_PLAYERS) {
+		pressed = g_ZombieSprintPress[playernum];
+		g_ZombieSprintPress[playernum] = false;
+
+		if (zombiesPlayerHasPerk(playernum, ZOMBIEPERK_STAMINUP)) {
+			breath *= 2;
+		}
+
+		if (g_ZombieDowned[playernum]) {
+			pressed = false;
+			sprinting = false;
+		}
+	}
+
+	can = player->crouchpos == CROUCHPOS_STAND && player->bondmovemode == MOVEMODE_WALK
+		&& player->speedgo > 0.5f && !player->insightaimmode
+		&& !player->hands[HAND_RIGHT].triggeron && !player->hands[HAND_LEFT].triggeron;
+
+	used = used < 0 ? 0 : used > breath ? breath : used;
+
+	if (sprinting) {
+		used += g_Vars.lvupdate60;
+
+		if (!can || used >= breath) {
+			sprinting = false;
+		}
+	} else {
+		used -= g_Vars.lvupdate60;
+		used = used < 0 ? 0 : used;
+
+		if (pressed && can && breath - used >= ZOMBIE_SPRINT_START) {
+			sprinting = true;
+		}
+	}
+
+	player->speedmaxtime60 = sprinting ? used + 1 : -used;
+
+	target = sprinting ? ZOMBIE_SPRINT_SCALE : 1.0f;
+	step = ZOMBIE_SPRINT_EASE * g_Vars.lvupdate60freal;
+
+	if (player->speedboost < target) {
+		player->speedboost = player->speedboost + step > target ? target : player->speedboost + step;
+	} else {
+		player->speedboost = player->speedboost - step < target ? target : player->speedboost - step;
+	}
 }
 
 static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum);
@@ -15011,7 +15116,7 @@ extern struct menudialogdef g_ExtGameOptionsMenuDialog;
  * controller button each; one left alone keeps the normal controls' keys,
  * less any the layout gives to something else. As it comes: Space and A to
  * jump, F and X to interact, R and X to reload, X and the D-pad left for the
- * secondary function.
+ * secondary function, Shift and the left stick to sprint, C and B to crouch.
  */
 MenuItemHandlerResult menuhandlerZombiesLayoutBind(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerZombiesLayoutReset(s32 operation, struct menuitem *item, union handlerdata *data);
@@ -15027,6 +15132,8 @@ struct menuitem g_ZombiesControlsMenuItems[] = {
 	ZOMBIE_LAYOUT_ROW("Knife\n", 4),
 	ZOMBIE_LAYOUT_ROW("Interact\n", 5),
 	ZOMBIE_LAYOUT_ROW("Secondary Function\n", 6),
+	ZOMBIE_LAYOUT_ROW("Sprint\n", 7),
+	ZOMBIE_LAYOUT_ROW("Crouch\n", 8),
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{
 		MENUITEMTYPE_SELECTABLE,

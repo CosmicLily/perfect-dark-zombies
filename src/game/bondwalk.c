@@ -2556,6 +2556,11 @@ void bwalkApplyMoveData(struct movedata *data)
 #endif
 
 	if (g_Vars.currentplayer->walkinitmove == false) {
+#ifndef PLATFORM_N64
+		// Zombies' sprint keeps its breath in speedmaxtime60 (zombies.inc)
+		const s32 sprintbreath = g_Vars.currentplayer->speedmaxtime60;
+#endif
+
 		// Sideways
 		if (data->digitalstepleft) {
 			bwalkUpdateSpeedSideways(-1, 0.2f, data->digitalstepleft);
@@ -2610,7 +2615,7 @@ void bwalkApplyMoveData(struct movedata *data)
 		g_Vars.currentplayer->speedforwards *= g_Vars.currentplayer->speedboost;
 
 #ifndef PLATFORM_N64
-		// Zombies' Stamin-Up
+		// Zombies: Call of Duty's legs, and Stamin-Up's
 		if (zombiesIsActive()) {
 			const f32 legs = zombiesMoveScale();
 
@@ -2623,6 +2628,12 @@ void bwalkApplyMoveData(struct movedata *data)
 				bmoveGetCrouchPos() != CROUCHPOS_STAND) {
 			g_Vars.currentplayer->speedmaxtime60 = 0;
 		}
+
+#ifndef PLATFORM_N64
+		if (zombiesIsActive()) {
+			g_Vars.currentplayer->speedmaxtime60 = sprintbreath;
+		}
+#endif
 
 #ifndef PLATFORM_N64
 		if (data->rleanleft) {

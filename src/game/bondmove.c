@@ -60,6 +60,8 @@ bool zombiesIsActive(void);
 void zombiesQuickMelee(void);
 bool zombiesTryDive(void);
 void zombiesTickDive(void);
+void zombiesSprintPress(void);
+void zombiesSprintTick(void);
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -1921,8 +1923,11 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 							}
 
 							// Spectator is taken here for the same reason as the
-							// other two: it is a press and not a hold.
-							if (pressed & BUTTON_SPECTATE) {
+							// other two: it is a press and not a hold. In Zombies
+							// its button is the sprint (zombies.inc)
+							if ((pressed & BUTTON_SPRINT) && zombiesIsActive()) {
+								zombiesSprintPress();
+							} else if (pressed & BUTTON_SPECTATE) {
 								modSpectateToggle();
 							}
 
@@ -2314,6 +2319,12 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	// Speed boost
 	// After 3 seconds of holding forward at max speed, apply boost multiplier.
 	// The multiplier starts at 1 and reaches 1.25 after about 0.1 seconds.
+#ifndef PLATFORM_N64
+	// Zombies has Call of Duty's sprint in its place (zombies.inc)
+	if (zombiesIsActive()) {
+		zombiesSprintTick();
+	} else
+#endif
 	if (g_Vars.currentplayer->speedmaxtime60 >= TICKS(180)) {
 		if (g_Vars.currentplayer->speedboost < 1.25f) {
 			g_Vars.currentplayer->speedboost += 0.01f * g_Vars.lvupdate60freal;
