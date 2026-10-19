@@ -1269,7 +1269,7 @@ static void zombiesPlaceJuggernog(void)
 #define ZOMBIE_DOUBLETAP_DAMAGE 2.0f
 #define ZOMBIE_STAMINUP_SPEED   1.15f
 #define ZOMBIE_DOWNED_SPEED     0.35f  // a downed player's crawl, of their squatting pace
-#define ZOMBIE_COD_WALK         1.66f  // Call of Duty's 190 inches a second (zombiesMoveScale())
+#define ZOMBIE_COD_WALK         1.0f   // Call of Duty's 190 inches a second is Perfect Dark's own run (zombiesMoveScale())
 
 struct zombieperkdef {
 	char *name;
@@ -5149,9 +5149,13 @@ f32 zombiesHandRate(s32 handstate)
 
 /**
  * Call of Duty's legs. Black Ops II's player runs 190 inches a second (g_speed),
- * and Perfect Dark's at full speed some 114 of the same inches, the body's own
- * size taken as Call of Duty's (tools/zombies/divebake.py's units to the inch):
- * ZOMBIE_COD_WALK makes up the difference, forwards, back and across alike, and
+ * and Perfect Dark's at full speed is already that: some 494 units a second,
+ * where a player's eye at 159 units against Call of Duty's 60 inches makes an
+ * inch 2.65 units, 190 inches 503. ZOMBIE_COD_WALK is 1 so. It was 1.66 from
+ * the dive's body measured as Call of Duty's (divebake.py's units to the
+ * inch), and played far too fast: the eye is the size that matches. Then
+ * Perfect Dark's own ramp to a quarter more after three seconds at full speed
+ * is not Zombies' (it ran past Call of Duty's), and
  * Perfect Dark's own ramp to a quarter more after three seconds at full speed
  * (speedboost) is not Zombies'. Sprint is in its place: pressed (Shift, the
  * left stick) while going forward on foot it is half as fast again forwards,
