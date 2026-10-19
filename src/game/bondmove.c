@@ -1886,8 +1886,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						}
 
 #ifndef PLATFORM_N64
-						// Zombies: crouch at a run forward is a dolphin dive,
-						// stood up until it lands (zombies.inc)
+						// Zombies: crouch while sprinting forward is a dolphin
+						// dive, stood up until it lands (zombies.inc)
 						if (g_Vars.currentplayer->crouchpos < oldcrouchpos && zombiesTryDive()) {
 							g_Vars.currentplayer->crouchpos = oldcrouchpos;
 						}

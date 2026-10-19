@@ -5485,7 +5485,7 @@ void zombiesReloadStarted(s32 handnum)
 }
 
 /**
- * The dolphin dive: crouch at a run forward throws the player forward and
+ * The dolphin dive: crouch while sprinting forward throws the player forward and
  * low (bwalkTryDive(), bondwalk.c), and they land flat on the floor, squatting,
  * as Call of Duty's dive to prone; with PhD Flopper the landing is a blast.
  * A drop from a height lands one too, with PhD. bondmove.c asks when crouch
@@ -5504,9 +5504,12 @@ bool zombiesTryDive(void)
 	const s32 playernum = g_Vars.currentplayernum;
 	struct player *player = g_Vars.currentplayer;
 
+	// Black Ops II dives from a sprint only (speedmaxtime60 above 0 is a
+	// sprint, zombiesSprintTick()); a crouch at a run is just a crouch
 	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS
 			|| !zombiesPlayerIsUp(playernum) || g_ZombieDowned[playernum]
 			|| g_ZombieDive60[playernum] > 0
+			|| player->speedmaxtime60 <= 0
 			|| player->speedforwards < ZOMBIE_DIVE_RUN) {
 		return false;
 	}
@@ -5516,6 +5519,9 @@ bool zombiesTryDive(void)
 	}
 
 	g_ZombieDive60[playernum] = 1;
+
+	// the dive is the sprint's end; the breath it used stays used
+	player->speedmaxtime60 = -(player->speedmaxtime60 - 1);
 
 	return true;
 }
