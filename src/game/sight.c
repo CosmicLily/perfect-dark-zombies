@@ -1643,6 +1643,38 @@ Gfx *sightDrawTarget(Gfx *gdl, f32 crossx, f32 crossy)
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+s32 zombiesCrosshair(f32 *gap, u32 *colour);
+
+// Zombies' crosshair, Black Ops II's (zombiesCrosshair()): four lines gap out
+// from the aim, the sight's size setting scaling it as it does the target
+static Gfx *sightDrawZombies(Gfx *gdl, f32 crossx, f32 crossy, f32 gap, u32 colour)
+{
+	const s32 scale = SIGHT_SCALE > 0 ? SIGHT_SCALE : 1;
+	const s32 x = sightGetAdjustedX((s32)crossx / g_ScaleX);
+	const s32 y = crossy;
+	const s32 in = (s32)(gap * scale * 0.5f + 0.5f) + scale;
+	const s32 out = in + 4 * scale;
+
+	gdl = textSetPrimColour(gdl, colour);
+
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	gDPSetSubpixelOffsetEXT(gdl++, -2, -2);
+
+	gDPHudRectangle(gdl++, x + in, y, x + out, y);
+	gDPHudRectangle(gdl++, x - out, y, x - in, y);
+	gDPHudRectangle(gdl++, x, y + in, x, y + out);
+	gDPHudRectangle(gdl++, x, y - out, x, y - in);
+
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	gDPSetSubpixelOffsetEXT(gdl++, 0, 0);
+
+	gdl = text0f153838(gdl);
+
+	return gdl;
+}
+#endif
+
 bool sightHasTargetWhileAiming(s32 sight)
 {
 	if (sight == SIGHT_DEFAULT || sight == SIGHT_ZOOM) {
@@ -1724,6 +1756,23 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 		g_ScaleX = 1;
 
 		return gdl;
+	}
+
+	// Zombies' own crosshair from the hip; at the sights the game's own
+	if (sight != SIGHT_NONE) {
+		f32 gap;
+		u32 colour;
+		s32 mode = zombiesCrosshair(&gap, &colour);
+
+		if (mode != 0) {
+			if (mode == 2 && optionsGetSightOnScreen(g_Vars.currentplayerstats->mpindex)) {
+				gdl = sightDrawZombies(gdl, crossx, crossy, gap, colour);
+			}
+
+			g_ScaleX = 1;
+
+			return gdl;
+		}
 	}
 #endif
 

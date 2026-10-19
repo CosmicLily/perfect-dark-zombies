@@ -6003,6 +6003,107 @@ f32 zombiesSprintGunFrac(void)
 	return f * f * (3 - 2 * f);
 }
 
+/**
+ * The crosshair, as Black Ops II's from the hip (sight.c draws it): four
+ * lines round the aim whose gap is the spread. It opens as the player moves
+ * and pops wider with every round fired (a magazine going down, so an
+ * automatic's every shot counts), settling back once the firing stops;
+ * crouched it is tighter, prone tighter still, and a shotgun's is wide. Red
+ * over a zombie. Gone at the sights (the game's own sight is drawn there),
+ * while sprinting, and while the gun is down (a drink, a throw, the knife).
+ * Gaps are the sight's own units, before its size setting.
+ */
+#define ZOMBIE_XHAIR_GAP     4.0f  // standing still
+#define ZOMBIE_XHAIR_MOVE    6.0f  // more at a full run
+#define ZOMBIE_XHAIR_POP     3.5f  // more a round
+#define ZOMBIE_XHAIR_MAX     18.0f
+#define ZOMBIE_XHAIR_SETTLE  8.0f  // the pop's fall a second (a fraction of it)
+#define ZOMBIE_XHAIR_EASE    12.0f // the move's way to its target a second
+
+static f32 g_ZombieXhairPop[MAX_PLAYERS];
+static f32 g_ZombieXhairMove[MAX_PLAYERS];
+static s32 g_ZombieXhairAmmo[MAX_PLAYERS];  // the magazines as last seen, with ...
+static s32 g_ZombieXhairWeapon[MAX_PLAYERS]; // ... the gun they were (none at first: no pop)
+
+
+f32 zombiesGunLowerFrac(void);
+
+// sight.c: 0 for the game's own sight, 1 for none, 2 for Zombies' at *gap
+// in *colour
+s32 zombiesCrosshair(f32 *gap, u32 *colour)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	const f32 dt = g_Vars.lvupdate60freal / 60.0f;
+	f32 move;
+	f32 k;
+	s32 ammo = 0;
+	s32 weaponnum;
+	s32 h;
+
+	if (!zombiesIsActive() || !player || playernum < 0 || playernum >= MAX_PLAYERS) {
+		return 0;
+	}
+
+	// rounds fired: the magazines down since the last frame, the gun the same
+	weaponnum = player->gunctrl.weaponnum;
+
+	for (h = 0; h < 2; h++) {
+		if (player->hands[h].inuse) {
+			ammo += player->hands[h].loadedammo[0] + player->hands[h].loadedammo[1];
+		}
+	}
+
+	if (weaponnum == g_ZombieXhairWeapon[playernum] && g_ZombieXhairAmmo[playernum] > ammo) {
+		s32 shots = g_ZombieXhairAmmo[playernum] - ammo;
+
+		g_ZombieXhairPop[playernum] += ZOMBIE_XHAIR_POP * (shots > 3 ? 3 : shots);
+	}
+
+	g_ZombieXhairAmmo[playernum] = ammo;
+	g_ZombieXhairWeapon[playernum] = weaponnum;
+
+	// the pop settling, the move easing to how fast the player goes
+	k = dt * ZOMBIE_XHAIR_SETTLE;
+	g_ZombieXhairPop[playernum] -= g_ZombieXhairPop[playernum] * (k > 1 ? 1 : k);
+
+	move = sqrtf(player->speedforwards * player->speedforwards + player->speedsideways * player->speedsideways);
+	move = (move > 1 ? 1 : move) * ZOMBIE_XHAIR_MOVE;
+	k = dt * ZOMBIE_XHAIR_EASE;
+	g_ZombieXhairMove[playernum] += (move - g_ZombieXhairMove[playernum]) * (k > 1 ? 1 : k);
+
+	// at the sights, the sight's own (the count kept all the same)
+	if (player->insightaimmode || player->codaimfrac > 0.5f) {
+		return 0;
+	}
+
+	if (g_ZombieGameOver || zombiesGunLowerFrac() > 0 || zombiesSprintGunFrac() > 0.05f) {
+		return 1;
+	}
+
+	*gap = ZOMBIE_XHAIR_GAP + g_ZombieXhairMove[playernum] + g_ZombieXhairPop[playernum];
+
+	if (player->crouchpos == CROUCHPOS_SQUAT) {
+		*gap *= 0.55f;
+	} else if (player->crouchpos == CROUCHPOS_DUCK) {
+		*gap *= 0.75f;
+	}
+
+	if (weaponHost(weaponnum) == WEAPON_SHOTGUN) {
+		*gap *= 1.6f;
+	}
+
+	*gap = *gap > ZOMBIE_XHAIR_MAX ? ZOMBIE_XHAIR_MAX : *gap;
+
+	*colour = 0xffffffc8;
+
+	if (player->lookingatprop.prop && player->lookingatprop.prop->type == PROPTYPE_CHR) {
+		*colour = 0xff3a3ad8;
+	}
+
+	return 2;
+}
+
 // bondmove.c: the Sprint button pressed (BUTTON_SPRINT), for the next tick
 void zombiesSprintPress(void)
 {
