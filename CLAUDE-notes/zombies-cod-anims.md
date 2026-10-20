@@ -7,6 +7,8 @@
   off with a toggle; a torso clip (`pt_`) needs `torso_stabilizer` keyed by
   hand; Perfect Dark's chest matrix is not where the shoulders' offsets are
   from. Below.
+- **A DLC map's streamed pictures: its `.ipak` under the zone's own name
+  (2026-10-19)**. Below.
 
 The tools are `tools/zombies/` (each file's docstring says what it reads and
 writes); the art stays on the player's disk, in the build's
@@ -55,3 +57,21 @@ figures (Call of Duty's skeleton white, Perfect Dark's green), and the bone
 directions can be compared numerically from `divebake.py`'s `retarget()` and
 `posed_pd()`. A sheet whose shoulders sit apart from the white ones is only
 the chest's shape; the directions are what matter.
+
+## A DLC map's streamed pictures (2026-10-19)
+
+A Black Ops II weapon's colour, specular and normal maps are streamed, not in
+its fastfile: an OpenAssetTools Unlinker dump of `zm_buried.ff` gave the Ray
+Gun's model with no `~-gmtl_t6_wpn_zmb_raygun_col`, and 848 "Could not find
+data for image" errors. The pictures are in the `.ipak` files beside the
+fastfiles, and the Unlinker loads them only with `--search-path` on
+`zone/all`, and then only by name: `base`, `zm`, `dlc3`, and one named for
+the zone (`zm_buried.ipak`), which does not exist. Buried's own is
+`dlczm3.ipak` (the zombie DLC packs are numbered Nuketown 0, Die Rise 1, Mob
+of the Dead 2, Buried 3, Origins 4). Copied into a folder of its own as
+`zm_buried.ipak` and that folder put first in the search path, the dump has
+no errors and every Ray Gun picture:
+
+    Unlinker.exe --search-path "<copy dir>;<game>\zonell" --include-assets image -o <out> "<game>\zonell\zm_buried.ff"
+
+`vmconv.py model` and `glb2obj.py` then take that dump's `images/`.
