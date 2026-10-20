@@ -3852,7 +3852,10 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 		mtx = gfxAllocateMatrix();
 		zombiesDrinkMtx(pose + (ZOMBIE_DRINK_JOINTS + j) * 12, g_ZombieBottleObjAxes, mtx);
 		mtx->m[3][1] -= lower * ZOMBIE_VMGUN_LOWER;
-		gdl = zombiesBottleDraw(gdl, zm, mtx, player->gunshadecol[0] | 0x40, player->gunshadecol[1] | 0x40, player->gunshadecol[2] | 0x40);
+		// half the room's light over a bright base, as the machines and the
+		// bottles are: the room's alone left a dim room's gun near black
+		gdl = zombiesBottleDraw(gdl, zm, mtx, 0x80 + (player->gunshadecol[0] >> 1),
+				0x80 + (player->gunshadecol[1] >> 1), 0x80 + (player->gunshadecol[2] >> 1));
 	}
 
 	mtxF2LBulk(matrices, n);
