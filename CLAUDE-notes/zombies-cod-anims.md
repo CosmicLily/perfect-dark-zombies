@@ -72,6 +72,6 @@ of the Dead 2, Buried 3, Origins 4). Copied into a folder of its own as
 `zm_buried.ipak` and that folder put first in the search path, the dump has
 no errors and every Ray Gun picture:
 
-    Unlinker.exe --search-path "<copy dir>;<game>\zonell" --include-assets image -o <out> "<game>\zonell\zm_buried.ff"
+    Unlinker.exe --search-path "<copy dir>;<game>\zone\all" --include-assets image -o <out> "<game>\zone\all\zm_buried.ff"
 
 `vmconv.py model` and `glb2obj.py` then take that dump's `images/`.
