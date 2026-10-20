@@ -5590,10 +5590,83 @@ struct menuitem g_MainMenuMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+#ifndef PLATFORM_N64
+void scenarioInit(void);
+
+/**
+ * Zombies, straight from the Perfect Menu: the Combat Simulator's setup
+ * (menuhandlerMainMenuCombatSimulator()) with its scenario already Zombies,
+ * as the scenario list's own choice sets it (scenarios.c, scenarioInit()).
+ */
+static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		g_GexPlusVariant = NULL;
+		mpSetGexPlusMode(false);
+		g_Vars.bondplayernum = 0;
+		g_Vars.coopplayernum = -1;
+		g_Vars.antiplayernum = -1;
+		challengeDetermineUnlockedFeatures();
+		g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
+		scenarioInit();
+		g_Vars.mpsetupmenu = MPSETUPMENU_GENERAL;
+		func0f0f820c(&g_CombatSimulatorMenuDialog, MENUROOT_MPSETUP);
+		func0f0f8300();
+	}
+
+	return 0;
+}
+
+/**
+ * The Perfect Menu as this build has it: Zombies, the online game, Check for
+ * Updates and Exit Game, and nothing else (the full list is
+ * g_MainMenuMenuItems, above, which nothing shows).
+ */
+struct menuitem g_MainMenuZombiesMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Zombies",
+		0x00000003,
+		menuhandlerMainMenuZombies,
+	},
+	{
+		// netplay: the lobby's rooms, one step from here (port/src/netlobbymenu.c)
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Online Game",
+		0x00000010,
+		netLobbyMenuHandlerOnlineMain,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Check for Updates",
+		0x0000000a,
+		(void *)&g_UpdateMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Exit Game",
+		0x00000007,
+		(void *)&g_ExitGameMenuDialog,
+	},
+	{ MENUITEMTYPE_END },
+};
+#define MAINMENU_ITEMS g_MainMenuZombiesMenuItems
+#else
+#define MAINMENU_ITEMS g_MainMenuMenuItems
+#endif
+
 struct menudialogdef g_CiMenuViaPcMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_OPTIONS_116, // "Perfect Menu"
-	g_MainMenuMenuItems,
+	MAINMENU_ITEMS,
 	menudialogMainMenu,
 	MENUDIALOGFLAG_STARTSELECTS,
 	&g_CiOptionsViaPcMenuDialog,
@@ -5602,7 +5675,7 @@ struct menudialogdef g_CiMenuViaPcMenuDialog = {
 struct menudialogdef g_CiMenuViaPauseMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_OPTIONS_116, // "Perfect Menu"
-	g_MainMenuMenuItems,
+	MAINMENU_ITEMS,
 	menudialogMainMenu,
 	MENUDIALOGFLAG_STARTSELECTS,
 	&g_CiOptionsViaPauseMenuDialog,
