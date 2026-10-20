@@ -713,7 +713,14 @@ void menuTick(void)
 	if ((g_MenuData.isdialogopen || g_MenuData.prevmenuroot != -1) && isdialogopen == false) {
 		if ((g_MenuData.root == MENUROOT_MPSETUP || g_MenuData.root == MENUROOT_4MBMAINMENU)
 				&& g_MenuData.prevmenuroot == -1) {
-			if (g_Vars.mpsetupmenu == MPSETUPMENU_GENERAL) {
+			// This build's Zombies goes into Advanced Setup from the Perfect
+			// Menu (mainmenu.c), past the Combat Simulator's own page, and
+			// backs out to the Perfect Menu as it came
+			if (g_Vars.mpsetupmenu == MPSETUPMENU_GENERAL
+#ifndef PLATFORM_N64
+					|| !IS4MB()
+#endif
+					) {
 				g_MenuData.prevmenuroot = MENUROOT_MAINMENU;
 				g_MenuData.prevmenudialog = IS4MB() ? &g_CiMenuViaPauseMenuDialog : &g_CiMenuViaPcMenuDialog;
 			} else if (IS4MB()) {
