@@ -51,6 +51,7 @@
 #include "game/player.h"
 #ifndef PLATFORM_N64
 #include "gewatch.h"
+#include "gegadgets.h"
 #include "optionsmenu.h"
 #include "gehud.h"
 #include "net/net.h"
@@ -2072,6 +2073,11 @@ void playerTickChrBody(void)
 #ifndef PLATFORM_N64
 	// Or a character picked from the Perfect Menu's Customize Character
 	bodystale = modGhostTakeMenuCharacterStale() || bodystale;
+
+	// Or online, a seat's character changed mid-match (a join in progress)
+	if (g_NetMode != NETMODE_NONE) {
+		bodystale = netPlayerBodyStaleTake(g_Vars.currentplayernum) || bodystale;
+	}
 #endif
 
 	if (bodystale && g_Vars.currentplayer->haschrbody) {
@@ -2219,6 +2225,13 @@ void playerTickChrBody(void)
 #endif
 
 		weaponmodelnum = playermgrGetModelOfWeapon(weaponnum);
+
+#ifndef PLATFORM_N64
+		// GoldenEye's watch laser: nothing in the hand (playermgr.c)
+		if (gegadgetsWatchLaserActive(weaponnum)) {
+			weaponmodelnum = -1;
+		}
+#endif
 
 		if (IS4MB()) {
 			bodynum = MOD_PLAYER_BODY;
@@ -2453,6 +2466,17 @@ void playerTickChrBody(void)
 		chr->radius = g_Vars.currentplayer->bond2.radius;
 
 #ifndef PLATFORM_N64
+		// GoldenEye's cutscene Bond is a chr like the guards, 20 wide
+		// (bondview2.c builds him with init_GUARDdata_with_set_values()),
+		// not the player's 30. The body's radius is what a mission's AI
+		// walks him with (walk_to_pad on the player's chr): at 30 Goldfinger
+		// 64's Crab Key ending could not take the ramp down to the grate and
+		// he wandered the room for good (F3 20261014-193127). The player's
+		// own moves and every other body's test of him use bond2.radius.
+		if (geRoomActive() && modloaderStageIsMission(g_Vars.stagenum)) {
+			chr->radius = 20;
+		}
+
 		// The spectator's CamSpy body (modSpectateGetBodyNum()) is a player's,
 		// not a deployed CamSpy. As RACE_EYESPY, chrTick() would take it for
 		// one lying undeployed in the inventory and never pose or draw it, and
@@ -6396,6 +6420,25 @@ void playerTick(bool arg0)
 				rocket->base.realrot[2][1] = sp2b8[2][1] * sp2a8;
 				rocket->base.realrot[2][2] = sp2b8[2][2] * sp2a8;
 			}
+#ifndef PLATFORM_N64
+			else if (NET_CLIENT) {
+				// netplay: the host's rocket, steered there by this machine's
+				// commands; the camera rides this machine's copy of it, and
+				// the host's local-player block says when it is over
+				// (netEntsClientApplyLocal)
+				s8 contpad1 = optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex);
+
+				rocketok = true;
+
+				if (joyGetButtons(contpad1, START_BUTTON) || inputKeyJustPressed(VK_ESCAPE)) {
+					if (g_Vars.mplayerisrunning == false) {
+						playerPause(MENUROOT_MAINMENU);
+					} else {
+						mpPushPauseDialog();
+					}
+				}
+			}
+#endif
 		}
 
 		if (!rocketok) {
@@ -6432,7 +6475,11 @@ void playerTick(bool arg0)
 		// reached at all with the camera on the eye. Solo falls out of this on
 		// its own - it has no body standing to swap unless it is in third
 		// person, and then the branch below does the work anyway.
-		if (modSpectateBodyIsStale() && g_Vars.currentplayer->haschrbody) {
+		if ((modSpectateBodyIsStale()
+#ifndef PLATFORM_N64
+					|| (g_NetMode != NETMODE_NONE && netPlayerBodyStaleIs(g_Vars.currentplayernum))
+#endif
+					) && g_Vars.currentplayer->haschrbody) {
 			playerTickChrBody();
 		}
 

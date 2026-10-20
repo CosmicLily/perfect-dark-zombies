@@ -190,6 +190,12 @@ static s32 s_LobbyClockOffset = 0;
 
 // A room from the lobby (netlobby.c): set at runtime, never saved to pd.ini
 static s32 s_LobbyRoomOn = 0;
+// ... a LAN or Direct Connect room (netlan.c, protocol 33), served by its
+// host's game: s_LobbyRoomOn is set for it too (a room's seats, its host's
+// name, its handicaps, its member's waits), and this turns off what only the
+// lobby server gives a room: join tickets, its roster, host migration
+static s32 s_LocalRoomOn = 0;
+static s32 s_ConnLobby = 0; // client: CONNECT's NETCONN_LOBBY (in the room, out of the running match)
 static char s_LobbyRoomId[16] = "";
 static char s_LobbyRoomSecret[72] = "";
 static s64 s_LobbyClock = 0; // the lobby's unix clock minus this machine's
@@ -315,6 +321,18 @@ PD_CONSTRUCTOR static void netSessionConfigInit(void)
 	configRegisterInt("Net.JoinInProgress", &s_JoinInProgress, 0, 1);
 	configRegisterInt("Net.ReconnectHold", &s_ReconnectHold, 0, 600);
 	configRegisterInt("Net.MaxPlayers", &s_MaxPlayers, 2, MAX_PLAYERS);
+}
+
+s32 netSessionPort(void)
+{
+	return s_Port;
+}
+
+void netSessionSetPort(s32 port)
+{
+	if (port >= 1 && port <= 65535) {
+		s_Port = port;
+	}
 }
 
 s32 netSessionMaxPlayers(void)
@@ -722,6 +740,22 @@ static u32 s_TestPitchLogged = 0; // the match it was logged in
 
 void netTestOwnOptions(void)
 {
+	// --net-test-own-char HEAD,BODY (netjointest): this machine's own player
+	// 1 plays that character (list places), once, before its first SLOTCFG
+	{
+		static s32 done = 0;
+		const char *own = sysArgGetString("--net-test-own-char");
+		unsigned int head = 0;
+		unsigned int body = 0;
+
+		if (!done && own && sscanf(own, "%u,%u", &head, &body) == 2) {
+			done = 1;
+			g_PlayerConfigsArray[0].base.mpheadnum = head;
+			g_PlayerConfigsArray[0].base.mpbodynum = body;
+			sysLogPrintf(LOG_NOTE, "net: --net-test-own-char: this machine's own player 1 is head %u body %u", head, body);
+		}
+	}
+
 	if (s_TestPitch == -2) {
 		s_TestPitch = sysArgGetInt("--net-test-forward-pitch", -1);
 
@@ -956,6 +990,77 @@ static s32 netHostFreeSlot(s32 peer)
 static void netHostNotice(const char *fmt, ...);
 static void netClientShownName(const struct netclient *c, char *out, s32 size);
 
+/*
+ * A seat's character changed mid-match (a join in progress, F3
+ * 20261015-035744): its player's body is built again from the seat's config,
+ * on the host by its playerTick (playerTickChrBody) and on a client by the
+ * puppet's tick, once the player is alive, as Customize Character's change
+ * is taken
+ */
+static u16 s_CharStale = 0; // by mpindex
+
+void netSessionCharStale(s32 mpindex)
+{
+	if (mpindex >= 0 && mpindex < MAX_PLAYERS) {
+		s_CharStale |= 1u << mpindex;
+	}
+}
+
+s32 netPlayerBodyStaleIs(s32 playernum)
+{
+	const struct player *player = playernum >= 0 && playernum < PLAYERCOUNT() ? g_Vars.players[playernum] : NULL;
+	const s32 mpindex = player ? g_Vars.playerstats[playernum].mpindex : -1;
+
+	return s_CharStale && mpindex >= 0 && mpindex < MAX_PLAYERS && (s_CharStale & (1u << mpindex))
+		&& !player->isdead && player->prop;
+}
+
+s32 netPlayerBodyStaleTake(s32 playernum)
+{
+	const struct player *player = playernum >= 0 && playernum < PLAYERCOUNT() ? g_Vars.players[playernum] : NULL;
+	const s32 mpindex = player ? g_Vars.playerstats[playernum].mpindex : -1;
+
+	if (g_NetMode == NETMODE_NONE || !netPlayerBodyStaleIs(playernum)) {
+		return 0;
+	}
+
+	s_CharStale &= ~(1u << mpindex);
+	sysLogPrintf(LOG_NOTE, "net: player %d (seat %d): its body built again as head %d body %d (tick %u)", playernum, mpindex,
+			g_PlayerConfigsArray[mpindex].base.mpheadnum, g_PlayerConfigsArray[mpindex].base.mpbodynum, g_NetTick);
+
+	return 1;
+}
+
+/**
+ * A join in progress takes a seat the match loaded with another character
+ * (the open seat's) and options: the seat is the joiner's own before RULES go
+ * to it (its own player loads as itself, and plays by its own Control page),
+ * and the host's player for it is built again; the other clients hear of it
+ * in the ROSTER sent as it comes in. A match's start does this for every
+ * seat (netHostMatchStarting).
+ */
+static void netHostSeatOwnCfg(const struct netclient *c)
+{
+	struct mpplayerconfig *p;
+
+	if (c->spectator || c->slot < 0 || c->slot >= MAX_PLAYERS) {
+		return;
+	}
+
+	p = &g_PlayerConfigsArray[c->slot];
+	p->options = c->cfg.options;
+
+	if (p->base.mpheadnum != c->cfg.mpheadnum || p->base.mpbodynum != c->cfg.mpbodynum) {
+		sysLogPrintf(LOG_NOTE, "net: slot %d (\"%s\"): the joiner's own character, head %d body %d (the seat had head %d body %d)",
+				c->slot, c->name, c->cfg.mpheadnum, c->cfg.mpbodynum, p->base.mpheadnum, p->base.mpbodynum);
+		p->base.mpheadnum = c->cfg.mpheadnum;
+		p->base.mpbodynum = c->cfg.mpbodynum;
+		netSessionCharStale(c->slot);
+	}
+
+	memset(&p->fileguid, 0, sizeof(p->fileguid));
+}
+
 static void netHostOnConnect(s32 peer, struct netbuf *b)
 {
 	struct netclient *c = &s_Clients[peer];
@@ -980,6 +1085,7 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 	s32 j;
 	s32 oldseat = -1;
 	s32 connflags;
+	s32 lobbyonly = 0;
 	s32 inprogress;
 	s32 ticketed = 0;
 	s32 oldpeer = -1;
@@ -1045,6 +1151,10 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 
 	connflags = netBufReadU8(b);
 	c->spectator = (connflags & NETCONN_SPECTATE) != 0;
+
+	// a LAN or Direct Connect room's member that left the running match
+	// (End Game) and stays in the room: in for the next match, no seat now
+	lobbyonly = s_LocalRoomOn && (connflags & NETCONN_LOBBY) && s_MatchActive && !nextmatch;
 
 	if (!netBufOk(b) || netBufRemaining(b) != 0) {
 		netHostKick(peer, NETREFUSE_BADMSG, "", "Your game's CONNECT did not parse.");
@@ -1118,7 +1228,14 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 		}
 	}
 
-	if (s_RequireTicket || s_LobbyRoomOn) {
+	// a LAN or Direct Connect room: its password, its kicked, a name of its
+	// own for each member (netlan.c); CONNECT's ticket is the password
+	if (s_LocalRoomOn && netLanAdmit(peer, c->name, sizeof(c->name), ticket, text, sizeof(text)) != 0) {
+		netHostKick(peer, NETREFUSE_TICKET, "room", text);
+		return;
+	}
+
+	if (s_RequireTicket || (s_LobbyRoomOn && !s_LocalRoomOn)) {
 		// a lobby room's own id and secret, else Net.RoomId/Net.RoomSecret
 		const char *roomid = s_LobbyRoomOn ? s_LobbyRoomId : s_RoomId;
 		const char *roomsecret = s_LobbyRoomOn ? s_LobbyRoomSecret : s_RoomSecret;
@@ -1179,7 +1296,7 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 
 	// a match under way takes joiners once it runs (protocol 9): not while
 	// it loads; once its end has gone out, for the next match
-	inprogress = s_MatchActive && !nextmatch;
+	inprogress = s_MatchActive && !nextmatch && !lobbyonly;
 
 	if (inprogress && (!s_MatchLoaded || s_BarrierHeld || s_HostEnded || g_StageNum != s_MatchStage)) {
 		netHostKick(peer, NETREFUSE_STARTED, "", "A match is starting or ending; try again in a moment.");
@@ -1230,12 +1347,17 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 	}
 
 	// the join is accepted: only now is the ticket spent
-	if ((s_RequireTicket || s_LobbyRoomOn) && netTicketUse(nonce, c->name, nonceexpiry, netSessionLobbyNow()) != 0) {
+	if ((s_RequireTicket || (s_LobbyRoomOn && !s_LocalRoomOn)) && netTicketUse(nonce, c->name, nonceexpiry, netSessionLobbyNow()) != 0) {
 		netHostKick(peer, NETREFUSE_TICKET, "ticket", "This room needs a join ticket from the lobby: the ticket was used already.");
 		return;
 	}
 
 	c->state = NETCL_JOINED;
+
+	// a LAN or Direct Connect room's new member (netlan.c)
+	if (s_LocalRoomOn) {
+		netLanMemberJoined(peer, c->name, c->spectator);
+	}
 
 	// a seat of the running match: this peer's from now (an old peer of
 	// the same account that still holds it is dropped below, and finds the
@@ -1253,6 +1375,7 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 		seat->ticketed = c->ticketed;
 		snprintf(seat->account, sizeof(seat->account), "%s", c->name);
 		netNameSet(g_PlayerConfigsArray[c->slot].base.name, sizeof(g_PlayerConfigsArray[c->slot].base.name), c->name);
+		netHostSeatOwnCfg(c);
 	}
 
 	if (oldseat >= 0) {
@@ -1264,7 +1387,7 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 	}
 
 	accflags = (inprogress ? NETACC_INPROGRESS : 0) | (c->resumed ? NETACC_RESUMED : 0) | (c->spectator ? NETACC_SPECTATOR : 0)
-		| (nextmatch ? NETACC_NEXTMATCH : 0);
+		| (nextmatch || lobbyonly ? NETACC_NEXTMATCH : 0);
 
 	netBufInitWrite(b, s_Buf, sizeof(s_Buf));
 	netBufWriteU8(b, NETMSG_ACCEPT);
@@ -1292,7 +1415,7 @@ static void netHostOnConnect(s32 peer, struct netbuf *b)
 
 	sysLogPrintf(LOG_NOTE, "net: %s %d: \"%s\" joined from %s (fov %.0f, aspect %.2f, head %d body %d)%s",
 			c->spectator ? "spectator view" : "slot", c->slot, c->name, addr, c->cfg.fovy, c->cfg.aspect, c->cfg.mpheadnum, c->cfg.mpbodynum,
-			nextmatch ? "; the host's match is over: in for the next" : !inprogress ? "" : c->spectator ? "; spectating the match in progress" : c->resumed ? "; the seat it held, back in the match in progress" : "; an open seat of the match in progress");
+			nextmatch ? "; the host's match is over: in for the next" : lobbyonly ? "; out of the match in progress (its End Game): in for the next" : !inprogress ? "" : c->spectator ? "; spectating the match in progress" : c->resumed ? "; the seat it held, back in the match in progress" : "; an open seat of the match in progress");
 
 	// the host's own player told, whose end screen is up: someone waits on
 	// it to go (F3 20261009-191306); its HUD only (the feed is drawn over
@@ -1971,6 +2094,12 @@ static void netHostSendRoster(void)
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		netBufWriteU8(&b, (u8)s_Seats[i].state);
 		netWriteStr(&b, netSessionWireName(i), 14);
+	}
+
+	// each seat's character (a join in progress plays its own: the others
+	// build its body again)
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		netWriteMpChar(&b, g_PlayerConfigsArray[i].base.mpheadnum, g_PlayerConfigsArray[i].base.mpbodynum);
 	}
 
 	for (i = 0; i < NET_MAXPEERS; i++) {
@@ -2781,7 +2910,7 @@ static void netClientSendConnect(void)
 	netRulesWriteClientKeys(&b);
 	netBufWriteU16(&b, (u16)len);
 	netBufWriteBytes(&b, s_Ticket, len);
-	netBufWriteU8(&b, s_Spectate ? NETCONN_SPECTATE : 0);
+	netBufWriteU8(&b, (s_Spectate ? NETCONN_SPECTATE : 0) | (s_ConnLobby ? NETCONN_LOBBY : 0));
 
 	netSend(s_ServerPeer, NET_CHAN_RELIABLE, &b);
 	s_ClientState = NETCS_HELLO;
@@ -2880,7 +3009,7 @@ static void netClientEnd(s32 code, const char *text);
  */
 static void netClientHostGone(const char *text)
 {
-	if (s_LobbyRoomOn && s_Role == NETROLE_CLIENT && s_ClientState != NETCS_GONE) {
+	if (s_LobbyRoomOn && !s_LocalRoomOn && s_Role == NETROLE_CLIENT && s_ClientState != NETCS_GONE) {
 		if (s_MatchActive && s_MatchLoaded) {
 			netMigrateKeep(netLobbyRoomId(), s_MatchIdCur, s_MatchStage, s_Spectating ? -1 : g_NetLocalSlot,
 					!s_End.valid && !g_MainIsEndscreen, s_ClSeatValid ? s_ClSeat : NULL,
@@ -3325,6 +3454,8 @@ static void netClientOnRoster(struct netbuf *b)
 	char line[256];
 	char names[MAX_PLAYERS][15];
 	u8 st[MAX_PLAYERS];
+	u8 heads[MAX_PLAYERS];
+	u8 bodies[MAX_PLAYERS];
 	const u32 matchid = netBufReadU32(b);
 	const s32 n = netBufReadU8(b);
 	s32 len = 0;
@@ -3341,6 +3472,10 @@ static void netClientOnRoster(struct netbuf *b)
 		if (st[i] > NETSEAT_HELD) {
 			b->error = 1;
 		}
+	}
+
+	for (i = 0; i < MAX_PLAYERS && netBufOk(b); i++) {
+		netReadMpChar(b, &heads[i], &bodies[i]);
 	}
 
 	if (!netBufOk(b) || netBufRemaining(b) != 0 || matchid != s_MatchIdCur || !s_MatchActive) {
@@ -3361,6 +3496,18 @@ static void netClientOnRoster(struct netbuf *b)
 
 		if (st[i] != NETSEAT_NONE) {
 			netNameSet(g_PlayerConfigsArray[i].base.name, sizeof(g_PlayerConfigsArray[i].base.name), names[i]);
+		}
+
+		// another seat's character changed (a join in progress): its puppet
+		// is built again; this machine's own seat came in RULES
+		if ((st[i] == NETSEAT_HOST || st[i] == NETSEAT_TAKEN || st[i] == NETSEAT_HELD)
+				&& !(!s_Spectating && i == s_ClientSlot)
+				&& (g_PlayerConfigsArray[i].base.mpheadnum != heads[i] || g_PlayerConfigsArray[i].base.mpbodynum != bodies[i])) {
+			sysLogPrintf(LOG_NOTE, "net: roster: seat %d plays head %d body %d (was head %d body %d)", i, heads[i], bodies[i],
+					g_PlayerConfigsArray[i].base.mpheadnum, g_PlayerConfigsArray[i].base.mpbodynum);
+			g_PlayerConfigsArray[i].base.mpheadnum = heads[i];
+			g_PlayerConfigsArray[i].base.mpbodynum = bodies[i];
+			netSessionCharStale(i);
 		}
 
 		if (len < (s32)sizeof(line)) {
@@ -3668,6 +3815,7 @@ static void netHostAwayJoins(s32 peer)
 		seat->ticketed = c->ticketed;
 		snprintf(seat->account, sizeof(seat->account), "%s", c->name);
 		netNameSet(g_PlayerConfigsArray[slot].base.name, sizeof(g_PlayerConfigsArray[slot].base.name), c->name);
+		netHostSeatOwnCfg(c);
 	}
 
 	sysLogPrintf(LOG_NOTE, "net: %s %d: \"%s\" joins the match in progress from the lobby",
@@ -3728,6 +3876,12 @@ static void netHostEvent(const struct netevent *ev)
 		// a peer gone from the lobby (JOINED, AWAY) too: a folder being
 		// sent to it stops, and the next peer on the index is served
 		netContentServeStop(ev->peer);
+
+		// out of its LAN or Direct Connect room (netlan.c)
+		if (s_LocalRoomOn) {
+			netLanMemberGone(ev->peer);
+		}
+
 		memset(c, 0, sizeof(*c));
 		c->slot = -1;
 		break;
@@ -3767,6 +3921,10 @@ static void netHostEvent(const struct netevent *ev)
 
 			netContentServeStop(ev->peer);
 
+			if (s_LocalRoomOn) {
+				netLanMemberGone(ev->peer);
+			}
+
 			c->state = NETCL_REFUSED;
 			netHostDisconnectLater(g_NetHostSocket, ev->peer, (u32)code);
 			netHostBarrierTick();
@@ -3790,6 +3948,11 @@ static void netHostEvent(const struct netevent *ev)
 		} else if (type == NETMSG_CHAT) {
 			// protocol 18: a line for everyone (nethud.c)
 			netHostOnChat(ev->peer, &b);
+		} else if (type == NETMSG_ROOMACT) {
+			// protocol 33: a member's action on its LAN or Direct Connect room
+			if (!s_LocalRoomOn || !netLanOnAct(ev->peer, &b)) {
+				netHostKick(ev->peer, NETREFUSE_BADMSG, "", "Your game's ROOMACT did not parse.");
+			}
 		} else if (type == NETMSG_RESUME) {
 			// protocol 21: a player's state in the match the room carries on
 			if (!netMigrateOnRecord(c->spectator ? -1 : c->slot, &b)) {
@@ -3909,7 +4072,7 @@ static void netClientEvent(const struct netevent *ev)
 
 					// host migration: this player's state as the old host had
 					// it, for the match carried on (netmigrate.c)
-					if (s_LobbyRoomOn && !(flags & NETACC_SPECTATOR)) {
+					if (s_LobbyRoomOn && !s_LocalRoomOn && !(flags & NETACC_SPECTATOR)) {
 						netMigrateSendRecord(netLobbyRoomId());
 					}
 
@@ -4053,6 +4216,12 @@ static void netClientEvent(const struct netevent *ev)
 			}
 			break;
 		}
+		case NETMSG_ROOM:
+			// protocol 33: the LAN or Direct Connect room this member is in
+			if (s_LocalRoomOn) {
+				netLanOnRoom(&b);
+			}
+			break;
 		case NETMSG_ROSTER:
 			netClientOnRoster(&b);
 			break;
@@ -4672,6 +4841,8 @@ void netStageStopped(void)
 {
 	s32 i;
 
+	s_CharStale = 0;
+
 	// the stage that stopped was the one before the match (the menus)
 	if (!s_MatchActive || !s_MatchLoaded) {
 		return;
@@ -4682,7 +4853,7 @@ void netStageStopped(void)
 	// host migration: a lobby room's client keeps the match's setup, the
 	// room's should its host go between matches (a host gone mid-match had
 	// the match itself kept as it went: netClientHostGone)
-	if (s_Role == NETROLE_CLIENT && s_LobbyRoomOn && s_ClientState != NETCS_GONE) {
+	if (s_Role == NETROLE_CLIENT && s_LobbyRoomOn && !s_LocalRoomOn && s_ClientState != NETCS_GONE) {
 		netMigrateKeep(netLobbyRoomId(), s_MatchIdCur, s_MatchStage, s_Spectating ? -1 : g_NetLocalSlot, 0, s_ClSeatValid ? s_ClSeat : NULL, 0);
 	}
 
@@ -5098,7 +5269,7 @@ static void netSessionClose(void)
 	if (s_Role == NETROLE_HOST) {
 		for (i = 0; i < NET_MAXPEERS; i++) {
 			if (s_Clients[i].state != NETCL_FREE && s_Clients[i].state != NETCL_REFUSED) {
-				netSendLeave(i, NETREFUSE_SHUTDOWN, "The host has quit.");
+				netSendLeave(i, NETREFUSE_SHUTDOWN, s_LocalRoomOn ? "The host closed the room." : "The host has quit.");
 				netHostDisconnectLater(g_NetHostSocket, i, NETREFUSE_SHUTDOWN);
 			}
 		}
@@ -5330,6 +5501,8 @@ void netSessionLobbyStop(void)
 	memset(s_Clients, 0, sizeof(s_Clients));
 	s_Role = NETROLE_NONE;
 	s_LobbyRoomOn = 0;
+	s_LocalRoomOn = 0;
+	s_ConnLobby = 0;
 	s_LobbyRoomId[0] = '\0';
 	s_LobbyRoomSecret[0] = '\0';
 	g_MpHumanSlotsHi = 0;
@@ -5341,6 +5514,141 @@ void netSessionLobbyStop(void)
 	g_NetLocalSlot = 0;
 
 	sysLogPrintf(LOG_NOTE, "net: lobby: the room's session is closed");
+}
+
+/*
+ * A LAN or Direct Connect room's session (netlan.c, protocol 33): a lobby
+ * room's, opened by the room itself rather than by pdlobbyd. Its host listens
+ * on Net.Port from the moment the room is made, and a member connects as it
+ * joins, not at the launch: the room is served over the connection.
+ */
+
+#define NET_LAN_CONNECT_WINDOW_MS 8000 // the finder heard the host a moment ago
+
+s32 netSessionLanHost(const char *name)
+{
+	const s32 base = s_Port;
+	s32 i;
+
+	if (s_Role != NETROLE_NONE) {
+		return -1;
+	}
+
+	// Net.Port, or one of the three after it when another game on this
+	// machine has it (the LAN finder asks all four); the room says which
+	for (i = 0; i < NETLAN_PORTS && base + i <= 65535; i++) {
+		s_Port = base + i;
+
+		if (netSessionLobbyHost(name) == 0) {
+			break;
+		}
+	}
+
+	s_Port = base;
+
+	if (s_Role != NETROLE_HOST) {
+		return -1;
+	}
+
+	s_LocalRoomOn = 1;
+	sysLogPrintf(LOG_NOTE, "net: a LAN/Direct Connect room's host on UDP port %u as \"%s\"", netSessionLobbyPort(), name);
+
+	return 0;
+}
+
+// password: the room's ("" none), carried in CONNECT's ticket; lobbyonly:
+// back from this member's End Game, in the room and not its running match
+s32 netSessionLanConnect(const char *addr, u16 port, const char *password, const char *name, s32 lobbyonly)
+{
+	if (s_Role != NETROLE_NONE || netSessionLobbyConnect(addr, port, password ? password : "", name, NULL, NET_LAN_CONNECT_WINDOW_MS) != 0) {
+		return -1;
+	}
+
+	s_LocalRoomOn = 1;
+	s_ConnLobby = lobbyonly != 0;
+
+	return 0;
+}
+
+s32 netSessionLocalRoom(void)
+{
+	return s_LocalRoomOn;
+}
+
+/**
+ * A LAN or Direct Connect room's member moved between the players and the
+ * spectators (netlan.c), between matches: its connection is kept and its
+ * seat or spectator view changes, which the next STAGE_LOAD tells it (and
+ * ROOM's youslot before). 0, or -1: no place of the other kind free.
+ */
+s32 netSessionHostSetSpectator(s32 peer, s32 on)
+{
+	struct netclient *c;
+	s32 slot;
+
+	if (s_Role != NETROLE_HOST || peer < 0 || peer >= NET_MAXPEERS || s_MatchActive) {
+		return -1;
+	}
+
+	c = &s_Clients[peer];
+
+	if (c->state != NETCL_JOINED) {
+		return -1;
+	}
+
+	if ((c->spectator != 0) == (on != 0)) {
+		return 0;
+	}
+
+	slot = on ? netHostFreeView(peer) : netHostFreeSlot(peer);
+
+	if (slot < 0) {
+		return -1;
+	}
+
+	sysLogPrintf(LOG_NOTE, "net: \"%s\" moves from %s %d to %s %d", c->name, c->spectator ? "spectator view" : "slot", c->slot,
+			on ? "spectator view" : "slot", slot);
+	c->spectator = on ? 1 : 0;
+	c->slot = slot;
+
+	return 0;
+}
+
+// A peer's seat (mpindex), NETSLOT_SPECTATOR for a spectator, or -1 none
+s32 netSessionHostPeerSlot(s32 peer)
+{
+	const struct netclient *c;
+
+	if (s_Role != NETROLE_HOST || peer < 0 || peer >= NET_MAXPEERS) {
+		return -1;
+	}
+
+	c = &s_Clients[peer];
+
+	if (c->state < NETCL_JOINED || c->state == NETCL_REFUSED) {
+		return -1;
+	}
+
+	return c->spectator ? NETSLOT_SPECTATOR : c->slot;
+}
+
+/**
+ * A LAN or Direct Connect room's client between matches: the seat its host
+ * has it in now (ROOM's youslot; a move between the players and the
+ * spectators keeps the connection), for the next match's start
+ */
+void netSessionClientSetSlot(s32 slot)
+{
+	if (s_Role != NETROLE_CLIENT || s_MatchActive || s_ClientState != NETCS_JOINED) {
+		return;
+	}
+
+	if (slot == NETSLOT_SPECTATOR) {
+		s_Spectate = 1;
+	} else if (slot >= 0 && slot < MAX_PLAYERS) {
+		s_Spectate = 0;
+		s_ClientSlot = slot;
+	}
 }
 
 // 1 host, 2 client, 0 none (a lobby room's session only)
@@ -5847,7 +6155,7 @@ s32 netSessionHostAccountsJson(char *out, s32 size)
 {
 	s32 len, i, j, n = 0;
 
-	if (!s_LobbyRoomOn || s_Role != NETROLE_HOST || size < 3) {
+	if (!s_LobbyRoomOn || s_LocalRoomOn || s_Role != NETROLE_HOST || size < 3) {
 		return -1;
 	}
 

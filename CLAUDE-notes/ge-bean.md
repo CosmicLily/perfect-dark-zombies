@@ -15361,3 +15361,52 @@ built-in had swapped for the release's headneil (curly hair, goatee, glasses) on
 - **Scientists' pistols (F3 20261013-002654)**: GoldenEye's global list 0x10 (`m_DrawPistolAndAttackBond`, ours
   0x810) plays `ANIM_fire_standing_draw_one_handed_weapon_fast` frames 0-20 at 0.5 and gives the TT33 only after it
   ends; ours does the same (traced: anim 1272 for 40 ticks, gun in hand the tick after). GoldenEye's own.
+
+## F3 pass 40 (gefidelity, 2026-10-20, fix/f3-1020-gefidelity): watch, tank in and out, autoguns, empty guns
+
+- **The watch freezes the level only under the face (F3 20261014-224538).** GoldenEye's pause is
+  `lvlSetControlsLockedFlag()` (lv.c zeroes `g_ClockTimer` while it is set), set by
+  `bondviewWatchAnimationTick()` only in `WATCH_ANIMATION_0x5` (face up) and `0xc` (the three frames it is put
+  away); `pausing_flag` only says whether to draw the arm. The raise, the zoom in, the zoom out and the arm
+  going down run with guards walking and shooting, and the stick and trigger are not read while
+  `watch_animation_state != 0`. gewatch.c: `watchSetState()` freezes (lvSetPaused) offline for WS_OPEN and
+  WS_CLOSING alone; `geWatchMpHoldsInput()` holds the player offline whenever the level is not frozen, as it did
+  online. Probe `~/wt/f3-1020-gefidelity-run/probe/watch.py` (state / var80084014 / lvupdate240 per frame).
+- **Into the tank without the bounce (F3 20261014-224847).** `bondonground` was eased down from the turret by
+  GoldenEye's cosine and Perfect Dark's walk let him *fall* after it: the feet lagged, then landed at ~10 a
+  frame and the eye dipped 70 under the seat and came back over 30 frames. `geTankBoard()` lowers
+  `vv_manground` with `bondonground` while entering (GoldenEye sets `g_PlayerTankYOffset` outright): the eye
+  now goes from 188 to 92 on Runway on the cosine and stops. Probe `probe/tankin.py` (GETIN=1).
+- **Out of the tank on top of it (F3 20261014-225038).** GoldenEye's B in the tank clears `g_PlayerIsInTank`
+  and moves nothing: he stands where he sat, over the turret, and the collision step climbs him the 37 out of
+  the hatch at 20 a frame. `tankExit(0)` does that now (feet raised to the seat's eye level less a standing
+  eye, `tank` set so geTankBoard() climbs him the rest); a death, an ending or a model with no boxes
+  (`force`) still puts him down beside it.
+- **Destroyed autoguns fall (F3 20261014-225347).** GoldenEye's `objFall()` drops only `PROPFLAG_RENDERPOSTBG`
+  (0x1, "Fall to Ground"); Perfect Dark drops 0x8 ("In Air") too, and Runway's three autoguns are flags 0x10e8.
+  On a conversion stage (`modloaderDirIndexIsConversion`) only 0x1 falls.
+- **An empty gun goes to the next gun with ammunition (F3 20261017-143409).** GoldenEye's
+  `autoadvance_on_deplete_all_ammo()` is the cycle forward requiring ammo, else back; Perfect Dark's preference
+  list has no GoldenEye guns and gave fists. `bgunAutoSwitchWeapon()` uses the mines' GoldenEye rule for every
+  gun on a conversion stage. Probe `probe/autosw.py` (PP7 emptied with a KF7 held: 0x1 before, 0x62 now).
+
+## F3 pass 40 (hdlook, 2026-10-20, fix/f3-1020-hdlook): the backdrop's fog by distance, the Cradle's ramp railing
+
+- **Surface 2's daylit peaks at the edges of a wide screen** (F3 20261016-210711): the backdrop
+  was fogged by the linear fog line at its eye depth, and a band all round the level is as far
+  away at the screen's edges as in its middle while its depth there is a cosine of that - at
+  16:10 and fovy 75 the panorama 22000 out came out of Surface 2's dark red fog (whole at
+  10000) in the corners. `gebeanStageRenderBackdrop()` now gives each vertex the fog at its
+  own distance from the eye: the fog line's slope 0 and its offset the vertex's factor, set
+  before each vertex is loaded (the renderer takes `fog_mul`/`fog_offset` per vertex at the
+  G_VTX and carries them perspective-correct). Dam's and Surface's backdrops barely change.
+- **The Cradle's ramp railing a grey sheet** (F3 20261016-214844): the ramp's railing quad (a
+  cut-out, `_0x0A498EC5`) runs 90 units into the platform's railing in the same plane, and
+  `decalPick()`'s strip rule made the whole ramp railing the decal of it - drawn in
+  `G_RM_AA_ZB_XLU_DECAL`, its bars became a blended grey sheet. Two cut-outs overlapping along
+  a strip are no longer a decal pair. HDCACHE 25; of the 25 HD levels only the Cradle's build
+  changes (186 -> 175 decals). Probe used: `PD_HDPICK="x,y,z,r"` (log lines `hdpick`).
+- Test traps: `--savedir` relative is resolved against the base dir (`./data/<name>`), so a
+  run dir's own pd.ini is only read with an absolute path. Teleporting the player by gdb needs
+  `prop->pos`, `prop->rooms[]` and `vv_ground`/`vv_manground`; the trace's `theta` is
+  `vv_theta` as stored.

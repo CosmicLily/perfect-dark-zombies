@@ -42,8 +42,9 @@
  *
  * Bond climbs onto it as GoldenEye has him do (geTankBoard()): a tank he walks
  * into lifts him onto its hull, and its turret from there. Not GoldenEye's: he
- * can get in from close beside it as well as from on top of the turret, and
- * gets out beside it where GoldenEye leaves him standing on it. The shells are a weapon as GoldenEye's are (WEAPON_GE_TANKSHELLS,
+ * can get in from close beside it as well as from on top of the turret. He
+ * gets out on top of it, as GoldenEye leaves him (beside it only when a death
+ * or an ending pushes him out). The shells are a weapon as GoldenEye's are (WEAPON_GE_TANKSHELLS,
  * on the Data Uplink as the gadgets with nothing in the hand are): given and
  * held as he climbs in, taken as he climbs out, their trigger the cannon, and
  * anything else he switches to in there fires as it always does.
@@ -64,6 +65,7 @@
 #include "game/bg.h"
 #include "game/bondgun.h"
 #include "game/bondmove.h"
+#include "game/camera.h"
 #include "game/chr.h"
 #include "game/chraction.h"
 #include "game/explosions.h"
@@ -612,8 +614,22 @@ s32 geTankBoard(void)
 		// he is taken across to the seat
 		const f32 remain = g_Tank[g_Vars.currentplayernum].state == TANK_ENTERING
 			? (cosf(g_Tank[g_Vars.currentplayernum].entert * M_BADTAU * 0.5f) + 1.0f) * 0.5f : 0.0f;
+		const f32 was = player->bondonground;
 
 		player->bondonground = g_Tank[g_Vars.currentplayernum].enterclimb * remain;
+
+		// and he is lowered with it, as GoldenEye sets his height outright
+		// (g_PlayerTankYOffset). Left to the walk, the ground went out from
+		// under him and he fell after it, lagging and then landing hard: the
+		// eye went down past the seat and bounced back up to it (F3
+		// 20261014-224847)
+		if (was > player->bondonground && !player->isfalling
+				&& player->vv_manground >= player->vv_ground - 1.0f) {
+			player->vv_manground -= was - player->bondonground;
+			player->vv_ground = player->vv_manground;
+			player->bdeltapos.y = 0.0f;
+		}
+
 		return 0;
 	}
 
@@ -1014,6 +1030,58 @@ static s32 tankExit(s32 force)
 	}
 
 	tankSize(tank, &halfwidth, &halflength, &height, &bottom);
+
+	// GoldenEye's way out (bondview2.c, B in the tank): he stands up where he
+	// sits, on the turret, and climbs the 37 out of the hatch as he does onto
+	// the hull (geTankBoard()), now that the tank is under him and not
+	// round him. The eye is where it was in the seat - the hull's top and the
+	// turret's, 37 and a half crouch's 60 down (geTankEyeHeight()) - and goes
+	// on up from there. Pushed out by a death or an ending he is put down
+	// beside it, as is a tank whose model has no boxes to stand on
+	if (!force && !g_Vars.currentplayer->isdead && tankPartBbox(tank, TANK_PART_HULLBOX)) {
+		struct modelrodata_bbox *hull = tankPartBbox(tank, TANK_PART_HULLBOX);
+		struct modelrodata_bbox *turret = tankPartBbox(tank, TANK_PART_TURRETBOX);
+		struct player *player = g_Vars.currentplayer;
+		f32 top = (hull->ymax - hull->ymin) * tankScale(tank);
+		f32 climb;
+
+		if (turret) {
+			top += (turret->ymax - turret->ymin) * tankScale(tank);
+		}
+
+		climb = top - 37.0f - 60.0f;
+
+		if (climb < 0.0f) {
+			climb = 0.0f;
+		}
+
+		tank->shells = bgunGetReservedAmmoCount(TANK_AMMOTYPE);
+		bgunSetAmmoQuantity(TANK_AMMOTYPE, 0);
+		tankGiveBackHands();
+		tank->firing = 0;
+		tank->speed = 0;
+		tank->turnspeed = 0;
+		tank->base.hidden &= ~OBJHFLAG_MOUNTED;
+
+		tankStopSounds(tank->base.prop);
+
+		g_Tank[p].state = TANK_OUT;
+		player->unk1af0 = NULL;
+
+		// solid again to everyone else; to him it is what he stands on, and
+		// the walk leaves it out of his moves while it is `tank`
+		propSetPerimEnabled(tank->base.prop, true);
+		player->tank = tank->base.prop;
+		player->bondonground = climb;
+		player->vv_manground += climb;
+		player->vv_ground = player->vv_manground;
+		player->sumground = player->vv_manground / (PAL ? 0.054400026798248f : 0.045499980449677f);
+		player->bdeltapos.y = 0.0f;
+		player->speedforwards = 0;
+		player->speedsideways = 0;
+
+		return 1;
+	}
 
 	// the tank is solid again for the test, and the player is not in it
 	propSetPerimEnabled(tank->base.prop, true);
@@ -1697,40 +1765,19 @@ static s32 tankMuzzle(struct tankobj *tank, struct coord *out)
 	return true;
 }
 
-static void tankFire(struct tankobj *tank)
+/**
+ * A shell out of pos along dir (yaw and pitch its angles), the player's own:
+ * the tank's cannon, or GoldenEye's shells fired on foot (tankFireOnFoot()).
+ */
+static void tankLaunchShell(struct coord *posarg, struct coord *dirarg, f32 yaw, f32 pitch)
 {
 	struct prop *playerprop = g_Vars.currentplayer->prop;
 	struct weaponobj *shell;
-	struct coord pos;
-	struct coord dir;
+	struct coord pos = *posarg;
+	struct coord dir = *dirarg;
 	struct coord speed;
 	Mtxf rot;
 	Mtxf identity;
-	f32 yaw = tankWrap(tank->hullyaw + tank->turretyaw);
-	f32 halfwidth, halflength, height, bottom;
-
-	tankSize(tank, &halfwidth, &halflength, &height, &bottom);
-
-	dir.x = sinf(yaw) * cosf(tank->turretpitch);
-	dir.y = sinf(tank->turretpitch);
-	dir.z = cosf(yaw) * cosf(tank->turretpitch);
-
-	// out of the muzzle: GoldenEye's gunFireTankShell() starts the shell at
-	// the model's matrix 4, the muzzle node at the barrel's end
-	// (tankMuzzle()). The hull's half length in front of its middle, at the
-	// barrel's own height under the turret's, was short of the end and to
-	// one side of it once the turret turned, the barrel's pivot being ahead
-	// of the hull's middle (F3 20260926-204021, "tank shell slightly off
-	// center and back from barrel")
-	if (tankMuzzle(tank, &pos)) {
-		pos.x += tank->base.prop->pos.x;
-		pos.y += tank->base.prop->pos.y;
-		pos.z += tank->base.prop->pos.z;
-	} else {
-		pos.x = tank->base.prop->pos.x + dir.x * (halflength + 60.0f);
-		pos.y = tank->base.prop->pos.y + bottom + height * 0.8f + dir.y * (halflength + 60.0f);
-		pos.z = tank->base.prop->pos.z + dir.z * (halflength + 60.0f);
-	}
 
 	shell = weaponCreateProjectileFromWeaponNum(MODEL_CHRDYROCKETMIS, WEAPON_ROCKET, playerprop->chr);
 
@@ -1739,7 +1786,7 @@ static void tankFire(struct tankobj *tank)
 	}
 
 	mtx4LoadIdentity(&identity);
-	mtx4LoadXRotation(-tank->turretpitch, &rot);
+	mtx4LoadXRotation(-pitch, &rot);
 	mtx4LoadYRotation(yaw, &identity);
 	mtx4MultMtx4InPlace(&identity, &rot);
 	mtx4LoadIdentity(&identity);
@@ -1774,6 +1821,39 @@ static void tankFire(struct tankobj *tank)
 		shell->base.projectile->unk018 = 0.0f;
 		shell->base.projectile->unk01c = 0.0f;
 	}
+}
+
+static void tankFire(struct tankobj *tank)
+{
+	struct coord pos;
+	struct coord dir;
+	f32 yaw = tankWrap(tank->hullyaw + tank->turretyaw);
+	f32 halfwidth, halflength, height, bottom;
+
+	tankSize(tank, &halfwidth, &halflength, &height, &bottom);
+
+	dir.x = sinf(yaw) * cosf(tank->turretpitch);
+	dir.y = sinf(tank->turretpitch);
+	dir.z = cosf(yaw) * cosf(tank->turretpitch);
+
+	// out of the muzzle: GoldenEye's gunFireTankShell() starts the shell at
+	// the model's matrix 4, the muzzle node at the barrel's end
+	// (tankMuzzle()). The hull's half length in front of its middle, at the
+	// barrel's own height under the turret's, was short of the end and to
+	// one side of it once the turret turned, the barrel's pivot being ahead
+	// of the hull's middle (F3 20260926-204021, "tank shell slightly off
+	// center and back from barrel")
+	if (tankMuzzle(tank, &pos)) {
+		pos.x += tank->base.prop->pos.x;
+		pos.y += tank->base.prop->pos.y;
+		pos.z += tank->base.prop->pos.z;
+	} else {
+		pos.x = tank->base.prop->pos.x + dir.x * (halflength + 60.0f);
+		pos.y = tank->base.prop->pos.y + bottom + height * 0.8f + dir.y * (halflength + 60.0f);
+		pos.z = tank->base.prop->pos.z + dir.z * (halflength + 60.0f);
+	}
+
+	tankLaunchShell(&pos, &dir, yaw, tank->turretpitch);
 
 	// The tank's row in GoldenEye's weapon table (tank_stats) has Sound 0xB,
 	// GUN_TANK2BIG_1; 12, GUN_TANK2BIGBIG_1, is the grenade launcher's (F3
@@ -1785,11 +1865,55 @@ static void tankFire(struct tankobj *tank)
 	tank->firing = TICKS(8);
 }
 
+/**
+ * GoldenEye's shells on foot: gunFireTankShell() with no running tank starts
+ * the shell at Bond along the sight's line, at the tank's
+ * own speed. Only an ammunition cheat leaves any shells outside the seat
+ * (Infinite Ammo's set_max_ammo_for_cur_player() fills AMMO_TANK as every
+ * other type), and with them the All Guns list's "Tank" fires on foot as it
+ * does on the cartridge (F3 20261015-024254).
+ */
+static void tankFireOnFoot(void)
+{
+	struct coord gunpos;
+	struct coord dir;
+	struct coord pos;
+
+	bgunCalculatePlayerShotSpread(&gunpos, &dir, HAND_RIGHT, true);
+	mtx4RotateVecInPlace(camGetProjectionMtxF(), &dir);
+	guNormalize(&dir.x, &dir.y, &dir.z);
+
+	// at the eye and a little along the line: the player's prop is at
+	// his waist here, and a shell started inside him went off on him
+	pos.x = g_Vars.currentplayer->cam_pos.x + dir.x * 30.0f;
+	pos.y = g_Vars.currentplayer->cam_pos.y + dir.y * 30.0f;
+	pos.z = g_Vars.currentplayer->cam_pos.z + dir.z * 30.0f;
+
+	tankLaunchShell(&pos, &dir, atan2f(dir.x, dir.z), asinf(dir.y));
+
+	if (geSfxStage()) {
+		geSfxPlay(11, GESFX_VOLUME);
+	}
+}
+
 void geTankFireCannon(void)
 {
 	if (g_NetReplaying) return; // netplay: a prediction replay moves the player and does nothing else (netpredict.c)
 	const s32 p = g_Vars.currentplayernum;
 	struct tankobj *tank = geTankIsDriving() ? tankDriven() : NULL;
+
+	if (!geTankIsDriving()) {
+		if (g_Vars.lvframe60 - g_Tank[p].lastshot60 >= TANK_SHELL_GAP
+				&& bgunGetReservedAmmoCount(TANK_AMMOTYPE) > 0
+				&& !g_Vars.currentplayer->isdead
+				&& !lvIsPaused()) {
+			bgunSetAmmoQuantity(TANK_AMMOTYPE, bgunGetReservedAmmoCount(TANK_AMMOTYPE) - 1);
+			g_Tank[p].lastshot60 = g_Vars.lvframe60;
+			tankFireOnFoot();
+		}
+
+		return;
+	}
 
 	// a shell as fast as GoldenEye's recoil and reload allow
 	if (tank && g_Tank[p].state == TANK_RUNNING

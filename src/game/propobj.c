@@ -164,6 +164,33 @@ u32 g_CountdownTimerOff = COUNTDOWNTIMERREASON_AI;
 bool g_CountdownTimerRunning = false;
 f32 g_CountdownTimerValue60 = 0;
 u32 g_PlayersDetonatingMines = 0x00000000;
+
+#ifndef PLATFORM_N64
+/**
+ * Online: the players who pressed their detonator since the last sim tick's
+ * first view, put back for every view of the next one.
+ *
+ * A thrown mine is ticked in full only in its owner's view
+ * (objTickPlayer's fulltick), early in that view's propsTickPlayer, and the
+ * detonator's HANDATTACKTYPE_DETONATE sets the owner's bit later in the same
+ * view (handsTickAttack). The bit has to live until the owner's next view;
+ * alarmTick clears it in the frame's last view. Offline that view is the
+ * owner's own (one player), so the mine went off a frame later. On a host
+ * every player has a view in the frame, in a shuffled order, and a frame
+ * between two ticks (a present-only pass) has them all too: a client's
+ * detonator worked only on a frame its view came last with no present pass
+ * after it (F3 20261014-031758, "remote mine not working always online").
+ */
+static u32 s_NetMinesDetonatingPending = 0;
+
+void propsNetDetonatorsFrameStart(void)
+{
+	if (g_NetMode != NETMODE_NONE && !g_NetClockTest && g_Vars.lvupdate240 > 0) {
+		g_PlayersDetonatingMines |= s_NetMinesDetonatingPending;
+		s_NetMinesDetonatingPending = 0;
+	}
+}
+#endif
 s32 g_NextWeaponSlot = 0;
 s32 g_NextHatSlot = 0;
 struct linkliftdoorobj *g_LiftDoors = NULL;
@@ -2314,8 +2341,9 @@ struct prop *objInit(struct defaultobj *obj, struct modeldef *modeldef, struct p
 		obj->model->unk01 = 0;
 
 #ifndef PLATFORM_N64
-		modelSetScale(obj->model, modloaderGetStageModelScale(g_Vars.stagenum, obj->modelnum,
-					g_ModelStates[obj->modelnum].fileid, g_ModelStates[obj->modelnum].scale) * (1.0f / 4096.0f));
+		modelSetScale(obj->model, modloaderRemakeModelScale(obj->modelnum,
+					modloaderGetStageModelScale(g_Vars.stagenum, obj->modelnum,
+						g_ModelStates[obj->modelnum].fileid, g_ModelStates[obj->modelnum].scale)) * (1.0f / 4096.0f));
 #else
 		modelSetScale(obj->model, g_ModelStates[obj->modelnum].scale * (1.0f / 4096.0f));
 #endif
@@ -16897,9 +16925,24 @@ void objFall(struct defaultobj *obj, s32 playernum)
 	NET_OBJ_OWNER(obj, playernum);
 #endif
 
+#ifndef PLATFORM_N64
+	// GoldenEye drops a destroyed object only when it is flagged to fall
+	// (propobj.c's objFall(): PROPFLAG_RENDERPOSTBG, "Fall to Ground"); one
+	// set "In Air" stays where it was. Perfect Dark drops those as well, and
+	// Runway's wall-mounted autoguns went down through the floor when shot
+	// out (F3 20261014-225347). On a converted stage GoldenEye's rule
+	u32 fallflags = OBJFLAG_FALL | OBJFLAG_00000008;
+
+	if (modloaderDirIndexIsConversion(modloaderGetStageModDirIndex(g_Vars.stagenum))) {
+		fallflags = OBJFLAG_FALL;
+	}
+#else
+	const u32 fallflags = OBJFLAG_FALL | OBJFLAG_00000008;
+#endif
+
 	if ((obj->flags2 & OBJFLAG2_NOFALL) == 0
 			&& (obj->flags3 & OBJFLAG3_10000000) == 0
-			&& (obj->flags & (OBJFLAG_FALL | OBJFLAG_00000008))
+			&& (obj->flags & fallflags)
 			&& (obj->hidden & (OBJHFLAG_EMBEDDED | OBJHFLAG_PROJECTILE)) == 0) {
 		struct coord rot = {0, 0, 0};
 		struct projectile *projectile = NULL;
@@ -20826,6 +20869,9 @@ void playerActivateRemoteMineDetonator(s32 playernum)
 {
 	if (g_NetReplaying) return; // netplay: a prediction replay moves the player and does nothing else (netpredict.c)
 	g_PlayersDetonatingMines |= 1 << playernum;
+#ifndef PLATFORM_N64
+	if (g_NetMode != NETMODE_NONE && !g_NetClockTest) s_NetMinesDetonatingPending |= 1 << playernum; // netplay: for the owner's next view
+#endif
 
 #ifndef PLATFORM_N64
 	// on a converted GoldenEye level, the watch's own beep
@@ -22274,7 +22320,11 @@ struct prop *doorInit(struct doorobj *door, struct coord *pos, Mtxf *mtx, RoomNu
 		}
 
 		mtx4Copy(mtx, &sp38);
+#ifndef PLATFORM_N64
+		mtx00015f04(modloaderRemakeModelScale(door->base.modelnum, g_ModelStates[door->base.modelnum].scale) * (1.0f / 4096.0f), &sp38);
+#else
 		mtx00015f04(g_ModelStates[door->base.modelnum].scale * (1.0f / 4096.0f), &sp38);
+#endif
 		mtx4ToMtx3(&sp38, door->base.realrot);
 
 		door->frac = (door->base.flags & OBJFLAG_DOOR_KEEPOPEN) ? door->maxfrac : 0;

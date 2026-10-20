@@ -989,6 +989,7 @@ static void gfx_texture_cache_drop_texnum(int32_t texturenum) {
     // that record decoded. There is only ever one stand-in address per record,
     // so the ping-pong the flag is there to stop cannot happen here anyway.
     const int32_t xbla_record = texpackXblaRecordFromId(texturenum);
+    const bool texel_job = texpackIsTexelJobId(texturenum) != 0;
 
     for (TextureCacheMap::iterator it = gfx_texture_cache.map.begin();
             it != gfx_texture_cache.map.end(); ) {
@@ -1004,7 +1005,9 @@ static void gfx_texture_cache_drop_texnum(int32_t texturenum) {
         // A glyph has no texture number, so it is matched by what the display
         // list called it instead, and a record of the release's own textures by
         // the stand-in tile its list binds.
-        const bool hit = xbla_record >= 0
+        const bool hit = texel_job
+                ? it->second.texel_job == texturenum
+                : xbla_record >= 0
                 ? xblaTexRecordOf(it->first.texture_addr) == xbla_record
                 : it->first.glyph
                 ? texpackDecodedIsGlyph(texturenum, it->first.glyph) != 0
@@ -2026,6 +2029,10 @@ static void import_texture(int i, int tile, bool importReplacement) {
     // of gfx_pc works from - and every texture coordinate derived from it - is
     // still the N64's, so a higher resolution image needs no other allowance:
     // UVs are normalised by the tile, not by what was uploaded.
+    // A texel-matched pack file queued on the worker: this entry gets the
+    // game's texels and is dropped when it lands (gfx_texpack_poll())
+    int32_t texel_job = -1;
+
     if (texpackHaveReplacements() || xblaTexHaveNumbered() || xblaFontHaveGlyphs()) {
         int32_t rep_width;
         int32_t rep_height;
@@ -2050,7 +2057,7 @@ static void import_texture(int i, int tile, bool importReplacement) {
             if (!rep && !loaded_texture.glyph && texpackHaveUnplacedFiles()) {
                 rep = texpackLoadReplacementForTexels(orig_addr, loaded_texture.size_bytes,
                         rdp.texture_tile[tile].width, rdp.texture_tile[tile].height,
-                        siz, tex_row_bytes, &rep_width, &rep_height);
+                        siz, tex_row_bytes, &rep_width, &rep_height, &texel_job);
             }
         }
 
@@ -2079,7 +2086,9 @@ static void import_texture(int i, int tile, bool importReplacement) {
         // own art at stock numbers, and the release has a picture for every
         // number, so the number is the only thing the two share
         // (texpackTextureArt()).
-        if (!rep && !loaded_texture.glyph && xblaTexHaveNumbered()
+        // Nor while the pack's texel-matched file for these texels decodes:
+        // the entry the release's art went into is never dropped for it.
+        if (!rep && !loaded_texture.glyph && texel_job < 0 && xblaTexHaveNumbered()
                 && texpackTextureArt(orig_addr) == TEXPACK_ART_ROM) {
             const int32_t texturenum = texpackGetTextureNum(orig_addr);
 
@@ -2148,6 +2157,7 @@ static void import_texture(int i, int tile, bool importReplacement) {
     }
 
     last_upload_width = 0;
+    rendering_state.textures[i]->second.texel_job = texel_job;
 
     // The game's own texels: scaled up as they are uploaded, if asked. A row
     // padded past the tile is clamped rather than wrapped, since what lies
@@ -8008,6 +8018,8 @@ static bool gfx_readable(const void *ptr, size_t len) {
     return true;
 }
 
+extern "C" void gfxDescribeAddress(const void *ptr, char *buf, int32_t size);
+
 static void gfx_refuse_vertex_load(const Gfx *cmd, const Gfx *list, const void *src, size_t count) {
     char text[1536];
     int len;
@@ -8038,6 +8050,36 @@ static void gfx_refuse_vertex_load(const Gfx *cmd, const Gfx *list, const void *
 
     sysLogPrintf(LOG_ERROR, "%s", text);
 
+    // The crash report's log ring keeps 191 characters a line, which cut the
+    // line above before it said whose list it was (20261018-162450, Caverns:
+    // three of these, then a crash in gfx_sp_vertex). The same again in
+    // pieces that fit, with whose memory the source and the list are.
+    {
+        char where[120];
+        char line[192];
+
+        gfxDescribeAddress(src, where, sizeof(where));
+        sysLogPrintf(LOG_ERROR, "F3D:  source %p (%u vertices) is %s", src, (unsigned)count, where);
+        gfxDescribeAddress(list, where, sizeof(where));
+        sysLogPrintf(LOG_ERROR, "F3D:  command %lld at depth %d of list %p, %s", (long long)(cmd - list), gfx_dl_depth,
+                (const void *)list, where);
+        sysLogPrintf(LOG_ERROR, "F3D:  w0 %016llx w1 %016llx", (unsigned long long)cmd->words.w0,
+                (unsigned long long)cmd->words.w1);
+
+        for (int k = 6; k >= 1; k -= 3) {
+            int n = snprintf(line, sizeof(line), "F3D:  before it:");
+
+            for (int j = k; j > k - 3 && n > 0 && n < (int)sizeof(line); j--) {
+                if (cmd - j >= list) {
+                    n += snprintf(line + n, sizeof(line) - n, " %016llx:%016llx",
+                            (unsigned long long)cmd[-j].words.w0, (unsigned long long)cmd[-j].words.w1);
+                }
+            }
+
+            sysLogPrintf(LOG_ERROR, "%s", line);
+        }
+    }
+
     if (gfx_bad_vertex_loads == 1) {
         crashReportSave(text);
     }
@@ -8060,7 +8102,6 @@ struct GfxDlDepth {
 static const Gfx *gfx_dl_lists[GFX_DL_TRACK];
 static const Gfx *gfx_dl_calls[GFX_DL_TRACK];
 
-extern "C" void gfxDescribeAddress(const void *ptr, char *buf, int32_t size);
 
 static int gfx_unknown_opcodes;
 

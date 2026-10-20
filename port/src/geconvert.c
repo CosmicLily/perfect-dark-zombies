@@ -189,6 +189,11 @@ struct romlayout {
 	// 0 for GoldenEye's 17 and 18 (menu/getimes.bin, gexfront.c)
 	uint8_t creditsafter;
 	uint8_t advancebelow;
+	// get_hat_model()'s default (7F052684): 1 + the kind it gives a prop off
+	// its table, 0 for GoldenEye's -1. Goldfinger 64 moved a `li v0,4` to
+	// the top and left the default's delay slot empty, so every other hat -
+	// its blue caps, prop 247 - takes the fur hat's row of headHat_array
+	uint8_t hatother;
 };
 
 static const struct romlayout g_Layouts[] = {
@@ -292,6 +297,9 @@ static const struct romlayout g_Layouts[] = {
 		// 0xffffa0f0, the face's ramp (sub_GAME_7F0A33F8) given its green
 		// for its red, the pulses stepped 0x10100000
 		1,
+		// any hat off get_hat_model()'s table is a fur hat (`li v0,4` at
+		// 7F05268C, the default's `jr ra` with a nop)
+		.hatother = 1 + 4,
 	},
 	{
 		// Expanded 06-22 (2022), "TND64_Expanded_06-22.z64": the header keeps
@@ -497,7 +505,8 @@ static const char *const g_MenuRaw[NUM_MENU_RAW] = {
 // guards' hats, it behaves like a soldier's metallic helmet"). The table is
 // read through GoldenEye's case addresses; one that is none of them leaves
 // the file out and the port keeps GoldenEye's kinds. menu/hattypes.bin is
-// "GHT1", the first prop, how many, then a kind each.
+// "GHT1", the first prop, how many, then a kind each, then any other prop's
+// (romlayout.hatother, 0xff for none).
 #define HAT_TYPES_AT 0x800532f4u
 #define HAT_TYPES_FIRST 212
 #define HAT_TYPES_COUNT 12
@@ -6257,17 +6266,28 @@ static int soloGadgetItem(int32_t item)
  * 20261006-044204). Its code no longer sets the bomb case off (chrobjWeaponTick
  * 7F043F18 tests item 0 where GoldenEye's tests 33), so the gas, like the
  * covert modem, stays where it lands.
+ *
+ * And two more of GoldenEye's that its own missions never hand out, which
+ * GoldenEye's code still knows (gunfire.c, gun.c): the micro camera (48),
+ * placed and stuck as the bug is (PROP_CHRMICROCAMERA), and the watch
+ * communicator (57), used on what it is for. Goldfinger 64's Ranch starts Bond
+ * with both, as its "Mini-Homer" and "Watch Communicator": objective d is the
+ * Mini-Homer thrown onto Oddjob's car (IFKeyDropped 48,
+ * IFItemIsAttachedToObject 48), and the CIA is called with the communicator
+ * equipped (IFBondHasItemEquipped 57). The opening gave neither and the watch
+ * showed Unarmed alone (F3 20261017-093500).
  */
 static uint32_t soloGadgetWeapon(uint32_t item)
 {
 	switch (item) {
-	case 47: case 33: return 0x77; // BUG: the covert modem, the tracker bug; and BOMBCASE
+	case 47: case 33: case 48: return 0x77; // BUG: the covert modem, the tracker bug; and BOMBCASE, MICROCAMERA
 	case 34: return 0x78; // PLASTIQUE
 	case 61: return 0x79; // GOLDENEYEKEY
 	case 40: return 0x7a; // CAMERA
 	case 60: return 0x7b; // WATCHMAGNETATTRACT
-	case 38: case 39: case 46: case 50: case 49: return 0x7c; // door decoder, bomb defuser, key analyser,
-	                                                           // guidance data; and BUGDETECTOR
+	case 38: case 39: case 46: case 50: case 49: case 57: return 0x7c; // door decoder, bomb defuser, key analyser,
+	                                                                    // guidance data; and BUGDETECTOR,
+	                                                                    // WATCHCOMMUNICATOR
 	case 55: case 73: return 0x7d; // data thief, DAT tape
 	}
 
@@ -6489,6 +6509,21 @@ static uint32_t soloItemWeapon(uint32_t item)
 #define ITEM_TANKSHELLS       32
 #define ITEM_BOMBCASE_        33
 #define ITEM_BUGDETECTOR_     49
+#define ITEM_MICROCAMERA_     48
+#define ITEM_WATCHCOMMUNICATOR_ 57
+
+/** Whether a mission of the conversion has `item` for one of its gadgets (soloGadgetUse()). */
+static int soloGadgetNamed(uint32_t item)
+{
+	for (int i = 0; i < g_NumCollectRows; ++i) {
+		if (g_CollectRows[i][2] == item && g_CollectRows[i][1] >= WEAPON_GE_GADGET_FIRST
+				&& g_CollectRows[i][1] <= WEAPON_GE_GADGET_LAST && g_CollectRows[i][0] != GESLOTS_EVERY_MISSION) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
 
 /**
  * A ROM hack's gadgets that are one item on every mission, as rows for every
@@ -6510,7 +6545,8 @@ static void soloGadgetsEveryMission(void)
 		for (uint32_t item = 1; item < NUM_ITEMS; ++item) {
 			const int trigger = g_Items[item].file && !strcmp(g_Items[item].file, "GtriggerZ");
 
-			if (item == ITEM_BOMBCASE_ || item == ITEM_BUGDETECTOR_) {
+			if (item == ITEM_BOMBCASE_ || item == ITEM_BUGDETECTOR_ || item == ITEM_MICROCAMERA_
+					|| item == ITEM_WATCHCOMMUNICATOR_) {
 				continue;
 			}
 
@@ -10226,7 +10262,7 @@ static void writeHatTypes(const char *outdir)
 		{ 0x7f0526cc, 5 }, { 0x7f0526d4, 0 }, { 0x7f0526dc, 2 },
 	};
 	const size_t at = HAT_TYPES_AT - DATA_VRAM;
-	uint8_t out[4 + 2 + HAT_TYPES_COUNT];
+	uint8_t out[4 + 2 + HAT_TYPES_COUNT + 1];
 
 	if (at + 4 * HAT_TYPES_COUNT > g_DataLen) {
 		return;
@@ -10250,6 +10286,9 @@ static void writeHatTypes(const char *outdir)
 
 		out[6 + i] = cases[k].type;
 	}
+
+	// and any other prop's kind, 0xff for GoldenEye's -1 (romlayout.hatother)
+	out[6 + HAT_TYPES_COUNT] = g_Layout->hatother ? g_Layout->hatother - 1 : 0xff;
 
 	writeFile(outdir, "menu/hattypes.bin", out, sizeof(out));
 }
@@ -11236,6 +11275,10 @@ int geconvertRun(uint8_t *rom, size_t romlen, const char *outdir, char *err, siz
 		if (g_CollectRows[i][2] == 33 && g_CollectRows[i][1] == 0x77) {
 			setAdd(allmodels, 226);
 		}
+		// PROP_CHRMICROCAMERA likewise, Goldfinger 64's Mini-Homer on Ranch
+		if (g_CollectRows[i][2] == 48 && g_CollectRows[i][1] == 0x77) {
+			setAdd(allmodels, 246);
+		}
 	}
 	for (size_t i = 0; i < sizeof(g_IntroGuns) / sizeof(g_IntroGuns[0]); ++i) {
 		setAdd(allmodels, g_IntroGuns[i]);
@@ -11833,7 +11876,8 @@ int geconvertRun(uint8_t *rom, size_t romlen, const char *outdir, char *err, siz
 				// numbers
 				if (g_Layout->variant) {
 					if (item != 1 && !itemWeaponIsGun(soloItemWeapon(item))
-							&& strcmp(g_Items[item].file, "GtriggerZ") && !soloGadgetItem(item)) {
+							&& strcmp(g_Items[item].file, "GtriggerZ") && !soloGadgetItem(item)
+							&& !(item == ITEM_MICROCAMERA_ && soloGadgetNamed(ITEM_MICROCAMERA_))) {
 						continue;
 					}
 				} else if (item > 31 && !soloGadgetItem(item)) {
@@ -11970,7 +12014,13 @@ int geconvertRun(uint8_t *rom, size_t romlen, const char *outdir, char *err, siz
 			snprintf(fname, sizeof(fname), "Pgx%03uZ", num);
 			snprintf(rel, sizeof(rel), "files/%s", fname);
 			writeFile(outdir, rel, z.v, z.n);
-			textf(&modellines, "%s  %u \"%s\" %ld", modellines.n ? "\n" : "", num, fname, (long)rnd(scale * 4096));
+			// to the fraction (modloaderRemakeModelScale()): GoldenEye's 0.1
+			// is 409.6, which the model state rounds to 410
+			if (rnd(scale * 4096) == scale * 4096) {
+				textf(&modellines, "%s  %u \"%s\" %ld", modellines.n ? "\n" : "", num, fname, (long)rnd(scale * 4096));
+			} else {
+				textf(&modellines, "%s  %u \"%s\" %.4f", modellines.n ? "\n" : "", num, fname, scale * 4096);
+			}
 			++count;
 
 			for (size_t i = keep; i < g_NumAllocs; ++i) {

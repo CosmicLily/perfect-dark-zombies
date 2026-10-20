@@ -4772,6 +4772,7 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 		if (solidfade) {
 			gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_PREPASS_EXT);
+			xblaMeshSetDepthPass(XBLAMESH_DEPTHPASS_DEPTH);
 
 			modelRender(&renderdata, model);
 
@@ -4783,6 +4784,7 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 			gSPClearExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_PREPASS_EXT);
 			gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_FRONT_EXT);
+			xblaMeshSetDepthPass(XBLAMESH_DEPTHPASS_FRONT);
 		}
 #endif
 		modelRender(&renderdata, model);
@@ -4805,6 +4807,7 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 #ifndef PLATFORM_N64
 		if (solidfade) {
 			gSPClearExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_FRONT_EXT);
+			xblaMeshSetDepthPass(XBLAMESH_DEPTHPASS_NONE);
 		}
 #endif
 

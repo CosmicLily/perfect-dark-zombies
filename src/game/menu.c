@@ -380,6 +380,18 @@ Gfx *menuRenderBanner(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, bool big, s32 ms
 		L_MPMENU_494, // "Auto Camera Adjustment"
 	};
 
+#ifndef PLATFORM_N64
+	// A PC has no Controller Pak (osPfsInitPak() answers NOPACK, or DEVICE
+	// for a rumble pad), yet paksInit() still queues the boot check of all
+	// four ports and paksTick() puts this banner up for its few frames, so
+	// every launch flashed "Checking Controller Pak... Please Wait"
+	// (F3 20261014-103817). Only the drawing is left out: the check, the
+	// banner's state and the input it holds back run as before.
+	if (msgnum == MENUBANNER_CHECKINGPAK) {
+		return gdl;
+	}
+#endif
+
 	chars = g_CharsHandelGothicSm;
 	font = g_FontHandelGothicSm;
 
@@ -624,9 +636,19 @@ void menuGetItemBlocksRequired(struct menuitem *item, s32 *numwords)
 	case MENUITEMTYPE_PLAYERSTATS:
 		*numwords = 5;
 		break;
+#ifndef PLATFORM_N64
+	case MENUITEMTYPE_KEYBOARD:
+		// its whole buffer: three words held 12 of its 21 bytes, and the
+		// rest ran into the next item's (a Direct Connect address is 63)
+		*numwords = (sizeof(struct menuitemdata_keyboard) + 3) / 4;
+		break;
+	case MENUITEMTYPE_10:
+	case MENUITEMTYPE_16:
+#else
 	case MENUITEMTYPE_KEYBOARD:
 	case MENUITEMTYPE_10:
 	case MENUITEMTYPE_16:
+#endif
 		*numwords = 3;
 		break;
 	}
@@ -3433,11 +3455,29 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 			}
 #endif
 
+#ifndef PLATFORM_N64
+			// Customize Character's model in the band of its carousels rather
+			// than the whole page (ghostmenu.c)
+			s32 bandbottom = ghostmenuModelBottom(dialog);
+
+			if (bandbottom > g_MenuScissorY1 + LINEHEIGHT && bandbottom < g_MenuScissorY2) {
+				g_MenuScissorY2 = bandbottom;
+				gdl = menuApplyScissor(gdl);
+			}
+#endif
+
 			gSPSetGeometryMode(gdl++, G_ZBUFFER);
 
 			gdl = menuRenderModel(gdl, &g_Menus[g_MpPlayerNum].menumodel, MENUMODELTYPE_DEFAULT);
 
 			gSPClearGeometryMode(gdl++, G_ZBUFFER);
+
+#ifndef PLATFORM_N64
+			if (bandbottom != 0 && g_MenuScissorY2 != savedy2) {
+				g_MenuScissorY2 = savedy2;
+				gdl = menuApplyScissor(gdl);
+			}
+#endif
 
 			viSetViewPosition(g_Vars.currentplayer->viewleft, g_Vars.currentplayer->viewtop);
 			viSetFovAspectAndSize(g_Vars.currentplayer->fovy, g_Vars.currentplayer->aspect,
@@ -4162,6 +4202,9 @@ void dialogCalculatePosition(struct menudialog *dialog)
 	// A dialog that places itself: the Game Lobby's buttons under its chat
 	// (netlobbymenu.c), in the space of the side of the screen it is held to
 	netLobbyMenuPlaceDialog(dialog);
+
+	// Ghost Trials' pages out from under its nameplate (ghostmenu.c)
+	ghostmenuPlaceDialog(dialog);
 #endif
 
 	if (dialog->swipedir != 0) {
@@ -6565,7 +6608,10 @@ Gfx *menuRender(Gfx *gdl)
 			s32 textheight;
 			s32 textwidth;
 			bool renderit;
-			char text[32];
+			// 32 was enough for English; "Player %d: " + "Press START!" runs past
+			// it in French, and a fortified sprintf aborts the game (crash report
+			// 20261016-195906)
+			char text[128];
 			s32 tmp1;
 			s32 tmp2;
 			s32 x;
@@ -6585,7 +6631,7 @@ Gfx *menuRender(Gfx *gdl)
 					// or similar. Show "Ready" in their corner.
 					renderit = true;
 					// "Player %d: " and "Ready!"
-					sprintf(text, "%s%s", langGet(L_MPMENU_482), langGet(L_MISC_461));
+					snprintf(text, sizeof(text), "%s%s", langGet(L_MPMENU_482), langGet(L_MISC_461));
 				} else {
 					if (g_MenuData.root == MENUROOT_4MBMAINMENU) {
 						if (g_Vars.mpsetupmenu == MPSETUPMENU_GENERAL) {
@@ -6604,7 +6650,7 @@ Gfx *menuRender(Gfx *gdl)
 					}
 
 					// "Player %d: " and "Press START!"
-					sprintf(text, "%s%s", langGet(L_MPMENU_482), langGet(L_MPMENU_483));
+					snprintf(text, sizeof(text), "%s%s", langGet(L_MPMENU_482), langGet(L_MPMENU_483));
 				}
 
 				if (renderit) {
@@ -6646,7 +6692,7 @@ Gfx *menuRender(Gfx *gdl)
 						u32 weight = menuGetSinOscFrac(20) * 255.0f;
 
 						// "Player %d: "
-						sprintf(text, langGet(L_MPMENU_482), i + 1);
+						snprintf(text, sizeof(text), langGet(L_MPMENU_482), i + 1);
 
 						if (i < 2) {
 							y = viewtop + 2;
@@ -6666,15 +6712,15 @@ Gfx *menuRender(Gfx *gdl)
 							// "Ready!"
 #if VERSION >= VERSION_JPN_FINAL
 							colour = L_MISC_461;
-							strcpy(text, langGet(colour));
+							snprintf(text, sizeof(text), "%s", langGet(colour));
 							colour = 0xffffffff;
 #else
-							strcpy(text, langGet(L_MISC_461));
+							snprintf(text, sizeof(text), "%s", langGet(L_MISC_461));
 							colour = g_MenuData.playerjoinalpha[i] | 0xd00020ff;
 #endif
 						} else {
 							// "Press START!"
-							strcpy(text, langGet(L_MPMENU_483));
+							snprintf(text, sizeof(text), "%s", langGet(L_MPMENU_483));
 							colour = colourBlend(g_ModColours[MODCOLOUR_JOINBLEND], 0xffffff00, weight) | g_MenuData.playerjoinalpha[i];
 						}
 

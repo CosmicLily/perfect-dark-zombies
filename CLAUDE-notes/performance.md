@@ -561,6 +561,21 @@ too, animframeincfreal is `speed * PALUPF(animframeinc * 0.25f)` (bgunAnimFrameI
 PALUPF(1.0f) instead of PALUPF(4.0f) for modelTickAnimQuarterSpeed(), and WAITFORZRELEASED's clamp converts to
 quarter ticks; the keyframe tests already read animframeincfreal. Compile-checked only (no PAL or JPN ROM here).
 
+**A gun drawn between two animation frames** (F3 pass 40: the Shotgun's pump, the CMP150's magazine
+through the gun at 85-144 FPS). Ticked in quarter frames, the gun's `anim->frac` is non-zero on most
+frames above 60, which NTSC never had for the guns: the stock drawing tweens part rotations only (a
+non-root part keeps the earlier frame's translation; the CMP150's magazine moves 45-65 units a frame by
+translation), and the fast path `modelasmIterateThings2()` also misreads every rotation after a
+translated part (its translation skip spends no bits when shorter than the bits left from the last read
+- a console bug too, modelasm.s; left as it is, since chrs at 60 read that path). Rare's PAL answer
+(guns at fractional frames there): `var8005efd8_2` tweens translations and `var8005efb0_2` sends the
+model down the C path (`modelUpdateMatrices()`, which decodes right). On the PC every gun takes both
+while `bgunGunTweensAll()`: `hand->animquarter` (8 frames after an off-60 tick, so 85 FPS's 4-240th
+frames count) and frac != 0 - never at 60 or 30. Measured with gdb on the model matrices at
+`bondgun.c` `g_ModelJointPositionedFunc = 0;` (`~/wt/f3-1020-pdguns-run/probe/shotgun.py`, cmp.py,
+smooth2.py): worst in-between deviation 55-70 units -> 3-5 (60 FPS's own pump is 10); 60 FPS matrices
+byte-identical.
+
 ## Above 60 FPS: weather, credits and menu text (2026-10-10, high-framerate pass)
 
 Three shapes, each exact at 60 FPS (one 60th a frame) and checked there with the
@@ -667,3 +682,20 @@ stops the count, so both runs end at the timeout. randrun is not repeatable
 there: one of five runs of 82b7a71a9 hashed another value at frame 300 than
 the other four (2026-10-10, fix/highfps-bgturns, six instances running at
 once), so a DIFF in it alone is rerun before it is believed.
+
+## Mission outros hung above 60 FPS: the gun memory handover (F3 pass 40, fix/f3-1020-pdending)
+
+A stage's outro starts with `camera_movement` (aiSetCameraAnimation -> playerStartCutscene), which needs the
+player's body; in one-player solo the body is built in the gun's memory, taken with
+`bgunChangeGunMem(GUNMEMOWNER_CHRBODY)`. That handover is a countdown in **calls** (gunlocktimer -1, -2, then the
+caller that takes it past -2 wins), and the gun's loader asks for the memory back every frame. At 60 FPS the AI
+list asked, the gun's call made -2 and the list's next call won. Above 60 the list only runs on frames that hold a
+60th (background lists always did), so the gun's call on the frame between made -3 and took it back, the list
+took it again, and so on: tickmode stayed 1, the AI list sat on its camera_movement (sleep -1, haschrbody 0) and
+the screen stayed black at 120/144/240 - every mission whose outro starts from play (Extraction and Defection were
+reported; F3 20261016-204838, 20261013-203106). The F3 dialog's pause + one big step let the list win. The
+countdown now moves only on frames with `lvupdate60 > 0` when `lvupdate240 > 0` (60/30 and paused/0-0 passes
+unchanged). Probe: ~/wt/f3-1020-pdending-run/probe/end.py (gdb Python on lvTick; at TRIG it points a background
+chr's list at the stage's outro via g_StageSetup.ailists - never call inferior functions from a Breakpoint.stop(),
+it hangs - and prints tickmode/in_cutscene/aioffset/sleep/haschrbody). Defection's outro: 415 60ths at 60, 414.5 at
+120, 415.9 at 144, 414.5 at 240 with the fix.
