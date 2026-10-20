@@ -3493,16 +3493,20 @@ static const char *const g_ZombieVmClipNames[ZVM_COUNT] = {
 struct zombievmgun {
 	s32 weaponnum;
 	const char *name;
+	f32 sight[3];  // its sight's middle on the gun's own bone (j_gun), in its OBJ's tenths of an inch
 	bool tried;
 	bool ok;
 	s32 numparts;
+	s32 sightpart; // which part is j_gun, -1 none
 	struct zombiemesh meshes[ZOMBIE_VMGUN_PARTS];
 	s32 ticks[ZVM_COUNT];
 	const f32 *mtx[ZVM_COUNT];
 };
 
 static struct zombievmgun g_ZombieVmGuns[] = {
-	{ WEAPON_ZM_RAYGUN, "raygun" },
+	// the ring sight's middle (t6_wpn_zmb_raygun_view: the hoop 1.9 inches
+	// across standing over the back of the gun)
+	{ WEAPON_ZM_RAYGUN, "raygun", { -47.3f, 0, 46.0f } },
 };
 
 static struct {
@@ -3543,6 +3547,7 @@ static bool zombiesVmGunLoad(struct zombievmgun *gun)
 	}
 
 	gun->tried = true;
+	gun->sightpart = -1;
 
 	snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/%s.parts", gun->name);
 
@@ -3578,6 +3583,11 @@ static bool zombiesVmGunLoad(struct zombievmgun *gun)
 
 			snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/%s_%s.obj", gun->name, bone);
 			zombiesMeshBuildFrom(&gun->meshes[gun->numparts], rel, bone);
+
+			if (strcmp(bone, "j_gun") == 0) {
+				gun->sightpart = gun->numparts;
+			}
+
 			gun->numparts++;
 		}
 	}
@@ -3716,6 +3726,110 @@ static void zombiesVmGunTick(s32 playernum, struct zombievmgun *gun, s32 weaponn
 	}
 }
 
+/**
+ * Down the sights (COD Style Aiming's codaimfrac, or the sights' own aim):
+ * the whole viewmodel turned so the gun points straight ahead and moved so
+ * its sight's middle is on the eye's line, as far as the aim has come, in
+ * Call of Duty's view space (x forward, y left, z up) before
+ * zombiesDrinkMtx(). The forward distance is the sight's own.
+ */
+static void zombiesVmGunAds(struct zombievmgun *gun, f32 *pose, f32 frac)
+{
+	const f32 *g;
+	f32 sight[3];
+	f32 fwd[3];
+	f32 axis[3];
+	f32 r[3][3];
+	f32 len;
+	f32 angle;
+	f32 c;
+	f32 sn;
+	s32 floats;
+	s32 i;
+	s32 k;
+
+	if (frac <= 0 || gun->sightpart < 0) {
+		return;
+	}
+
+	frac = frac > 1 ? 1 : frac;
+	g = pose + (ZOMBIE_DRINK_JOINTS + gun->sightpart) * 12;
+
+	for (i = 0; i < 3; i++) {
+		sight[i] = g[i * 4 + 0] * gun->sight[0] + g[i * 4 + 1] * gun->sight[1] + g[i * 4 + 2] * gun->sight[2] + g[i * 4 + 3];
+		fwd[i] = g[i * 4 + 0];
+	}
+
+	// the turn taking the gun's own forward to straight ahead, about its
+	// sight, as much of it as the aim has come
+	len = sqrtf(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+
+	if (len <= 0) {
+		return;
+	}
+
+	fwd[0] /= len;
+	fwd[1] /= len;
+	fwd[2] /= len;
+
+	// fwd x (1, 0, 0)
+	axis[0] = 0;
+	axis[1] = fwd[2];
+	axis[2] = -fwd[1];
+	sn = sqrtf(axis[1] * axis[1] + axis[2] * axis[2]);
+	angle = atan2f(sn, fwd[0]) * frac;
+
+	if (sn > 1e-5f) {
+		axis[1] /= sn;
+		axis[2] /= sn;
+	} else {
+		axis[1] = 0;
+		axis[2] = 1;
+		angle = 0;
+	}
+
+	c = cosf(angle);
+	sn = sinf(angle);
+
+	for (i = 0; i < 3; i++) {
+		for (k = 0; k < 3; k++) {
+			r[i][k] = (i == k ? c : 0) + (1 - c) * axis[i] * axis[k];
+		}
+	}
+
+	r[0][1] -= sn * axis[2];
+	r[0][2] += sn * axis[1];
+	r[1][0] += sn * axis[2];
+	r[1][2] -= sn * axis[0];
+	r[2][0] -= sn * axis[1];
+	r[2][1] += sn * axis[0];
+
+	floats = (ZOMBIE_DRINK_JOINTS + gun->numparts) * 12;
+
+	for (k = 0; k < floats; k += 12) {
+		f32 *m = pose + k;
+		f32 out[12];
+
+		for (i = 0; i < 3; i++) {
+			s32 col;
+
+			for (col = 0; col < 3; col++) {
+				out[i * 4 + col] = r[i][0] * m[0 * 4 + col] + r[i][1] * m[1 * 4 + col] + r[i][2] * m[2 * 4 + col];
+			}
+
+			// turned about the sight, then the sight onto the eye's line:
+			// forward as far as it was, across and up by the aim
+			out[i * 4 + 3] = r[i][0] * (m[3] - sight[0]) + r[i][1] * (m[7] - sight[1]) + r[i][2] * (m[11] - sight[2]);
+		}
+
+		out[3] += sight[0];
+		out[7] += sight[1] * (1 - frac);
+		out[11] += sight[2] * (1 - frac);
+
+		memcpy(m, out, sizeof(out));
+	}
+}
+
 Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 {
 	const s32 playernum = g_Vars.currentplayernum;
@@ -3789,6 +3903,19 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 
 	if (!gfxHasVtxSpace(n * sizeof(Mtxf))) {
 		return gdl;
+	}
+
+	// down the sights, the sight on the eye's line (the pose kept for the
+	// next clip's crossfade is the hip's)
+	{
+		static f32 aimed[ZOMBIE_VMGUN_FLOATS];
+		const f32 frac = player->insightaimmode && player->codaimfrac <= 0 ? 1 : player->codaimfrac;
+
+		if (frac > 0) {
+			memcpy(aimed, pose, floats * sizeof(f32));
+			zombiesVmGunAds(gun, aimed, frac);
+			pose = aimed;
+		}
 	}
 
 	matrices = gfxAllocate(n * sizeof(Mtxf));
@@ -15871,8 +15998,6 @@ static Gfx *zombiesRenderDownedHud(Gfx *gdl, s32 centrex)
 
 	gdl = text0f153628(gdl);
 
-	(void)anyoneup;
-
 	// The game over has its own screen (zombiesRenderGameOver()). Down alone
 	// with Quick Revive nobody is up either, but the game is not over: that
 	// read "YOU SURVIVED" until the player got up again.
@@ -15895,7 +16020,12 @@ static Gfx *zombiesRenderDownedHud(Gfx *gdl, s32 centrex)
 		gdl = zombiesDrawWords(gdl, text, centrex, y, 0xffffffe0);
 		gdl = zombiesRenderBar(gdl, centrex, bary, 1.0f - (f32)g_ZombieSelfRevive60[me] / ZOMBIE_QR_SELF60, 0x4090ffe0);
 	} else if (g_Vars.currentplayer->isdead) {
-		gdl = zombiesDrawWords(gdl, "YOU WILL RESPAWN NEXT ROUND", centrex, viGetViewTop() + 80, 0xffffffa0);
+		// only while somebody is still up to finish the round: dead alone
+		// (solo, or the last one standing) the game is over, and this read
+		// over GAME OVER
+		if (anyoneup && !g_ZombieGameOver) {
+			gdl = zombiesDrawWords(gdl, "YOU WILL RESPAWN NEXT ROUND", centrex, viGetViewTop() + 80, 0xffffffa0);
+		}
 
 		if (g_ZombieSpectating[me] && g_ZombieWatch[me] >= 0) {
 			sprintf(text, "SPECTATING PLAYER %d   FIRE: NEXT   %s: %s", g_ZombieWatch[me] + 1, zombiesUseName(me),
