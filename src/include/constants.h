@@ -402,6 +402,11 @@ s32 langpackIsCjk(void);
 // already 1000. geguns.c's gegunsSetWatchLaser().
 #define AMMOTYPE_WATCHLASER   AMMOTYPE_1B
 
+// Zombies' Ray Gun's own ammunition (WEAPON_ZM_RAYGUN, 160 spare and 20 in
+// the gun): the 0x1f row, which no weapon or setup of Perfect Dark's uses and
+// which holds 200.
+#define AMMOTYPE_RAYGUN       AMMOTYPE_1F
+
 // Active menu slots
 #define AMSLOTFLAG_CURRENT 0x02 // black, eg. current equipped weapon
 #define AMSLOTFLAG_ACTIVE  0x08 // pulsates slightly, eg. cloak/xray when active
@@ -3395,7 +3400,10 @@ s32 langpackIsCjk(void);
 // shown while Mod.GePlusCheatGuns asks for them (geguns.c); after the hack's
 // so no saved index moves, and past what the randomizer rolls
 #define MPWEAPON_GE_SILVERPP7     (MPWEAPON_GE_EXTRA1 + 4)
-#define NUM_MPWEAPONS             (MPWEAPON_GE_SILVERPP7 + 3)
+// and Zombies' own guns (WEAPON_ZM_FIRST on), never in a menu: the Mystery
+// Box gives them (zombies.inc)
+#define MPWEAPON_ZM_RAYGUN        (MPWEAPON_GE_SILVERPP7 + 3)
+#define NUM_MPWEAPONS             (MPWEAPON_ZM_RAYGUN + 1)
 #endif
 
 #ifndef PLATFORM_N64
@@ -4941,13 +4949,21 @@ enum weaponnum {
 	/*0x84*/ WEAPON_GE_SILVERPP7,        // PP9i
 	/*0x85*/ WEAPON_GE_GOLDPP7,          // PP9i
 	/*0x86*/ WEAPON_GE_TASER,            // PP9i
+	// Zombies' own guns (zombies.inc), past GoldenEye's, each on a Perfect
+	// Dark host as GoldenEye's are (weaponHost(): g_ZmWeaponHosts) with a
+	// definition, a name and an ammunition of its own (invitems.c), and a
+	// look drawn over its host's (Black Ops II's viewmodel and world model)
+	/*0x87*/ WEAPON_ZM_RAYGUN,           // Phoenix: Black Ops II's Ray Gun on its explosive shells
 #endif
 	NUM_WEAPONS
 };
 
 #ifndef PLATFORM_N64
 #define WEAPON_GE_FIRST WEAPON_GE_PP7
-#define NUM_GE_WEAPONS  (NUM_WEAPONS - WEAPON_GE_FIRST)
+#define WEAPON_GE_END   WEAPON_ZM_RAYGUN // GoldenEye's block ends here, Zombies' starts
+#define NUM_GE_WEAPONS  (WEAPON_GE_END - WEAPON_GE_FIRST)
+#define WEAPON_ZM_FIRST WEAPON_GE_END
+#define NUM_ZM_WEAPONS  (NUM_WEAPONS - WEAPON_ZM_FIRST)
 #define NUM_GE_GUNS     (WEAPON_GE_COVERTMODEM - WEAPON_GE_FIRST)
 #define NUM_GE_EXTRA    (WEAPON_GE_EXTRA4 + 1 - WEAPON_GE_EXTRA1)
 #define NUM_GE_CHEATGUNS (WEAPON_GE_TASER + 1 - WEAPON_GE_SILVERPP7)

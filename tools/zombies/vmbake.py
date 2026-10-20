@@ -7,6 +7,7 @@ takes. The art stays on the player's disk, out of the tree.
 
     python3 tools/zombies/vmbake.py <viewmodel dir>
     python3 tools/zombies/vmbake.py <viewmodel dir> grenade
+    python3 tools/zombies/vmbake.py <viewmodel dir> gun <name> <clip> ...
 
 <viewmodel dir> is vmconv.py's: arms.zvm, drink.zan and bottle_<perk>.zvm.
 Written beside them:
@@ -31,6 +32,17 @@ viewmodel_m67_throw and t6_wpn_grenade_frag_view):
               other, its last u16 the 60th the throw starts at; the parts
               the grenade and its pin (j_grenade_activate_clip).
   frag_body.obj, frag_top.obj and frag.mtl: the grenade and its pin.
+
+gun bakes a gun of Zombies' own held in the hands (zombies.inc,
+zombiesRenderGunViewmodel()) from <name>.zvm and <name>_<clip>.zan for each
+clip named (Black Ops II's Ray Gun: raygun, from t6_wpn_zmb_raygun_view and
+viewmodel_raygun_t6_idle, _fire, _reload and the rest):
+
+  <name>_<clip>.zpd as drink.zpd, one a clip, the parts each of the gun's
+              bones that moves a vertex, in the order of <name>.parts.
+  <name>.parts the parts' bone names, one a line.
+  <name>_<part>.obj and <name>.mtl: each part's vertices, its pictures
+              vmconv.py's, a draw without one left the model's own grey.
 """
 
 import math
@@ -154,11 +166,72 @@ def grenade(d):
     write_bottle(d, "frag", frag, "j_grenade_activate_clip")
 
 
+def write_parts(d, name, model, parts):
+    """each part's own OBJ: the vertices its bone holds most of"""
+    bones, verts, tris, draws = model
+
+    with open(os.path.join(d, "%s.mtl" % name), "w") as f:
+        for i, (_, _, _, pic) in enumerate(draws):
+            f.write("newmtl %s_%d\n" % (name, i))
+            f.write("map_Kd %s\n\n" % pic if pic else "Kd 0.55 0.55 0.55\n\n")
+
+    def owner(v):
+        return max(range(4), key=lambda i: v[4][i])
+
+    for b in parts:
+        bname = bones[b][0]
+        out = ["# %s's %s, from vmbake.py" % (name, bname), "mtllib %s.mtl" % name]
+        for p, n, uv, js, ws in verts:
+            out.append("v %.4f %.4f %.4f" % tuple(c * OBJ_UNITS for c in p))
+        for p, n, uv, js, ws in verts:
+            out.append("vt %.6f %.6f" % (uv[0], uv[1]))
+        for p, n, uv, js, ws in verts:
+            out.append("vn %.5f %.5f %.5f" % tuple(n))
+        numtris = 0
+        for i, (first, count, flags, pic) in enumerate(draws):
+            out.append("usemtl %s_%d" % (name, i))
+            for a, bb, c in tris[first:first + count]:
+                if all(verts[x][3][owner(verts[x])] == b for x in (a, bb, c)):
+                    a, bb, c = a + 1, bb + 1, c + 1
+                    out.append("f %d/%d/%d %d/%d/%d %d/%d/%d" % (a, a, a, c, c, c, bb, bb, bb))
+                    numtris += 1
+        with open(os.path.join(d, "%s_%s.obj" % (name, bname)), "w") as f:
+            f.write("\n".join(out) + "\n")
+        print("%s_%s.obj: %d triangles" % (name, bname, numtris))
+
+
+def gun(d, name, clips):
+    arms = load_zvm(os.path.join(d, "arms.zvm"))
+    model = load_zvm(os.path.join(d, name + ".zvm"))
+    bones, verts = model[0], model[1]
+    held = set()
+
+    for p, n, uv, js, ws in verts:
+        held.add(js[max(range(4), key=lambda i: ws[i])])
+
+    parts = sorted(held)
+
+    with open(os.path.join(d, name + ".parts"), "w") as f:
+        f.write("\n".join(bones[b][0] for b in parts) + "\n")
+
+    for clip in clips:
+        data, starts, ticks = bake(arms, model, parts, [load_zan(os.path.join(d, "%s_%s.zan" % (name, clip)))])
+        out = bytearray(b"ZPD1" + struct.pack("<4H", ticks, 33, len(parts), 0)) + data
+        open(os.path.join(d, "%s_%s.zpd" % (name, clip)), "wb").write(out)
+        print("%s_%s.zpd: %d ticks, %d parts" % (name, clip, ticks, len(parts)))
+
+    write_parts(d, name, model, parts)
+
+
 def main():
     d = sys.argv[1]
 
     if sys.argv[2:] == ["grenade"]:
         grenade(d)
+        return
+
+    if len(sys.argv) > 4 and sys.argv[2] == "gun":
+        gun(d, sys.argv[3], sys.argv[4:])
         return
 
     arms = load_zvm(os.path.join(d, "arms.zvm"))

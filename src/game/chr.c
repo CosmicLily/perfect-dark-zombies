@@ -69,6 +69,7 @@ void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model);
 void zombiesPoseDive(struct chrdata *chr, struct model *model);
 void zombiesPoseThrowArms(struct chrdata *chr, struct model *model);
 bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop);
+bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj);
 Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model);
 
 /**
@@ -4301,8 +4302,9 @@ void chrRenderAttachedObject(struct prop *prop, struct modelrenderdata *renderda
 			gSPSetExtraGeometryModeEXT(renderdata->gdl++, G_NO_CULLING_EXT);
 		}
 
-		// Zombies: the gun put away while a perk is drunk (zombies.inc)
-		if (!zombiesBodyHidesHeld(chr, prop))
+		// Zombies: the gun put away while a perk is drunk, and one of its
+		// own guns drawn as Black Ops II's world model (zombies.inc)
+		if (!zombiesBodyHidesHeld(chr, prop) && !zombiesRenderMachine(renderdata, obj))
 #endif
 
 		modelRender(renderdata, model);

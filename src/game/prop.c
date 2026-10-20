@@ -60,6 +60,10 @@
 #include <string.h>
 #include "gebeanstage.h"
 
+#ifndef PLATFORM_N64
+bool zombiesShellBlast(struct gset *gset, struct coord *pos);
+#endif
+
 bool zombiesKnifeStrike(bool landing);
 
 s16 *g_RoomPropListChunkIndexes;
@@ -1033,6 +1037,10 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 					exppos.z = shotdata.hits[i].pos.z;
 
 					func0f065e74(&root->pos, root->rooms, &exppos, exprooms);
+#ifndef PLATFORM_N64
+					// Zombies' Ray Gun: its own blast and bolt, no explosion
+					if (!zombiesShellBlast(&shotdata.gset, &exppos))
+#endif
 					explosionCreateSimple(0, &exppos, exprooms, EXPLOSIONTYPE_PHOENIX, g_Vars.currentplayernum);
 				}
 			}
@@ -1089,6 +1097,10 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 				bgunPlayBgHitSound(&shotdata.gset, &sp694.pos, sp694.texturenum, rooms2);
 
 				if (explosiveshells) {
+#ifndef PLATFORM_N64
+					// Zombies' Ray Gun: its own blast and bolt, no explosion
+					if (!zombiesShellBlast(&shotdata.gset, &sp694.pos))
+#endif
 					explosionCreateSimple(NULL, &sp694.pos, rooms2, EXPLOSIONTYPE_PHOENIX, g_Vars.currentplayernum);
 				} else {
 					if (!chrIsUsingPaintball(g_Vars.currentplayer->prop->chr)) {

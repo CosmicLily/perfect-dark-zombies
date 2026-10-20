@@ -95,6 +95,8 @@ const char *zombiesPapName(s32 weaponnum, const char *name);
 f32 zombiesPapPitch(s32 weaponnum);
 Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum);
 Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl);
+Gfx *zombiesRenderGunViewmodel(Gfx *gdl);
+bool zombiesGunViewmodelOwns(s32 handnum);
 void zombiesReloadStarted(s32 handnum);
 f32 zombiesSprintGunFrac(void);
 
@@ -1277,7 +1279,7 @@ bool bgunWantsLoweredReload(s32 weaponnum)
 	// animation of its own - the magnum, the shotgun, the sniper rifle - or
 	// that were borrowed from GoldenEye X with its authored ones would play
 	// that instead, which is not GoldenEye's.
-	if (weaponnum >= WEAPON_GE_FIRST && weaponnum < NUM_WEAPONS) {
+	if (WEAPON_IS_GE(weaponnum)) {
 		return true;
 	}
 
@@ -13622,6 +13624,14 @@ void bgunRender(Gfx **gdlptr)
 			gdl = beamRender(gdl, &hand->beam, 0, 0);
 
 #ifndef PLATFORM_N64
+			// Zombies' own guns are drawn by zombies.inc in Black Ops II's
+			// viewmodel, not on their host's model (zombiesRenderGunViewmodel())
+			if (zombiesGunViewmodelOwns(i)) {
+				continue;
+			}
+#endif
+
+#ifndef PLATFORM_N64
 			// One of GoldenEye's guns on its own model, under the lights and
 			// LookAt GoldenEye gives it (geguns.c), not what Perfect Dark's
 			// world happened to load last
@@ -13926,7 +13936,9 @@ void bgunRender(Gfx **gdlptr)
 	}
 
 #ifndef PLATFORM_N64
-	// Zombies: a perk drunk in the player's own hands
+	// Zombies: its own guns in Black Ops II's viewmodel, and a perk drunk in
+	// the player's own hands
+	gdl = zombiesRenderGunViewmodel(gdl);
 	gdl = zombiesRenderDrinkViewmodel(gdl);
 #endif
 

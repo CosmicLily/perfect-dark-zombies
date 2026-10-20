@@ -2180,7 +2180,7 @@ void gexPlusSetCheatGuns(s32 on)
 
 	if (!g_GePlusCheatGuns) {
 		for (s32 i = 0; i < ARRAYCOUNT(g_MpSetup.weapons); i++) {
-			if (g_MpSetup.weapons[i] >= MPWEAPON_GE_SILVERPP7 && g_MpSetup.weapons[i] < NUM_MPWEAPONS) {
+			if (g_MpSetup.weapons[i] >= MPWEAPON_GE_SILVERPP7 && g_MpSetup.weapons[i] < MPWEAPON_ZM_RAYGUN) {
 				g_MpSetup.weapons[i] = MPWEAPON_NONE;
 			}
 		}

@@ -28,9 +28,21 @@ struct casing g_Casings[20];
 struct boltbeam g_BoltBeams[8];
 struct lasersight g_LaserSights[MAX_PLAYERS];
 
+#ifndef PLATFORM_N64
+bool zombiesRayBoltCreate(s32 weaponnum, struct coord *from, struct coord *to);
+#endif
+
 void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coord *to)
 {
 	f32 distance;
+
+#ifndef PLATFORM_N64
+	// Zombies' Ray Gun: a green bolt of its own (zombies.inc), no tracer
+	if (zombiesRayBoltCreate(weaponnum, from, to)) {
+		beam->age = -1;
+		return;
+	}
+#endif
 
 	beam->from.x = from->x;
 	beam->from.y = from->y;

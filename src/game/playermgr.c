@@ -786,7 +786,7 @@ s32 playermgrGetModelOfWeapon(s32 weapon)
 
 #ifndef PLATFORM_N64
 	// A GoldenEye gun has a model state of its own (geguns.c)
-	if (weapon >= WEAPON_GE_FIRST && weapon < NUM_WEAPONS) {
+	if (WEAPON_IS_GE(weapon)) {
 		// A thrown gadget is GoldenEye's own prop out of the ROM where the
 		// conversion is loaded (the covert modem is PROP_CHRBUG, its `models`
 		// block's slot 245), and its host's ECM mine where it is not

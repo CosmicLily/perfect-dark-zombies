@@ -137,7 +137,7 @@ def _alpha_block(block):
 
 
 def dds_read(path):
-    """A DXT1 or DXT5 DDS's top mip level"""
+    """A DXT1, DXT3 or DXT5 DDS's top mip level"""
     data = open(path, "rb").read()
 
     if data[:4] != b"DDS ":
@@ -146,8 +146,8 @@ def dds_read(path):
     height, width = struct.unpack_from("<II", data, 12)
     fourcc = data[84:88]
 
-    if fourcc not in (b"DXT1", b"DXT5"):
-        raise ValueError("%s: %s, only DXT1 and DXT5 are read" % (path, fourcc))
+    if fourcc not in (b"DXT1", b"DXT3", b"DXT5"):
+        raise ValueError("%s: %s, only DXT1, DXT3 and DXT5 are read" % (path, fourcc))
 
     return width, height, _dxt_decode(data, 128, width, height, fourcc)
 
@@ -190,6 +190,10 @@ def _dxt_decode(data, at, width, height, fourcc):
 
             if fourcc == b"DXT1":
                 px = _colour_block(block, True)
+            elif fourcc == b"DXT3":
+                # four bits of alpha a pixel, as they are
+                bits = int.from_bytes(block[0:8], "little")
+                px = [c[:3] + ((((bits >> (4 * i)) & 15) * 17),) for i, c in enumerate(_colour_block(block[8:16], False))]
             else:
                 alpha = _alpha_block(block[0:8])
                 px = [c[:3] + (alpha[i],) for i, c in enumerate(_colour_block(block[8:16], False))]

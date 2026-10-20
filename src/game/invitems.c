@@ -1163,6 +1163,76 @@ struct weapon invitem_phoenix = {
 	WEAPONFLAG_00000004 | WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALFLIP | WEAPONFLAG_00000040 | WEAPONFLAG_TRACKTIMEUSED | WEAPONFLAG_00000400 | WEAPONFLAG_DUALWIELD | WEAPONFLAG_00002000 | WEAPONFLAG_00004000 | WEAPONFLAG_00008000 | WEAPONFLAG_HASHANDS | WEAPONFLAG_GANGSTA,
 };
 
+#ifndef PLATFORM_N64
+/**
+ * Zombies' Ray Gun (WEAPON_ZM_RAYGUN), Black Ops II's: on the Phoenix's
+ * model, animations and explosive shells (weaponHost()), automatic at its
+ * weapon file's fireTime of 0.33 (180 a minute), 20 in the gun and an
+ * ammunition of its own (AMMOTYPE_RAYGUN). Its name is given at run time
+ * (zombies.inc: langAddPortText()); its look is drawn over the Phoenix's.
+ */
+struct weaponfunc_shootauto invfunc_zm_raygun_shot = {
+	INVENTORYFUNCTYPE_SHOOT_AUTOMATIC,
+	L_GUN_095, // name
+	0, // unused
+	0, // ammoindex
+	&invnoisesettings_default,
+	invanim_phoenix_shoot, // fire animation
+	FUNCFLAG_EXPLOSIVESHELLS,
+	&invrecoilsettings_default,
+	0, // recoverytime60
+	1.2, // damage
+	2, // spread
+	13, 15, 25, 0,
+	15, // recoildist
+	25, // recoilangle
+	59.999996185303, // slidemax
+	0, // impactforce
+	0, // duration60
+	SFX_8072, // shootsound
+	1, // penetration
+	180, // initialrpm
+	180, // maxrpm
+	NULL, // vibrationstart
+	NULL, // vibrationmax
+	0, // turretaccel
+	0, // turretdecel
+};
+
+struct inventory_ammo invammo_zm_raygun = {
+	AMMOTYPE_RAYGUN,
+	CASING_NONE,
+	20, // clip size
+	invanim_phoenix_equiporreload, // reload animation
+	0, // flags
+};
+
+struct weapon invitem_zm_raygun = {
+	FILE_GMAIANPISTOL, // hi model
+	FILE_GMAYANPISTOLLOD, // lo model
+	invanim_phoenix_equiporreload, // equip animation
+	NULL, // unequip animation
+	NULL, // pritosec animation
+	NULL, // sectopri animation
+	{ &invfunc_zm_raygun_shot, NULL }, // functions
+	&invammo_zm_raygun, // pri ammo
+	NULL, // sec ammo
+	&invaimsettings_default,
+	1, // muzzlez
+	9.5, // posx
+	-16.2, // posy
+	-23, // posz
+	1, // sway
+	gunviscmds_phoenix, // gunviscmds
+	invpartvisibility_phoenix, // part visibility
+	L_GUN_014, // short name (zombies.inc names it)
+	L_GUN_014, // name
+	L_GUN_153, // manufacturer
+	L_GUN_163, // description
+	WEAPONFLAG_00000004 | WEAPONFLAG_ONEHANDED | WEAPONFLAG_DUALFLIP | WEAPONFLAG_00000040 | WEAPONFLAG_00000400 | WEAPONFLAG_00002000 | WEAPONFLAG_00004000 | WEAPONFLAG_00008000 | WEAPONFLAG_HASHANDS | WEAPONFLAG_GANGSTA,
+};
+#endif
+
 struct modelpartvisibility invpartvisibility_mauler[] = {
 	{ MODELPART_MAULER_MAGAZINE2, false },
 	{ MODELPART_GUN_MUZZLEFLASH1, false },
@@ -6468,6 +6538,7 @@ struct weapon *g_Weapons[] = {
 	[WEAPON_GE_SILVERPP7       ] = &g_GeWeaponDefs[WEAPON_GE_SILVERPP7 - WEAPON_GE_FIRST],
 	[WEAPON_GE_GOLDPP7         ] = &g_GeWeaponDefs[WEAPON_GE_GOLDPP7 - WEAPON_GE_FIRST],
 	[WEAPON_GE_TASER           ] = &g_GeWeaponDefs[WEAPON_GE_TASER - WEAPON_GE_FIRST],
+	[WEAPON_ZM_RAYGUN          ] = &invitem_zm_raygun,
 #endif
 };
 
@@ -6475,6 +6546,11 @@ _Static_assert(ARRAYCOUNT(g_Weapons) == NUM_WEAPONS,
 		"g_Weapons must have an entry per weapon number");
 
 #ifndef PLATFORM_N64
+// Zombies' guns' hosts (constants.h, WEAPON_ZM_FIRST)
+u8 g_ZmWeaponHosts[NUM_ZM_WEAPONS] = {
+	[WEAPON_ZM_RAYGUN - WEAPON_ZM_FIRST] = WEAPON_PHOENIX,
+};
+
 // not const: a ROM hack's gun set may stand a gun on another host (geguns.c's
 // gegunsStageSet(), TND64's FAMAS on the Moonraker's number)
 u8 g_GeWeaponHosts[NUM_GE_WEAPONS] = {

@@ -751,7 +751,7 @@ static s32 hudHandAmmo(s32 handnum, s32 *icon, s32 *mag, s32 *reserve, s32 *nocl
 	const s32 weaponnum = hand->gset.weaponnum;
 	s32 type;
 
-	if (!hand->inuse || weaponnum < WEAPON_GE_FIRST || weaponnum >= NUM_WEAPONS) {
+	if (!hand->inuse || !WEAPON_IS_GE(weaponnum)) {
 		return 0;
 	}
 
@@ -992,7 +992,7 @@ s32 geHudWatchAmmo(s32 weaponnum, s32 *mag, s32 *reserve)
 	const struct hand *hand = &player->hands[HAND_RIGHT];
 	s32 icon, noclip, type, clip, total;
 
-	if (weaponnum < WEAPON_GE_FIRST || weaponnum >= NUM_WEAPONS || hudWeaponShowsNothing(weaponnum)) {
+	if (!WEAPON_IS_GE(weaponnum) || hudWeaponShowsNothing(weaponnum)) {
 		return 0;
 	}
 
@@ -1035,7 +1035,7 @@ Gfx *geHudRenderWatchAmmo(Gfx *gdl, s32 weaponnum, s32 mag, s32 reserve, f32 ox,
 	char buffer[12];
 	s32 w, h;
 
-	if (!g_Hud.on || weaponnum < WEAPON_GE_FIRST || weaponnum >= NUM_WEAPONS) {
+	if (!g_Hud.on || !WEAPON_IS_GE(weaponnum)) {
 		return gdl;
 	}
 

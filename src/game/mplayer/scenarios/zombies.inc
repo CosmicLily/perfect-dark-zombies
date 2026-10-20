@@ -2347,6 +2347,373 @@ static Gfx *zombiesGlowQuad(Gfx *gdl, Mtxf *mtx, const s16 corners[4][3])
 	return gdl;
 }
 
+/**
+ * The Ray Gun's shots, as Black Ops II's: a green bolt that flies (its weapon
+ * file's projectileSpeed, 3200 inches a second) in place of the host's
+ * tracer, and where it lands a green flash and Call of Duty's own ring
+ * (fxt_fx_raygun_ring, baked by tools/zombies/fxbake.py into the build's
+ * zombies/viewmodel/raygun_ring.i8) widening and fading, in place of the
+ * explosive shell's explosion. gunfx.c's beamCreate() hands a shot here
+ * (zombiesRayBoltCreate()) on every machine that draws it; prop.c's shell
+ * leaves its explosion to it (zombiesShellBlast()). Drawn with the world's
+ * beams (propsRenderBeams()), added light, the machines' glow texture for
+ * the bolt and the flash.
+ */
+#define ZOMBIE_RAYFX_MAX     24
+#define ZOMBIE_RAYFX_SPEED   135.0f  // a 60th: 3200 inches a second
+#define ZOMBIE_RAYFX_TAIL    110.0f  // the streak's length behind its head
+#define ZOMBIE_RAYFX_WIDTH   10.0f
+#define ZOMBIE_RAYFX_HEAD    26.0f
+#define ZOMBIE_RAYFX_RING60  22      // the ring's life
+#define ZOMBIE_RAYFX_RING    110.0f  // its size at the end
+#define ZOMBIE_RAYFX_FLASH60 9
+#define ZOMBIE_RAYFX_FLASH   90.0f
+#define ZOMBIE_RAYFX_RINGTEX 64
+
+struct zombierayfx {
+	bool on;
+	struct coord from;
+	struct coord dir;
+	f32 dist;     // the head's way along
+	f32 maxdist;  // where it lands
+	f32 age60;    // since it landed, -1 still in flight
+};
+
+static struct zombierayfx g_ZombieRayFx[ZOMBIE_RAYFX_MAX];
+static s32 g_ZombieRayFxFrame = -1;
+static u8 g_ZombieRayRing[ZOMBIE_RAYFX_RINGTEX * ZOMBIE_RAYFX_RINGTEX] __attribute__((aligned(8)));
+static s32 g_ZombieRayRingState = 0; // 0 not read, 1 read, -1 not there (the glow's used)
+
+// gunfx.c: a shot's tracer; true when it is one of the Ray Gun's, made a
+// bolt here and no tracer of the host's wanted
+bool zombiesRayBoltCreate(s32 weaponnum, struct coord *from, struct coord *to)
+{
+	struct zombierayfx *fx = NULL;
+	struct coord start = *from;
+	f32 len;
+	s32 i;
+
+	if (!zombiesIsActive() || weaponnum != WEAPON_ZM_RAYGUN) {
+		return false;
+	}
+
+	// the first person view's own: from under the eye at the right, where
+	// the viewmodel's muzzle is, since the host's model is not drawn there
+	for (i = 0; i < 2; i++) {
+		if (from == &g_Vars.currentplayer->hands[i].muzzlepos) {
+			Mtxf *m = camGetProjectionMtxF();
+			struct coord cam = { 9, -9, -38 };
+
+			mtx4TransformVec(m, &cam, &start);
+		}
+	}
+
+	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
+		if (!g_ZombieRayFx[i].on) {
+			fx = &g_ZombieRayFx[i];
+			break;
+		}
+	}
+
+	if (!fx) {
+		fx = &g_ZombieRayFx[0];
+	}
+
+	fx->from = start;
+	fx->dir.x = to->x - start.x;
+	fx->dir.y = to->y - start.y;
+	fx->dir.z = to->z - start.z;
+	len = sqrtf(fx->dir.x * fx->dir.x + fx->dir.y * fx->dir.y + fx->dir.z * fx->dir.z);
+
+	if (len > 0) {
+		fx->dir.x /= len;
+		fx->dir.y /= len;
+		fx->dir.z /= len;
+	}
+
+	fx->maxdist = len > 10000 ? 10000 : len;
+	fx->dist = 0;
+	fx->age60 = -1;
+	fx->on = true;
+
+	return true;
+}
+
+// The bolts on and the rings out, once a frame
+static void zombiesRayFxTick(void)
+{
+	s32 adv;
+	s32 i;
+
+	if (g_ZombieRayFxFrame < 0 || g_Vars.lvframe60 < g_ZombieRayFxFrame) {
+		g_ZombieRayFxFrame = g_Vars.lvframe60;
+	}
+
+	adv = g_Vars.lvframe60 - g_ZombieRayFxFrame;
+	g_ZombieRayFxFrame = g_Vars.lvframe60;
+
+	if (adv <= 0) {
+		return;
+	}
+
+	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
+		struct zombierayfx *fx = &g_ZombieRayFx[i];
+
+		if (!fx->on) {
+			continue;
+		}
+
+		if (fx->age60 < 0) {
+			fx->dist += ZOMBIE_RAYFX_SPEED * adv;
+
+			if (fx->dist >= fx->maxdist) {
+				fx->dist = fx->maxdist;
+				fx->age60 = 0;
+			}
+		} else {
+			fx->age60 += adv;
+
+			if (fx->age60 >= ZOMBIE_RAYFX_RING60) {
+				fx->on = false;
+			}
+		}
+	}
+}
+
+static void zombiesRayRingLoad(void)
+{
+	u8 *data;
+	u32 size = 0;
+	const char *rel = "$E/zombies/viewmodel/raygun_ring.i8";
+
+	g_ZombieRayRingState = -1;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0 || (data = fsFileLoad(rel, &size)) == NULL) {
+		return;
+	}
+
+	if (size == sizeof(g_ZombieRayRing)) {
+		memcpy(g_ZombieRayRing, data, sizeof(g_ZombieRayRing));
+		g_ZombieRayRingState = 1;
+	}
+
+	sysMemFree(data);
+}
+
+// A quad round pos: corners at pos + a * (+-1) + b * (+-1), in the world
+static Gfx *zombiesRayQuad(Gfx *gdl, Mtxf *cam, struct coord *pos, const f32 a[3], const f32 b[3])
+{
+	Mtxf world;
+	Mtxf *mtx = gfxAllocateMatrix();
+	const s16 corners[4][3] = {
+		{ (s16)(-a[0] - b[0]), (s16)(-a[1] - b[1]), (s16)(-a[2] - b[2]) },
+		{ (s16)(a[0] - b[0]), (s16)(a[1] - b[1]), (s16)(a[2] - b[2]) },
+		{ (s16)(a[0] + b[0]), (s16)(a[1] + b[1]), (s16)(a[2] + b[2]) },
+		{ (s16)(-a[0] + b[0]), (s16)(-a[1] + b[1]), (s16)(-a[2] + b[2]) },
+	};
+
+	mtx4LoadTranslation(pos, &world);
+	mtx4MultMtx4(cam, &world, mtx);
+
+	return zombiesGlowQuad(gdl, mtx, corners);
+}
+
+static Gfx *zombiesRayTex(Gfx *gdl, bool ring)
+{
+	gDPPipeSync(gdl++);
+
+	if (ring && g_ZombieRayRingState > 0) {
+		gDPLoadTextureBlock(gdl++, g_ZombieRayRing, G_IM_FMT_I, G_IM_SIZ_8b,
+				ZOMBIE_RAYFX_RINGTEX, ZOMBIE_RAYFX_RINGTEX, 0,
+				G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
+				G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+	} else {
+		gDPLoadTextureBlock(gdl++, g_ZombieGlowTex, G_IM_FMT_I, G_IM_SIZ_8b,
+				ZOMBIE_GLOW_TEX, ZOMBIE_GLOW_TEX, 0,
+				G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
+				G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+	}
+
+	return gdl;
+}
+
+// propobj.c's propsRenderBeams(): every bolt and ring, in the world
+Gfx *zombiesRenderRayFx(Gfx *gdl)
+{
+	Mtxf *cam = camGetWorldToScreenMtxf();
+	struct coord *campos = &g_Vars.currentplayer->cam_pos;
+	f32 right[3];
+	f32 up[3];
+	bool any = false;
+	s32 i;
+
+	if (!zombiesIsActive()) {
+		return gdl;
+	}
+
+	zombiesRayFxTick();
+
+	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
+		any |= g_ZombieRayFx[i].on;
+	}
+
+	if (!any) {
+		return gdl;
+	}
+
+	if (!g_ZombieGlowTexMade) {
+		zombiesGlowTexMake();
+	}
+
+	if (g_ZombieRayRingState == 0) {
+		zombiesRayRingLoad();
+	}
+
+	// the camera's own right and up, in the world, for the flat sprites
+	for (i = 0; i < 3; i++) {
+		right[i] = cam->m[i][0];
+		up[i] = cam->m[i][1];
+	}
+
+	{
+		f32 lr = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+		f32 lu = sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+
+		for (i = 0; i < 3; i++) {
+			right[i] /= lr > 0 ? lr : 1;
+			up[i] /= lu > 0 ? lu : 1;
+		}
+	}
+
+	gDPPipeSync(gdl++);
+	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+	gDPSetRenderMode(gdl++, G_RM_ZB_XLU_SURF, G_RM_ZB_XLU_SURF2);
+	gDPSetCombineLERP(gdl++, 0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0,
+			0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0);
+	gDPSetTextureFilter(gdl++, G_TF_BILERP);
+	gDPSetTexturePersp(gdl++, G_TP_PERSP);
+	gDPSetTextureLOD(gdl++, G_TL_TILE);
+	gDPSetTextureLUT(gdl++, G_TT_NONE);
+	gDPSetTextureConvert(gdl++, G_TC_FILT);
+	gDPSetAlphaCompare(gdl++, G_AC_NONE);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
+	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+	gSPSetExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
+
+	gdl = zombiesRayTex(gdl, false);
+
+	// the bolts: a streak along the way and a bright head
+	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
+		struct zombierayfx *fx = &g_ZombieRayFx[i];
+		struct coord head;
+		struct coord mid;
+		f32 tocam[3];
+		f32 side[3];
+		f32 along[3];
+		f32 a[3];
+		f32 b[3];
+		f32 tail;
+		f32 len;
+		s32 k;
+
+		if (!fx->on || fx->age60 >= 0) {
+			continue;
+		}
+
+		head.x = fx->from.x + fx->dir.x * fx->dist;
+		head.y = fx->from.y + fx->dir.y * fx->dist;
+		head.z = fx->from.z + fx->dir.z * fx->dist;
+		tail = fx->dist < ZOMBIE_RAYFX_TAIL ? fx->dist : ZOMBIE_RAYFX_TAIL;
+
+		mid.x = head.x - fx->dir.x * tail / 2;
+		mid.y = head.y - fx->dir.y * tail / 2;
+		mid.z = head.z - fx->dir.z * tail / 2;
+
+		tocam[0] = campos->x - mid.x;
+		tocam[1] = campos->y - mid.y;
+		tocam[2] = campos->z - mid.z;
+		along[0] = fx->dir.x;
+		along[1] = fx->dir.y;
+		along[2] = fx->dir.z;
+		side[0] = along[1] * tocam[2] - along[2] * tocam[1];
+		side[1] = along[2] * tocam[0] - along[0] * tocam[2];
+		side[2] = along[0] * tocam[1] - along[1] * tocam[0];
+		len = sqrtf(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+
+		if (len > 0 && tail > 1) {
+			for (k = 0; k < 3; k++) {
+				a[k] = along[k] * tail / 2;
+				b[k] = side[k] / len * ZOMBIE_RAYFX_WIDTH;
+			}
+
+			gDPSetPrimColor(gdl++, 0, 0, 0x40, 0xff, 0x30, 0xe0);
+			gdl = zombiesRayQuad(gdl, cam, &mid, a, b);
+		}
+
+		for (k = 0; k < 3; k++) {
+			a[k] = right[k] * ZOMBIE_RAYFX_HEAD;
+			b[k] = up[k] * ZOMBIE_RAYFX_HEAD;
+		}
+
+		gDPSetPrimColor(gdl++, 0, 0, 0xa0, 0xff, 0x90, 0xff);
+		gdl = zombiesRayQuad(gdl, cam, &head, a, b);
+	}
+
+	// where they landed: a flash, then the ring
+	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
+		struct zombierayfx *fx = &g_ZombieRayFx[i];
+		struct coord at;
+		f32 f;
+		f32 size;
+		f32 a[3];
+		f32 b[3];
+		s32 k;
+
+		if (!fx->on || fx->age60 < 0) {
+			continue;
+		}
+
+		// a little back along the way, off the wall it hit
+		at.x = fx->from.x + fx->dir.x * (fx->maxdist - 6);
+		at.y = fx->from.y + fx->dir.y * (fx->maxdist - 6);
+		at.z = fx->from.z + fx->dir.z * (fx->maxdist - 6);
+
+		if (fx->age60 < ZOMBIE_RAYFX_FLASH60) {
+			f = 1 - fx->age60 / ZOMBIE_RAYFX_FLASH60;
+			size = ZOMBIE_RAYFX_FLASH * (0.6f + 0.4f * f);
+
+			for (k = 0; k < 3; k++) {
+				a[k] = right[k] * size;
+				b[k] = up[k] * size;
+			}
+
+			gdl = zombiesRayTex(gdl, false);
+			gDPSetPrimColor(gdl++, 0, 0, 0x60, 0xff, 0x50, (u8)(0xff * f));
+			gdl = zombiesRayQuad(gdl, cam, &at, a, b);
+		}
+
+		f = fx->age60 / ZOMBIE_RAYFX_RING60;
+		size = ZOMBIE_RAYFX_RING * (0.25f + 0.75f * f);
+
+		for (k = 0; k < 3; k++) {
+			a[k] = right[k] * size;
+			b[k] = up[k] * size;
+		}
+
+		gdl = zombiesRayTex(gdl, true);
+		gDPSetPrimColor(gdl++, 0, 0, 0x50, 0xff, 0x40, (u8)(0xff * (1 - f)));
+		gdl = zombiesRayQuad(gdl, cam, &at, a, b);
+	}
+
+	gDPPipeSync(gdl++);
+	gSPClearExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
+
+	return gdl;
+}
+
+
 static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
 {
 	struct zombiemesh *zm = &g_ZombieMeshes[id];
@@ -2496,6 +2863,7 @@ static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
 }
 
 static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj);
+static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj);
 
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
@@ -2519,6 +2887,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// a barrier: its boards, drawn here
 	if (zombiesRenderBarrier(renderdata, obj)) {
+		return true;
+	}
+
+	// one of Zombies' own guns, as Black Ops II's world model
+	if (zombiesRenderZmGun(renderdata, obj)) {
 		return true;
 	}
 
@@ -3065,6 +3438,421 @@ static Gfx *zombiesRenderThrowViewmodel(Gfx *gdl)
 			zombiesDrinkMtx(frame + (ZOMBIE_DRINK_JOINTS + j) * 12, g_ZombieBottleObjAxes, mtx);
 			gdl = zombiesBottleDraw(gdl, zm, mtx, 0xff, 0xff, 0xff);
 		}
+	}
+
+	mtxF2LBulk(matrices, n);
+	mtx00016784();
+
+	gSPPerspNormalize(gdl++, viGetPerspScale());
+
+	return gdl;
+}
+
+f32 zombiesSprintGunFrac(void);
+f32 zombiesGunLowerFrac(void);
+f32 zombiesHandRate(s32 handstate);
+
+/**
+ * Zombies' own guns held in the player's own hands (constants.h,
+ * WEAPON_ZM_FIRST): Black Ops II's viewmodel - its arms' animations
+ * retargeted onto the character's hands, as the drink is, and the gun's
+ * moving parts - drawn in place of the host gun's model (bgunRender() asks
+ * zombiesGunViewmodelOwns()). tools/zombies/vmbake.py's gun mode bakes them
+ * into the build's zombies/viewmodel/: <name>.parts (the parts' bones),
+ * <name>_<part>.obj, and <name>_<clip>.zpd for each clip below. Without them
+ * the host's model is drawn as it is.
+ *
+ * The clip follows the hand: the pull-out as the gun comes in, the fire clip
+ * from each round (a magazine going down), the reload's for as long as the
+ * host's reload lasts (ZOMBIE_VMGUN_PDRELOAD, Speed Cola's rate and all), the
+ * sprint's in, loop and out, and the idle's loop otherwise; a change of clip
+ * crossfades. The gun goes down for a drink, a throw or the knife as the host
+ * gun would (zombiesGunLowerFrac()).
+ */
+enum {
+	ZVM_IDLE,
+	ZVM_FIRE,
+	ZVM_RELOAD,
+	ZVM_PULLOUT,
+	ZVM_SPRINTIN,
+	ZVM_SPRINTLOOP,
+	ZVM_SPRINTOUT,
+	ZVM_COUNT
+};
+
+static const char *const g_ZombieVmClipNames[ZVM_COUNT] = {
+	"idle", "fire", "reload", "pullout", "sprint_in", "sprint_loop", "sprint_out",
+};
+
+#define ZOMBIE_VMGUN_PARTS    12
+#define ZOMBIE_VMGUN_FLOATS   ((ZOMBIE_DRINK_JOINTS + ZOMBIE_VMGUN_PARTS) * 12)
+#define ZOMBIE_VMGUN_BLEND60  6     // a change of clip crossfades this long
+#define ZOMBIE_VMGUN_PDRELOAD 128.0f // the Phoenix's reload, the Ray Gun's host's: the reload clip is played over it
+#define ZOMBIE_VMGUN_LOWER    40.0f  // how far down the gun goes for a drink or a throw, at its fullest
+
+struct zombievmgun {
+	s32 weaponnum;
+	const char *name;
+	bool tried;
+	bool ok;
+	s32 numparts;
+	struct zombiemesh meshes[ZOMBIE_VMGUN_PARTS];
+	s32 ticks[ZVM_COUNT];
+	const f32 *mtx[ZVM_COUNT];
+};
+
+static struct zombievmgun g_ZombieVmGuns[] = {
+	{ WEAPON_ZM_RAYGUN, "raygun" },
+};
+
+static struct {
+	s32 weaponnum;
+	s32 clip;
+	f32 t;
+	s32 ammo;
+	bool reloading;
+	bool sprinting;
+	f32 blend;                         // what of the last pose is left, 1 to 0
+	f32 from[ZOMBIE_VMGUN_FLOATS];     // the last pose, as the clip changed
+	f32 now[ZOMBIE_VMGUN_FLOATS];      // the pose last drawn
+} g_ZombieVm[MAX_PLAYERS];
+
+static struct zombievmgun *zombiesVmGun(s32 weaponnum)
+{
+	s32 i;
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieVmGuns); i++) {
+		if (g_ZombieVmGuns[i].weaponnum == weaponnum) {
+			return &g_ZombieVmGuns[i];
+		}
+	}
+
+	return NULL;
+}
+
+// A gun's files, read the first time it is wanted; false when not all there
+static bool zombiesVmGunLoad(struct zombievmgun *gun)
+{
+	char rel[128];
+	char *text;
+	u32 size = 0;
+	s32 c;
+
+	if (gun->tried) {
+		return gun->ok;
+	}
+
+	gun->tried = true;
+
+	snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/%s.parts", gun->name);
+
+	if (fsFileSize(fsFullPath(rel)) <= 0 || (text = fsFileLoad(rel, &size)) == NULL) {
+		return false;
+	}
+
+	// a part's OBJ for each line
+	{
+		char *p = text;
+
+		while (p < text + size && gun->numparts < ZOMBIE_VMGUN_PARTS) {
+			char bone[48];
+			s32 n = 0;
+
+			while (p < text + size && (*p == '\n' || *p == '\r')) {
+				p++;
+			}
+
+			while (p < text + size && *p != '\n' && *p != '\r' && n < (s32)sizeof(bone) - 1) {
+				bone[n++] = *p++;
+			}
+
+			bone[n] = '\0';
+
+			while (p < text + size && *p != '\n') {
+				p++;
+			}
+
+			if (n == 0) {
+				continue;
+			}
+
+			snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/%s_%s.obj", gun->name, bone);
+			zombiesMeshBuildFrom(&gun->meshes[gun->numparts], rel, bone);
+			gun->numparts++;
+		}
+	}
+
+	sysMemFree(text);
+
+	for (c = 0; c < ZVM_COUNT; c++) {
+		u8 *data;
+		u16 hdr[4];
+
+		snprintf(rel, sizeof(rel), "$E/zombies/viewmodel/%s_%s.zpd", gun->name, g_ZombieVmClipNames[c]);
+		size = 0;
+
+		if (fsFileSize(fsFullPath(rel)) <= 0 || (data = fsFileLoad(rel, &size)) == NULL || size < 12
+				|| memcmp(data, "ZPD1", 4) != 0) {
+			continue;
+		}
+
+		memcpy(hdr, data + 4, sizeof(hdr));
+
+		if (hdr[1] != ZOMBIE_DRINK_JOINTS || hdr[2] != gun->numparts || hdr[0] == 0
+				|| size < 12 + (u32)hdr[0] * (ZOMBIE_DRINK_JOINTS + hdr[2]) * 12 * sizeof(f32)) {
+			sysLogPrintf(LOG_WARNING, "zombies: %s is not vmbake.py's", rel);
+			continue;
+		}
+
+		gun->ticks[c] = hdr[0];
+		gun->mtx[c] = (const f32 *)(data + 12);
+	}
+
+	gun->ok = gun->numparts > 0 && gun->mtx[ZVM_IDLE] != NULL;
+
+	sysLogPrintf(LOG_NOTE, "zombies: %s in the player's own hands: %d parts, %s", gun->name, gun->numparts,
+			gun->ok ? "its clips read" : "no idle clip, the host's model drawn");
+
+	return gun->ok;
+}
+
+// bgunRender(): whether the current player's own view draws this hand's gun
+// itself (Zombies' own guns), so the host's model is not drawn
+bool zombiesGunViewmodelOwns(s32 handnum)
+{
+	struct player *player = g_Vars.currentplayer;
+	struct zombievmgun *gun;
+
+	if (!zombiesIsActive() || !player) {
+		return false;
+	}
+
+	gun = zombiesVmGun(player->hands[HAND_RIGHT].gset.weaponnum);
+
+	return gun && zombiesVmGunLoad(gun);
+}
+
+// The clip a player's hands are in now, moved on by a frame's 60ths
+static void zombiesVmGunTick(s32 playernum, struct zombievmgun *gun, s32 weaponnum)
+{
+	struct player *player = g_Vars.players[playernum];
+	struct hand *hand = &player->hands[HAND_RIGHT];
+	const f32 dt = g_Vars.lvupdate60freal;
+	const bool reloading = hand->state == HANDSTATE_RELOAD;
+	const bool sprinting = zombiesSprintGunFrac() > 0.5f;
+	s32 ammo = hand->loadedammo[0];
+	s32 want = -1;
+
+	if (g_ZombieVm[playernum].weaponnum != weaponnum) {
+		// a gun come in: its pull-out, from nothing to blend from
+		g_ZombieVm[playernum].weaponnum = weaponnum;
+		g_ZombieVm[playernum].clip = gun->mtx[ZVM_PULLOUT] ? ZVM_PULLOUT : ZVM_IDLE;
+		g_ZombieVm[playernum].t = 0;
+		g_ZombieVm[playernum].ammo = ammo;
+		g_ZombieVm[playernum].reloading = false;
+		g_ZombieVm[playernum].sprinting = false;
+		g_ZombieVm[playernum].blend = 0;
+		return;
+	}
+
+	if (reloading && !g_ZombieVm[playernum].reloading) {
+		want = ZVM_RELOAD;
+	} else if (!reloading && ammo < g_ZombieVm[playernum].ammo) {
+		want = ZVM_FIRE;
+	} else if (sprinting && !g_ZombieVm[playernum].sprinting && !reloading) {
+		want = gun->mtx[ZVM_SPRINTIN] ? ZVM_SPRINTIN : ZVM_SPRINTLOOP;
+	} else if (!sprinting && g_ZombieVm[playernum].sprinting && !reloading) {
+		want = ZVM_SPRINTOUT;
+	}
+
+	g_ZombieVm[playernum].reloading = reloading;
+	g_ZombieVm[playernum].sprinting = sprinting;
+	g_ZombieVm[playernum].ammo = ammo;
+
+	if (want >= 0 && gun->mtx[want] == NULL) {
+		want = ZVM_IDLE;
+	}
+
+	if (want >= 0) {
+		memcpy(g_ZombieVm[playernum].from, g_ZombieVm[playernum].now, sizeof(g_ZombieVm[playernum].from));
+		g_ZombieVm[playernum].blend = 1;
+		g_ZombieVm[playernum].clip = want;
+		g_ZombieVm[playernum].t = 0;
+		return;
+	}
+
+	// on through the clip: the reload's over the host's reload, Speed Cola's
+	// rate and all
+	if (g_ZombieVm[playernum].clip == ZVM_RELOAD) {
+		g_ZombieVm[playernum].t += dt * zombiesHandRate(HANDSTATE_RELOAD) * gun->ticks[ZVM_RELOAD] / ZOMBIE_VMGUN_PDRELOAD;
+	} else {
+		g_ZombieVm[playernum].t += dt;
+	}
+
+	if (g_ZombieVm[playernum].blend > 0) {
+		g_ZombieVm[playernum].blend -= dt / ZOMBIE_VMGUN_BLEND60;
+	}
+
+	// a clip run out: the sprint's loop or the idle's, carried on
+	if (g_ZombieVm[playernum].t >= gun->ticks[g_ZombieVm[playernum].clip] - 1) {
+		s32 clip = g_ZombieVm[playernum].clip;
+		s32 next = clip == ZVM_SPRINTIN || clip == ZVM_SPRINTLOOP ? ZVM_SPRINTLOOP : ZVM_IDLE;
+
+		if (clip == ZVM_RELOAD && reloading) {
+			// the host's reload still going: hold the clip's end
+			g_ZombieVm[playernum].t = gun->ticks[clip] - 1;
+			return;
+		}
+
+		if (next == clip) {
+			g_ZombieVm[playernum].t -= gun->ticks[clip] - 1;
+			return;
+		}
+
+		memcpy(g_ZombieVm[playernum].from, g_ZombieVm[playernum].now, sizeof(g_ZombieVm[playernum].from));
+		g_ZombieVm[playernum].blend = 1;
+		g_ZombieVm[playernum].clip = gun->mtx[next] ? next : ZVM_IDLE;
+		g_ZombieVm[playernum].t = 0;
+	}
+}
+
+Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	struct zombievmgun *gun;
+	struct model *handmodel;
+	struct modelrenderdata renderdata = {NULL, true, 3};
+	f32 *pose;
+	const f32 *frame;
+	Mtxf *matrices;
+	Mtxf *saved;
+	f32 lower;
+	s32 weaponnum;
+	s32 floats;
+	s32 tick;
+	s32 n;
+	s32 j;
+	s32 k;
+
+	if (!zombiesIsActive() || !player || playernum < 0 || playernum >= MAX_PLAYERS) {
+		return gdl;
+	}
+
+	weaponnum = player->hands[HAND_RIGHT].gset.weaponnum;
+	gun = zombiesVmGun(weaponnum);
+
+	if (!gun || !zombiesVmGunLoad(gun)) {
+		g_ZombieVm[playernum].weaponnum = WEAPON_NONE;
+		return gdl;
+	}
+
+	// only where bgunRender() draws, and not while the drink or a throw has
+	// the hands
+	if (player->thirdpersondist > 0 || player->visionmode == VISIONMODE_XRAY || geWatchHidesGun()
+			|| zombiesDrinkViewmodelActive(playernum) || g_ZombieThrowStage[playernum] != ZTHROW_NONE) {
+		return gdl;
+	}
+
+	zombiesVmGunTick(playernum, gun, weaponnum);
+
+	lower = zombiesGunLowerFrac();
+
+	if (lower >= 1) {
+		return gdl;
+	}
+
+	handmodel = zombiesDrinkHandModel(player);
+
+	if (handmodel == NULL) {
+		return gdl;
+	}
+
+	// the clip's frame, crossfaded from the last clip's pose
+	floats = (ZOMBIE_DRINK_JOINTS + gun->numparts) * 12;
+	tick = (s32)g_ZombieVm[playernum].t;
+	tick = tick < 0 ? 0 : tick >= gun->ticks[g_ZombieVm[playernum].clip] ? gun->ticks[g_ZombieVm[playernum].clip] - 1 : tick;
+	frame = gun->mtx[g_ZombieVm[playernum].clip] + tick * floats;
+	pose = g_ZombieVm[playernum].now;
+
+	for (k = 0; k < floats; k++) {
+		const f32 b = g_ZombieVm[playernum].blend;
+
+		pose[k] = b > 0 ? frame[k] + (g_ZombieVm[playernum].from[k] - frame[k]) * b : frame[k];
+	}
+
+	n = handmodel->definition->nummatrices;
+
+	if (n < ZOMBIE_DRINK_JOINTS) {
+		n = ZOMBIE_DRINK_JOINTS;
+	}
+
+	if (!gfxHasVtxSpace(n * sizeof(Mtxf))) {
+		return gdl;
+	}
+
+	matrices = gfxAllocate(n * sizeof(Mtxf));
+
+	for (j = 0; j < n; j++) {
+		zombiesDrinkMtx(pose + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
+		matrices[j].m[3][1] -= lower * ZOMBIE_VMGUN_LOWER;
+	}
+
+	gSPPerspNormalize(gdl++, mtx00016dcc(0, 300));
+
+	renderdata.gdl = gdl;
+	renderdata.unk30 = 4;
+	renderdata.envcolour = player->gunshadecol[0] << 24 | player->gunshadecol[1] << 16
+		| player->gunshadecol[2] << 8 | player->gunshadecol[3];
+	renderdata.zbufferenabled = true;
+
+	mtx00016760();
+	handtintTick();
+
+	saved = handmodel->matrices;
+	handmodel->matrices = matrices;
+	modelUpdateRelations(handmodel);
+
+	// both hands: Black Ops II's left one steadies the gun
+	{
+		struct modelnode *node = modelGetPart(handmodel->definition, MODELPART_HAND_LEFT);
+		struct modelrwdata_toggle *left = NULL;
+		bool wasvisible = false;
+
+		if (node && (node->type & 0xff) == MODELNODETYPE_TOGGLE) {
+			left = modelGetNodeRwData(handmodel, node);
+		}
+
+		if (left) {
+			wasvisible = left->visible;
+			left->visible = true;
+		}
+
+		xblaMeshPassBegin();
+		modelRender(&renderdata, handmodel);
+		xblaMeshPassBegin();
+
+		if (left) {
+			left->visible = wasvisible;
+		}
+	}
+
+	handmodel->matrices = saved;
+	gdl = renderdata.gdl;
+
+	// the gun's parts, each as its bone has it
+	for (j = 0; j < gun->numparts; j++) {
+		struct zombiemesh *zm = &gun->meshes[j];
+		Mtxf *mtx;
+
+		if (!zm->gdl) {
+			continue;
+		}
+
+		mtx = gfxAllocateMatrix();
+		zombiesDrinkMtx(pose + (ZOMBIE_DRINK_JOINTS + j) * 12, g_ZombieBottleObjAxes, mtx);
+		mtx->m[3][1] -= lower * ZOMBIE_VMGUN_LOWER;
+		gdl = zombiesBottleDraw(gdl, zm, mtx, player->gunshadecol[0] | 0x40, player->gunshadecol[1] | 0x40, player->gunshadecol[2] | 0x40);
 	}
 
 	mtxF2LBulk(matrices, n);
@@ -6340,6 +7128,30 @@ static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 c
 }
 
 /**
+ * The Ray Gun's blast, Black Ops II's (ray_gun_zm: explosionRadius 64 inches,
+ * explosionInnerDamage 1500), where its bolt lands: prop.c, in place of the
+ * explosive shell's own explosion it stands on (true: none of the host's).
+ * Every zombie in it takes Call of Duty's damage, the shooter's points and
+ * kills; the host's alone.
+ */
+#define ZOMBIE_RAYGUN_RADIUS 163.0f
+#define ZOMBIE_RAYGUN_DAMAGE 1500.0f
+
+bool zombiesShellBlast(struct gset *gset, struct coord *pos)
+{
+	if (!zombiesIsActive() || !gset || gset->weaponnum != WEAPON_ZM_RAYGUN) {
+		return false;
+	}
+
+	// its look is the bolt's landing (zombiesRenderRayFx()), on every machine
+	if (!NET_CLIENT) {
+		zombiesHurtAround(g_Vars.currentplayernum, pos, ZOMBIE_RAYGUN_RADIUS, ZOMBIE_RAYGUN_DAMAGE, false);
+	}
+
+	return true;
+}
+
+/**
  * PhD Flopper's blast, where a dive or a drop lands: Call of Duty's, round
  * the player, the player and the other players untouched (zombiesPhdShrugs(),
  * and teams in chrDamage()). The game's own blast is laid on for its sight
@@ -8320,9 +9132,162 @@ static bool g_ZombieNearBox[MAX_PLAYERS];
 static s32 g_ZombieBoxHeld60[MAX_PLAYERS];
 static bool g_ZombieBoxNeedsRelease[MAX_PLAYERS];
 
+/**
+ * Zombies' own guns as things in the world - over the Mystery Box, in
+ * Pack-a-Punch, in a player's hand in third person, lying on the floor -
+ * drawn as Black Ops II's world model in place of their host's prop
+ * (tools/zombies/glb2obj.py's OBJ in the build's zombies/models/<name>_world/).
+ * The mesh is laid along the host prop's longest side and made as long, its
+ * muzzle the way the host's points (ZOMBIE_ZMGUN_FLIP); without the OBJ the
+ * host's prop is drawn.
+ */
+#define ZOMBIE_ZMGUN_FLIP 1 // 1: the host prop's muzzle at the low end of its long side, as the mesh's is; -1 the high
+
+struct zombiezmworld {
+	s32 weaponnum;
+	const char *rel;
+	struct zombiemesh mesh;
+};
+
+static struct zombiezmworld g_ZombieZmWorld[] = {
+	{ WEAPON_ZM_RAYGUN, "$E/zombies/models/raygun_world/raygun_world.obj" },
+};
+
+static s32 zombiesPapShownZmGun(struct defaultobj *obj);
+
+// Which of Zombies' own guns an object shows, WEAPON_NONE for none
+static s32 zombiesObjZmGun(struct defaultobj *obj)
+{
+	if (zombiesPapShownZmGun(obj) != WEAPON_NONE) {
+		return zombiesPapShownZmGun(obj);
+	}
+
+	if (obj->type == OBJTYPE_WEAPON && WEAPON_IS_ZM(((struct weaponobj *)obj)->weaponnum)) {
+		return ((struct weaponobj *)obj)->weaponnum;
+	}
+
+	if (obj == g_ZombieBoxGun && g_ZombieBoxShown >= 0 && g_ZombieBoxShown < NUM_MPWEAPONS
+			&& WEAPON_IS_ZM(g_MpWeapons[g_ZombieBoxShown].weaponnum)) {
+		return g_MpWeapons[g_ZombieBoxShown].weaponnum;
+	}
+
+	return WEAPON_NONE;
+}
+
+static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	struct zombiezmworld *world = NULL;
+	struct modelrodata_bbox *bbox;
+	const s32 weaponnum = zombiesObjZmGun(obj);
+	struct zombiemesh *zm;
+	f32 ext[3];
+	f32 mid[3];
+	f32 k;
+	Mtxf local;
+	Mtxf *mtx;
+	s32 i;
+
+	if (weaponnum == WEAPON_NONE || !obj->model || !obj->model->matrices) {
+		return false;
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieZmWorld); i++) {
+		if (g_ZombieZmWorld[i].weaponnum == weaponnum) {
+			world = &g_ZombieZmWorld[i];
+		}
+	}
+
+	if (!world) {
+		return false;
+	}
+
+	zm = &world->mesh;
+
+	if (!zm->tried) {
+		zombiesMeshBuildFrom(zm, world->rel, bgunGetName(weaponnum));
+	}
+
+	bbox = objFindBboxRodata(obj);
+
+	if (!zm->gdl || !bbox) {
+		return false;
+	}
+
+	// nothing of it in the translucent pass
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	ext[0] = bbox->xmax - bbox->xmin;
+	ext[1] = bbox->ymax - bbox->ymin;
+	ext[2] = bbox->zmax - bbox->zmin;
+	mid[0] = (bbox->xmax + bbox->xmin) / 2;
+	mid[1] = (bbox->ymax + bbox->ymin) / 2;
+	mid[2] = (bbox->zmax + bbox->zmin) / 2;
+
+	{
+		static bool logged = false;
+
+		if (!logged) {
+			logged = true;
+			sysLogPrintf(LOG_NOTE, "zombies: the host prop's box x %.1f..%.1f y %.1f..%.1f z %.1f..%.1f, the mesh x %.2f..%.2f",
+					bbox->xmin, bbox->xmax, bbox->ymin, bbox->ymax, bbox->zmin, bbox->zmax, zm->midx - zm->width / 2, zm->midx + zm->width / 2);
+		}
+	}
+
+	// The mesh's stored axes are its length along x (the muzzle at its low
+	// end), up along y and across along z; a Perfect Dark gun prop is long
+	// along x, its grip down -z and across along y (the Phoenix's: x -204 to
+	// 101, y 27 either side, z -84 to 47). As long as the host's longest
+	// side, and turned without a mirror (up z, across -y)
+	k = ext[0] / (zm->width * ZOMBIE_MESH_FIXED);
+
+	mtx4LoadIdentity(&local);
+	local.m[0][0] = k * ZOMBIE_ZMGUN_FLIP;
+	local.m[1][1] = 0;
+	local.m[1][2] = k;
+	local.m[2][2] = 0;
+	local.m[2][1] = -k * ZOMBIE_ZMGUN_FLIP;
+
+	// its middle at the host's
+	for (i = 0; i < 3; i++) {
+		const f32 centre = zm->midx * ZOMBIE_MESH_FIXED;
+
+		local.m[3][i] = mid[i] - local.m[0][i] * centre;
+	}
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(&obj->model->matrices[0], &local, mtx);
+
+	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx,
+			0x80 + (obj->shadecol[0] >> 1), 0x80 + (obj->shadecol[1] >> 1), 0x80 + (obj->shadecol[2] >> 1));
+
+	return true;
+}
+
+
+/**
+ * Zombies' own guns' names (constants.h, WEAPON_ZM_FIRST), which no language
+ * file has: given once, the first match. Their definitions are invitems.c's.
+ */
+static void zombiesNameOwnGuns(void)
+{
+	static bool named = false;
+	struct weapon *raygun = weaponFindById(WEAPON_ZM_RAYGUN);
+
+	if (named || raygun == NULL) {
+		return;
+	}
+
+	named = true;
+	raygun->name = raygun->shortname = langAddPortText("Ray Gun\n");
+}
+
 static void zombiesResetBox(void)
 {
 	s32 i;
+
+	zombiesNameOwnGuns();
 
 	g_ZombieBox = NULL;
 	g_ZombieBoxGun = NULL;
@@ -9060,10 +10025,12 @@ static const struct zombiepapname g_ZombiePapNames[] = {
 	{ WEAPON_DMC,              "DMC Devil\n" },
 	{ WEAPON_AR53,             "AR-5300\n" },
 	{ WEAPON_RCP45,            "RC-P4500\n" },
+	{ WEAPON_ZM_RAYGUN,        "Porter's X2 Ray Gun\n" },
 };
 
 // The gun in the machine, shown as the box shows its (zombiesBoxShowGun())
 static struct defaultobj g_ZombiePapGunObj;
+static s32 g_ZombiePapGunWeapon = WEAPON_NONE; // the gun it shows
 static bool g_ZombiePapGunUp = false;
 
 static void zombiesResetPap(void)
@@ -9202,6 +10169,7 @@ static void zombiesPapShowGun(s32 weaponnum)
 		return;
 	}
 
+	g_ZombiePapGunWeapon = weaponnum;
 	bzero(obj, sizeof(*obj));
 	obj->extrascale = 256;
 	obj->type = OBJTYPE_BASIC;
@@ -9332,6 +10300,13 @@ Gfx *zombiesCamoBegin(Gfx *gdl, s32 weaponnum)
 	}
 
 	return zombiesCamoAt(gdl);
+}
+
+// zombiesObjZmGun(): one of Zombies' own guns in Pack-a-Punch
+static s32 zombiesPapShownZmGun(struct defaultobj *obj)
+{
+	return obj == &g_ZombiePapGunObj && g_ZombiePapGunUp && WEAPON_IS_ZM(g_ZombiePapGunWeapon)
+		? g_ZombiePapGunWeapon : WEAPON_NONE;
 }
 
 // The gun in Pack-a-Punch once it has come out upgraded: drawn in its camo

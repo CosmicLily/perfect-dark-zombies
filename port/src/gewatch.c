@@ -3963,7 +3963,7 @@ static struct watchitem g_WatchPad = { .item = -1, .failed = -1 };
  */
 static s32 watchGunItem(s32 weaponnum)
 {
-	if (weaponnum < WEAPON_GE_FIRST || weaponnum >= NUM_WEAPONS) {
+	if (!WEAPON_IS_GE(weaponnum)) {
 		return -1;
 	}
 

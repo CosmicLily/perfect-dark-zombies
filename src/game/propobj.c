@@ -65,6 +65,7 @@
 #ifndef PLATFORM_N64
 // zombies.inc: a Zombies machine drawn from a model of its own
 bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj);
+Gfx *zombiesRenderRayFx(Gfx *gdl);
 #endif
 #include "game/shards.h"
 #include "bss.h"
@@ -13271,6 +13272,11 @@ Gfx *propsRenderBeams(Gfx *gdl)
 
 		prop = prop->next;
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies' Ray Gun's bolts and where they land
+	gdl = zombiesRenderRayFx(gdl);
+#endif
 
 	return gdl;
 }

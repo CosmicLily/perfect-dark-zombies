@@ -244,6 +244,7 @@ extern struct weapon *g_Weapons[];
 
 #ifndef PLATFORM_N64
 extern u8 g_GeWeaponHosts[NUM_GE_WEAPONS];
+extern u8 g_ZmWeaponHosts[NUM_ZM_WEAPONS];
 extern struct weapon g_GeWeaponDefs[NUM_GE_WEAPONS];
 
 /**
@@ -257,8 +258,10 @@ extern struct weapon g_GeWeaponDefs[NUM_GE_WEAPONS];
  */
 static inline s32 weaponHost(s32 weaponnum)
 {
-	return weaponnum >= WEAPON_GE_FIRST && weaponnum < NUM_WEAPONS
-		? g_GeWeaponHosts[weaponnum - WEAPON_GE_FIRST] : weaponnum;
+	return weaponnum >= WEAPON_GE_FIRST && weaponnum < WEAPON_GE_END
+		? g_GeWeaponHosts[weaponnum - WEAPON_GE_FIRST]
+		: weaponnum >= WEAPON_ZM_FIRST && weaponnum < NUM_WEAPONS
+		? g_ZmWeaponHosts[weaponnum - WEAPON_ZM_FIRST] : weaponnum;
 }
 
 /**
@@ -266,10 +269,14 @@ static inline s32 weaponHost(s32 weaponnum)
  * host's behaviour is not GoldenEye's (the audit of the weaponHost() sites,
  * ge-bean.md), which ask this beside the host.
  */
-#define WEAPON_IS_GE(weaponnum) ((weaponnum) >= WEAPON_GE_FIRST && (weaponnum) < NUM_WEAPONS)
+#define WEAPON_IS_GE(weaponnum) ((weaponnum) >= WEAPON_GE_FIRST && (weaponnum) < WEAPON_GE_END)
+
+/** Whether a weapon number is one of Zombies' own guns (the Ray Gun) */
+#define WEAPON_IS_ZM(weaponnum) ((weaponnum) >= WEAPON_ZM_FIRST && (weaponnum) < NUM_WEAPONS)
 #else
 #define weaponHost(weaponnum) (weaponnum)
 #define WEAPON_IS_GE(weaponnum) (false)
+#define WEAPON_IS_ZM(weaponnum) (false)
 #endif
 extern u32 *g_TvCmdlists[TVCMDLIST_36 + 1];
 extern s16 g_AmmoTypeWeapons[AMMOTYPE_ECM_MINE + 1];

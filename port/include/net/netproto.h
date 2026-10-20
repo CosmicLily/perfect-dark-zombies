@@ -224,7 +224,10 @@
 //    4 has Fire Sale's time (u16, after Double Points') and each player's grenades
 //    and its throw (u8 grenades, u8 the throw's stage, u8 its 60ths, after the
 //    players' doors and barriers); a power-up's kind goes to 5
-#define NET_PROTOCOL_VERSION 36
+// 37 (Zombies' Ray Gun, 2026-10-19): weapon 0x87 (WEAPON_ZM_RAYGUN, NUM_WEAPONS
+//    0x88) and its multiplayer row 0x51 (NUM_MPWEAPONS 0x52); a build without
+//    them would be handed a weapon number past its table
+#define NET_PROTOCOL_VERSION 37
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2
