@@ -5594,9 +5594,11 @@ struct menuitem g_MainMenuMenuItems[] = {
 void scenarioInit(void);
 
 /**
- * Zombies, straight from the Perfect Menu: the Combat Simulator's setup
- * (menuhandlerMainMenuCombatSimulator()) with its scenario already Zombies,
- * as the scenario list's own choice sets it (scenarios.c, scenarioInit()).
+ * Zombies, straight from the Perfect Menu: the Combat Simulator's Advanced
+ * Setup with its scenario already Zombies, as the scenario list's own choice
+ * sets it (scenarios.c, scenarioInit(), which offers nothing else), the
+ * Combat Simulator's own page passed by: what it settles as it opens and
+ * while it shows (menudialogCombatSimulator()) settled here.
  */
 static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -5609,12 +5611,31 @@ static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct me
 		challengeDetermineUnlockedFeatures();
 		g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
 		scenarioInit();
-		g_Vars.mpsetupmenu = MPSETUPMENU_GENERAL;
-		func0f0f820c(&g_CombatSimulatorMenuDialog, MENUROOT_MPSETUP);
+		g_Vars.waitingtojoin[0] = false;
+		g_Vars.waitingtojoin[1] = false;
+		g_Vars.waitingtojoin[2] = false;
+		g_Vars.waitingtojoin[3] = false;
+		g_Vars.mpquickteam = MPQUICKTEAM_NONE;
+		challengeUnsetCurrent();
+		challengeRemovePlayerLock();
+		g_Vars.mpsetupmenu = MPSETUPMENU_ADVSETUP;
+		func0f0f820c(&g_MpAdvancedSetupMenuDialog, MENUROOT_MPSETUP);
 		func0f0f8300();
 	}
 
 	return 0;
+}
+
+// The online game, with Zombies its scenario before any room is made: the
+// one this build plays (scenarios.c offers no other)
+static MenuItemHandlerResult menuhandlerMainMenuOnlineZombies(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET && g_MpSetup.scenario != MPSCENARIO_ZOMBIES) {
+		g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
+		scenarioInit();
+	}
+
+	return netLobbyMenuHandlerOnlineMain(operation, item, data);
 }
 
 /**
@@ -5638,7 +5659,7 @@ struct menuitem g_MainMenuZombiesMenuItems[] = {
 		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Online Game",
 		0x00000010,
-		netLobbyMenuHandlerOnlineMain,
+		menuhandlerMainMenuOnlineZombies,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

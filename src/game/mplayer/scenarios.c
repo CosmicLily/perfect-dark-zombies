@@ -428,6 +428,37 @@ MenuItemHandlerResult scenarioScenarioMenuHandler(s32 operation, struct menuitem
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// This build is Zombies': the one scenario offered, whatever a loaded
+	// setup had (mainmenu.c's Perfect Menu leads here with it chosen)
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->list.value = 1;
+		return 0;
+	case MENUOP_GETOPTIONTEXT:
+		return (uintptr_t)scenarioGetName(MPSCENARIO_ZOMBIES);
+	case MENUOP_SET:
+	case MENUOP_GETSELECTEDINDEX:
+		if (g_MpSetup.scenario != MPSCENARIO_ZOMBIES) {
+			g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
+			scenarioInit();
+		}
+
+		data->list.value = 0;
+		return 0;
+	case MENUOP_GETOPTGROUPCOUNT:
+		data->list.value = 1;
+		return 0;
+	case MENUOP_GETOPTGROUPTEXT:
+		return (uintptr_t)"Zombies";
+	case MENUOP_GETGROUPSTARTINDEX:
+		data->list.groupstartindex = 0;
+		return 0;
+	}
+
+	return 0;
+#endif
+
 	if (item->param) {
 		if (g_Vars.mpquickteam == MPQUICKTEAM_PLAYERSONLY || g_Vars.mpquickteam == MPQUICKTEAM_PLAYERSANDSIMS) {
 			teamgame = false;
