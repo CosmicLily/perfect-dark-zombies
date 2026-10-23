@@ -599,7 +599,11 @@ void gsetPopulateFromCurrentPlayer(s32 handnum, struct gset *gset)
 	gset->unk063a = g_Vars.currentplayer->hands[handnum].gset.unk063a;
 	gset->unk0639 = g_Vars.currentplayer->hands[handnum].gset.unk0639;
 
-	if (weaponHost(gset->weaponnum) == WEAPON_MAULER) {
+	if (weaponHost(gset->weaponnum) == WEAPON_MAULER
+#ifndef PLATFORM_N64
+			|| gset->weaponnum == WEAPON_ZM_RAYGUN
+#endif
+			) {
 		gset->unk063a = g_Vars.currentplayer->hands[handnum].matmot1 * 10.0f;
 	}
 
@@ -686,6 +690,13 @@ f32 gsetGetDamage(struct gset *gset)
 	if (weaponHost(gset->weaponnum) == WEAPON_MAULER) {
 		damage = (gset->unk063a / 3.0f + 1.0f) * damage;
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies' Ray Gun's burst: twice as hard at its whole charge of three
+	if (gset->weaponnum == WEAPON_ZM_RAYGUN && gset->weaponfunc == FUNC_SECONDARY) {
+		damage = (gset->unk063a / 30.0f + 1.0f) * damage;
+	}
+#endif
 
 #ifndef PLATFORM_N64
 	// A pair of GoldenEye's guns is not doubled: each bullet does its

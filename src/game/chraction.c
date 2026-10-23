@@ -96,6 +96,9 @@ bool zombiesInstaKillOn(void);
 s32 zombiesDoorBarsChrs(struct prop *doorprop);
 f32 zombiesBulletScale(struct prop *aprop);
 bool zombiesPhdShrugs(struct chrdata *chr);
+f32 zombiesBlowDamage(void);
+bool zombiesZombieSwipe(struct chrdata *zchr);
+bool zombiesCodOwnsBlows(void);
 s32 zombiesDeadshotHitpart(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, bool explosion);
 void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim);
 
@@ -4133,7 +4136,13 @@ void chrReactToDamage(struct chrdata *chr, struct coord *vector, f32 angle, s32 
 		if (race == RACE_DRCAROLL) {
 			chrBeginArgh(chr, 0, 0);
 		}
-	} else if (!knockedout) {
+	} else if (!knockedout
+#ifndef PLATFORM_N64
+			// Zombies: Black Ops II's zombies keep coming when shot, no flinch
+			// and no stagger back (zombies.inc)
+			&& !(chr->aibot && zombiesCodOwnsBlows())
+#endif
+			) {
 		chrBeginArgh(chr, angle, hitpart);
 	}
 }
@@ -4442,6 +4451,14 @@ void chrChoke(struct chrdata *chr, s32 choketype)
 	static s32 nextindexshock = 0;
 	static s32 nextindexmale = 0;
 	static s32 nextindexfemale = 0;
+
+#ifndef PLATFORM_N64
+	// Zombies: Black Ops II's zombies make no man's grunts when shot, and die
+	// with their own cries (zombies.inc, zombiesAwardHit())
+	if (chr->aibot && zombiesCodOwnsBlows()) {
+		return;
+	}
+#endif
 
 	if (g_NetMode == NETMODE_SERVER) netEvChoke(chr, choketype); // netplay E4
 
@@ -5178,8 +5195,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		if (vprop->type == PROPTYPE_PLAYER) {
 			s32 prevplayernum = g_Vars.currentplayernum;
 			setCurrentPlayerNum(playermgrGetPlayerNumByProp(vprop));
-			damage *= g_Vars.currentplayerstats->damagescale;
-			setCurrentPlayerNum(prevplayernum);
+			damage *= g_Vars.currentplayerstats->damagescale;			setCurrentPlayerNum(prevplayernum);
 
 			// Zombies' Juggernog: more health, as the solo modes' scale is
 			if (zombiesIsActive()) {
@@ -5547,6 +5563,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		// Handle situations where the player is the one being shot, then return
 		if (vprop->type == PROPTYPE_PLAYER) {
 			s32 prevplayernum = g_Vars.currentplayernum;
+
+#ifndef PLATFORM_N64
+			// Zombies: a zombie's blow lands - its attack cry - unless it is
+			// still behind a barrier's boards (zombies.inc)
+			if (aprop && aprop->type == PROPTYPE_CHR && aprop->chr && aprop->chr->aibot
+					&& zombiesZombieSwipe(aprop->chr)) {
+				return;
+			}
+#endif
 			setCurrentPlayerNum(playermgrGetPlayerNumByProp(vprop));
 
 			if (g_Vars.normmplayerisrunning) {
@@ -5556,6 +5581,12 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 #ifndef PLATFORM_N64
 			// GoldenEye's record_damage_kills(): a quarter of it in the tank
 			damage *= geTankDamageScale();
+
+			// Zombies: a zombie's blow is the same however it lands - not
+			// turned by its side, the torso, the handicap or a slider
+			if (zombiesBlowDamage() >= 0) {
+				damage = zombiesBlowDamage();
+			}
 #endif
 
 			if (g_Vars.currentplayer->isdead == false && !g_PlayerInvincible) {
@@ -5596,7 +5627,6 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				// Handle player damage
 				if (g_Vars.currentplayer->invincible == false && damage > 0) {
 					f32 statsamount = amount = damage * 0.125f;
-
 					if (statsamount > g_Vars.currentplayer->bondhealth) {
 						statsamount = g_Vars.currentplayer->bondhealth;
 					}
@@ -9495,6 +9525,14 @@ void chrPunchInflictDamage(struct chrdata *chr, s32 damage, s32 range, u8 revers
 	struct coord vector;
 
 	if (chr->aibot) {
+#ifndef PLATFORM_N64
+		// Zombies: Black Ops II's zombie deals its blows at its own swipe's
+		// (zombies.inc, zombiesTickSwings()); the body under it hurts no one
+		if (zombiesCodOwnsBlows()) {
+			return;
+		}
+#endif
+
 		gset.weaponnum = chr->aibot->weaponnum;
 		gset.weaponfunc = chr->aibot->gunfunc;
 

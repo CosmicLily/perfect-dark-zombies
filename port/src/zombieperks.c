@@ -100,17 +100,20 @@ struct menuimage *zombiePerkImage(s32 perk)
 /**
  * Zombies' own settings, in pd.ini's [Game] and on the Zombies Options page of
  * the Combat Simulator's setup (scenarios/zombies.inc's menu): how many points
- * a match starts with (Call of Duty's 500), the round it starts on, and the
- * power-ups, the round music and the zombies' groans each on or off.
+ * a match starts with (Call of Duty's 500), the round it starts on, how many
+ * perks a player may have at once, and the power-ups, the round music and the
+ * zombies' groans each on or off.
  */
 s32 g_ZombieCfgStartPoints = 20000;
 s32 g_ZombieCfgStartRound = 1;
 s32 g_ZombieCfgPowerups = 1;
 s32 g_ZombieCfgRoundMusic = 1;
 s32 g_ZombieCfgGroans = 1;
+s32 g_ZombieCfgPerkLimit = 4; // perks a player may have at once, Black Ops II's four; 9 and over is all nine
 
 PD_CONSTRUCTOR static void zombieConfigInit(void)
 {
+	configRegisterInt("Game.ZombiesPerkLimit", &g_ZombieCfgPerkLimit, 1, 99);
 	configRegisterInt("Game.ZombiesStartPoints", &g_ZombieCfgStartPoints, 0, 1000000);
 	configRegisterInt("Game.ZombiesStartRound", &g_ZombieCfgStartRound, 1, 100);
 	configRegisterInt("Game.ZombiesPowerups", &g_ZombieCfgPowerups, 0, 1);

@@ -5,9 +5,10 @@ Black Ops II's third person grenade throw retargeted onto Perfect Dark's body
 chest and the arms through Call of Duty's torso clips, laid over whatever the
 body's own animation has the legs and the pelvis doing.
 
-    python3 tools/zombies/throwbake.py <xanim dir> <body.glb> <out.ztb> [check.png]
+    python3 tools/zombies/throwbake.py <xanim dir>[,<xanim dir>...] <body.glb> <out.ztb> [check.png]
 
-<xanim dir> is an OpenAssetTools dump of common_zm's xanim/ (CLIPS below);
+<xanim dir> is an OpenAssetTools dump of common_zm's xanim/ (CLIPS below), and
+zm_buried's for the drink, each clip taken from the first that has it;
 <body.glb> any Black Ops II body with its standard human skeleton (zm_prison's
 c_zom_inmate_body1_lod0.glb), as divebake.py takes. With check.png, a sheet of
 stick figures from the side, every fourth frame: Call of Duty's skeleton
@@ -21,8 +22,8 @@ is kept is relative, so the body's own pose carries it: the chest's turn in
 the pelvis's frame, and each arm part's in the chest's.
 
 out.ztb, little endian:
-    "ZTB1", u16 clips (CLIPS' order), u16 parts (7: the chest, part 2, then
-    parts 3 to 8, the arms)
+    "ZTB1", u16 clips (CLIPS' order), u16 parts (8: the chest, part 2, then
+    parts 3 to 8, the arms, then the head's turn in the chest's, from the bind's)
     per clip: u16 frames, u16 0, f32 frames a second, then per frame the
     chest's 3x3 turn in the pelvis's axes and each arm part's in the chest's,
     row major, each from the part's rest axes.
@@ -33,11 +34,25 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from divebake import (PD, add, apply, draw_sheet, hinge_signs, leg_length, load_skeleton,  # noqa: E402
-                      matmul, pose, posed_pd, retarget, scale, to_pd, transpose)
+from divebake import (PD, add, apply, draw_sheet, frame, hinge_signs, leg_length, load_skeleton,  # noqa: E402
+                      matmul, pd_rest, pose, posed_pd, retarget, scale, sub, to_pd, transpose)
 from xanim import XAnim  # noqa: E402
 
-CLIPS = ("pt_hold_throw", "pt_grenade_stand_throw", "pt_crouch_grenade_throw", "pt_prone_grenade_throw")
+# The fifth is a perk's drink (zm_buried's xanim/, p_zombie_perkacola_drink):
+# a whole body's clip, not a torso's, so its own torso_stabilizer is kept
+CLIPS = ("pt_hold_throw", "pt_grenade_stand_throw", "pt_crouch_grenade_throw", "pt_prone_grenade_throw",
+         "p_zombie_perkacola_drink")
+
+
+def find_clip(xdirs, name):
+    """A clip from the first of the dirs that has it"""
+    for d in xdirs:
+        path = os.path.join(d, name)
+
+        if os.path.exists(path):
+            return path
+
+    raise SystemExit("%s: in none of %s" % (name, ", ".join(xdirs)))
 IDENTITY = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, 0])
 
 
@@ -60,8 +75,18 @@ class Torso:
         return self.anim.sample(name, f)
 
 
+def head_rel(w, R):
+    """The head's turn in the chest's frame, as the chest's own is taken: up the
+    neck (j_neck to j_head), across the shoulders"""
+    P = {n: to_pd(p) for n, (p, r) in w.items()}
+    Q = pd_rest()
+    head = matmul(frame(sub(P["j_head"], P["j_neck"]), sub(P["j_shoulder_le"], P["j_shoulder_ri"])),
+                  transpose(frame([0, 1, 0], sub(Q[3], Q[4]))))
+    return matmul(transpose(R[2]), head)
+
+
 def main():
-    xdir, glb, out = sys.argv[1:4]
+    xdirs, glb, out = sys.argv[1].split(","), sys.argv[2], sys.argv[3]
     check = sys.argv[4] if len(sys.argv) > 4 else None
     bones = load_skeleton(glb)
     signs = hinge_signs(bones)
@@ -69,11 +94,14 @@ def main():
     cod_leg = sum(sum(v * v for v in t) ** 0.5 for n, p, t, q in bones if n in ("j_knee_le", "j_ankle_le"))
     k = leg_length() / cod_leg
 
-    data = bytearray(b"ZTB1" + struct.pack("<2H", len(CLIPS), 7))
+    data = bytearray(b"ZTB1" + struct.pack("<2H", len(CLIPS), 8))
+    bind = pose(bones, None, 0, IDENTITY)
+    head_bind = transpose(head_rel(bind, retarget(bind, signs, k)[0]))
     panels = []
 
     for name in CLIPS:
-        a = Torso(XAnim(os.path.join(xdir, name)), bones)
+        anim = XAnim(find_clip(xdirs, name))
+        a = Torso(anim, bones) if name.startswith("pt_") else anim
         data += struct.pack("<2Hf", a.frames, 0, a.framerate)
 
         for f in range(a.frames):
@@ -85,6 +113,9 @@ def main():
             for j in range(3, 9):
                 rel = matmul(transpose(R[2]), R[j])
                 data += struct.pack("<9f", *(rel[0] + rel[1] + rel[2]))
+
+            head = matmul(head_rel(w, R), head_bind)
+            data += struct.pack("<9f", *(head[0] + head[1] + head[2]))
 
             if check and f % 4 == 0:
                 cod = []

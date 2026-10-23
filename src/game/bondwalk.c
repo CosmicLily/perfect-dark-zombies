@@ -682,6 +682,26 @@ bool bwalkIsRolling(void)
 void bwalkTryJump(void)
 {
 	if (g_NetMode == NETMODE_CLIENT) netPredictJumpTry(); // netplay: a replay of this tick tries the jump again
+
+#ifndef PLATFORM_N64
+	// Zombies, as Black Ops II: jump from a crouch or from prone stands up
+	// rather than jumping (where there is room to; never while down). The
+	// crouch keys and the stance button still get up as well.
+	if (zombiesIsActive() && g_Vars.currentplayer->crouchpos != CROUCHPOS_STAND) {
+		const s32 oldcrouchpos = g_Vars.currentplayer->crouchpos;
+
+		if (!zombiesIsPlayerDowned(g_Vars.currentplayernum)) {
+			g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
+
+			while (g_Vars.currentplayer->crouchpos > oldcrouchpos && !bwalkCanUncrouch()) {
+				g_Vars.currentplayer->crouchpos--;
+			}
+		}
+
+		return;
+	}
+#endif
+
 	if (!modIsJumpEnabled()
 			|| g_Vars.currentplayer->bondmovemode != MOVEMODE_WALK
 #ifndef PLATFORM_N64

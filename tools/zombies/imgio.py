@@ -136,8 +136,30 @@ def _alpha_block(block):
     return [pal[(bits >> (3 * i)) & 7] for i in range(16)]
 
 
+def _dds_uncompressed(data, path, width, height):
+    """An uncompressed 32-bit DDS (an effect's picture), by its channel masks"""
+    bits, rmask, gmask, bmask, amask = struct.unpack_from("<5I", data, 88)
+
+    if bits != 32:
+        raise ValueError("%s: an uncompressed DDS of %d bits, only 32 are read" % (path, bits))
+
+    def shift(mask):
+        return (mask & -mask).bit_length() - 1 if mask else 0
+
+    masks = [(m, shift(m)) for m in (rmask, gmask, bmask, amask)]
+    out = bytearray(width * height * 4)
+
+    for i in range(width * height):
+        v = struct.unpack_from("<I", data, 128 + i * 4)[0]
+
+        for k, (m, s) in enumerate(masks):
+            out[i * 4 + k] = (v & m) >> s if m else 255
+
+    return bytes(out)
+
+
 def dds_read(path):
-    """A DXT1, DXT3 or DXT5 DDS's top mip level"""
+    """A DXT1, DXT3 or DXT5 DDS's top mip level, or an uncompressed 32-bit one's"""
     data = open(path, "rb").read()
 
     if data[:4] != b"DDS ":
@@ -145,6 +167,10 @@ def dds_read(path):
 
     height, width = struct.unpack_from("<II", data, 12)
     fourcc = data[84:88]
+
+    # DDPF_RGB without a fourcc
+    if fourcc == b"\0\0\0\0" and struct.unpack_from("<I", data, 80)[0] & 0x40:
+        return width, height, _dds_uncompressed(data, path, width, height)
 
     if fourcc not in (b"DXT1", b"DXT3", b"DXT5"):
         raise ValueError("%s: %s, only DXT1, DXT3 and DXT5 are read" % (path, fourcc))

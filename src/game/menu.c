@@ -4462,6 +4462,12 @@ void func0f0f85e0(struct menudialogdef *dialogdef, s32 root)
 
 u32 g_MenuCThresh = 120;
 
+#ifndef PLATFORM_N64
+// A pause opened this frame (mpPushPauseDialog()): the press that opened it
+// is not the menu's back or Start as well, which shut it as it opened
+bool g_MenuPauseJustOpened = false;
+#endif
+
 Gfx *menuRenderDialog(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool lightweight)
 {
 #ifndef PLATFORM_N64
@@ -5626,8 +5632,9 @@ void menuProcessInput(void)
 	inputs.mousey = 0;
 	// only allow mouse controls for player 1 menus (netplay: this machine's player's)
 	if (NET_LOCAL_UI(menu->playernum)) {
-		// ESC always acts as back
-		inputs.back = inputKeyJustPressed(VK_ESCAPE);
+		// ESC always acts as back - but not the press that opened the pause
+		// this frame (mpPushPauseDialog()): that shut it again at once
+		inputs.back = inputKeyJustPressed(VK_ESCAPE) && !g_MenuPauseJustOpened;
 		if (inputMouseIsEnabled() && !inputMouseIsLocked() && g_MenuMouseControl) {
 			inputs.mouseheld = inputKeyPressed(VK_MOUSE_LEFT);
 			if (!inputs.mouseheld) {
@@ -6131,6 +6138,16 @@ void menuProcessInput(void)
 		inputs.xaxis = stickx;
 		inputs.yaxis = sticky;
 		inputs.unk14 = 0;
+
+#ifndef PLATFORM_N64
+		// the Start (or ESC, Zombies' Start) that opened the pause this very
+		// frame is not also the press that shuts it (mpPushPauseDialog())
+		if (g_MenuPauseJustOpened) {
+			starttap = false;
+			g_MenuPauseJustOpened = false;
+		}
+#endif
+
 		inputs.start = starttap ? true : false;
 
 #ifndef PLATFORM_N64

@@ -22,6 +22,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "modloader.h"
+#include "input.h"
 #endif
 
 // read only by the Japanese layout (JPNLAYOUT), which a CJK pack selects
@@ -847,7 +848,26 @@ void mpPushPauseDialog(void)
 		if (g_Menus[g_MpPlayerNum].openinhibit == 0) {
 			g_Menus[g_MpPlayerNum].playernum = g_Vars.currentplayernum;
 
+#ifndef PLATFORM_N64
+			// the press that opens it (Start, or ESC) is not the menu's back
+			// or Start as well, which shut the pause the moment it opened
+			// (menu.c)
+			{
+				extern bool g_MenuPauseJustOpened;
+
+				g_MenuPauseJustOpened = true;
+			}
+#endif
+
 			if (g_Vars.normmplayerisrunning) {
+#ifndef PLATFORM_N64
+				// Zombies has a pause of its own (zombies.inc): no rankings
+				if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+					extern struct menudialogdef g_ZombiesPauseMenuDialog;
+
+					menuPushRootDialog(&g_ZombiesPauseMenuDialog, MENUROOT_MPPAUSE);
+				} else
+#endif
 				if (g_MpSetup.options & MPOPTION_TEAMSENABLED) {
 					menuPushRootDialog(&g_MpPauseTeamRankingsMenuDialog, MENUROOT_MPPAUSE);
 				} else {

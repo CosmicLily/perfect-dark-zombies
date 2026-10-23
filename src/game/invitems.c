@@ -1199,22 +1199,57 @@ struct weaponfunc_shootauto invfunc_zm_raygun_shot = {
 	0, // turretdecel
 };
 
+// The Ray Gun's second function: the Mauler's charge wound up while it is
+// chosen (bgunTickMaulerCharge()), let go as a burst of three bolts, the
+// Mark II's, each the harder for the charge (gsetGetDamage(), zombies.inc)
+struct weaponfunc_shootsingle invfunc_zm_raygun_burst = {
+	INVENTORYFUNCTYPE_SHOOT_SINGLE,
+	L_GUN_129, // name (zombies.inc names it)
+	0, // unused
+	0, // ammoindex
+	&invnoisesettings_default,
+	invanim_phoenix_shoot, // fire animation
+	FUNCFLAG_EXPLOSIVESHELLS | FUNCFLAG_BURST3,
+	&invrecoilsettings_default,
+	0, // recoverytime60
+	1.2, // damage
+	3, // spread
+	13, 15, 25, 0,
+	15, // recoildist
+	25, // recoilangle
+	59.999996185303, // slidemax
+	0, // impactforce
+	0, // duration60
+	SFX_8072, // shootsound
+	1, // penetration
+};
+
+// The Phoenix's reload without the Farsight's sound it plays: the Ray Gun's
+// own, Black Ops II's, are played over it (zombies.inc, zmsfx.c)
+struct guncmd invanim_zm_raygun_reload[] = {
+	gunscript_playanimation(ANIM_GUN_PHOENIX_RELOAD, 0, 10000)
+	gunscript_showpart(1, MODELPART_HAND_LEFT)
+	gunscript_showpart(1, MODELPART_PHOENIX_ORB)
+	gunscript_hidepart(50, MODELPART_PHOENIX_ORB)
+	gunscript_end
+};
+
 struct inventory_ammo invammo_zm_raygun = {
 	AMMOTYPE_RAYGUN,
 	CASING_NONE,
 	20, // clip size
-	invanim_phoenix_equiporreload, // reload animation
+	invanim_zm_raygun_reload, // reload animation
 	0, // flags
 };
 
 struct weapon invitem_zm_raygun = {
 	FILE_GMAIANPISTOL, // hi model
 	FILE_GMAYANPISTOLLOD, // lo model
-	invanim_phoenix_equiporreload, // equip animation
+	invanim_zm_raygun_reload, // equip animation (silent: its pullout is its own)
 	NULL, // unequip animation
 	NULL, // pritosec animation
 	NULL, // sectopri animation
-	{ &invfunc_zm_raygun_shot, NULL }, // functions
+	{ &invfunc_zm_raygun_shot, &invfunc_zm_raygun_burst }, // functions
 	&invammo_zm_raygun, // pri ammo
 	NULL, // sec ammo
 	&invaimsettings_default,
@@ -1229,7 +1264,11 @@ struct weapon invitem_zm_raygun = {
 	L_GUN_014, // name
 	L_GUN_153, // manufacturer
 	L_GUN_163, // description
-	WEAPONFLAG_00000004 | WEAPONFLAG_ONEHANDED | WEAPONFLAG_DUALFLIP | WEAPONFLAG_00000040 | WEAPONFLAG_00000400 | WEAPONFLAG_00002000 | WEAPONFLAG_00004000 | WEAPONFLAG_00008000 | WEAPONFLAG_HASHANDS | WEAPONFLAG_GANGSTA,
+	WEAPONFLAG_00000004 | WEAPONFLAG_ONEHANDED | WEAPONFLAG_AICANUSE | WEAPONFLAG_DUALFLIP | WEAPONFLAG_00000040 | WEAPONFLAG_00000400 | WEAPONFLAG_00002000 | WEAPONFLAG_00004000 | WEAPONFLAG_00008000 | WEAPONFLAG_HASHANDS | WEAPONFLAG_GANGSTA,
+	WEAPONFLAG2_CHARGEABLE, // flags2
+	0, // unequipped reload index
+	0, // pickup sound
+	WEAPONFLAG3_CHARGESPENT, // flags3
 };
 #endif
 

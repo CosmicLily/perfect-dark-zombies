@@ -61,6 +61,12 @@ struct menudialogdef g_CiControlPlayer2MenuDialog;
 struct menudialogdef g_CinemaMenuDialog;
 #ifndef PLATFORM_N64
 extern struct menudialogdef g_ExtendedMenuDialog;
+// port/src/optionsmenu.c: Extended Audio's surround rows and Extended Video's
+// page, which are the Audio and Video pages' own on the PC
+MenuItemHandlerResult optionsMenuHandlerSurroundOutput(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult optionsMenuHandlerSurroundLfe(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult optionsMenuHandlerHeadphoneRoom(s32 operation, struct menuitem *item, union handlerdata *data);
+extern struct menuitem g_ExtendedVideoMenuItems[];
 #endif
 
 char *menuTextCurrentStageName(struct menuitem *item)
@@ -2464,6 +2470,34 @@ struct menuitem g_AudioOptionsMenuItems[] = {
 		0,
 		menuhandlerSoundMode,
 	},
+#ifndef PLATFORM_N64
+	// Extended Audio's surround rows (port/src/optionsmenu.c), on the page
+	// only while Sound Mode is Surround
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Surround Output",
+		0,
+		optionsMenuHandlerSurroundOutput,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Subwoofer",
+		100,
+		optionsMenuHandlerSurroundLfe,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Headphone Room",
+		100,
+		optionsMenuHandlerHeadphoneRoom,
+	},
+#endif
 #if VERSION != VERSION_JPN_FINAL
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -2704,7 +2738,13 @@ struct menuitem g_2PMissionVideoOptionsMenuItems[] = {
 struct menudialogdef g_VideoOptionsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_OPTIONS_214, // "Video Options"
+#ifdef PLATFORM_N64
 	g_VideoOptionsMenuItems,
+#else
+	// Extended Video's, with this page's own Screen Size and 2-Player Screen
+	// Split first (optionsmenu.c); no Alternative Title Screen
+	g_ExtendedVideoMenuItems,
+#endif
 	NULL,
 	0,
 	NULL,
@@ -3289,7 +3329,16 @@ struct menudialogdef g_CiControlOptionsMenuDialog2 = {
 };
 #endif
 
+#ifndef PLATFORM_N64
+// port/src/optionsmenu.c: the pages Extended Options had, from Control
+MenuItemHandlerResult optionsMenuHandlerKeyboardMouse(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult optionsMenuHandlerController(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult optionsMenuHandlerGame(s32 operation, struct menuitem *item, union handlerdata *data);
+extern struct menudialogdef g_ExtendedMouseMenuDialog;
+#endif
+
 struct menuitem g_CiControlOptionsMenuItems[] = {
+#ifdef PLATFORM_N64
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3298,6 +3347,7 @@ struct menuitem g_CiControlOptionsMenuItems[] = {
 		(uintptr_t)&func0f105664,
 		(void *)&g_CiControlStyleMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -3338,6 +3388,48 @@ struct menuitem g_CiControlOptionsMenuItems[] = {
 		0x00000004,
 		menuhandlerAimControl,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Keyboard & Mouse\n",
+		0,
+		optionsMenuHandlerKeyboardMouse,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Mouse\n",
+		0,
+		(void *)&g_ExtendedMouseMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Controller\n",
+		0,
+		optionsMenuHandlerController,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Game\n",
+		0,
+		optionsMenuHandlerGame,
+	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -3728,6 +3820,9 @@ struct menuitem g_CiOptionsMenuItems[] = {
 		3,
 		(void *)&g_CiControlOptionsMenuDialog,
 	},
+#ifdef PLATFORM_N64
+	// The PC's Settings have no Display, Cheats or Cinema: the Display
+	// page's sights and ammo are Zombies' own HUD's there
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3752,7 +3847,7 @@ struct menuitem g_CiOptionsMenuItems[] = {
 		6,
 		(void *)&g_CinemaMenuDialog,
 	},
-#ifndef PLATFORM_N64
+#else
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3776,10 +3871,17 @@ struct menudialogdef g_SoloMissionOptionsMenuDialog = {
 
 struct menudialogdef g_CiOptionsViaPcMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
+#ifdef PLATFORM_N64
 	L_OPTIONS_180, // "Options"
 	g_CiOptionsMenuItems,
 	menudialog0010559c,
 	0,
+#else
+	(uintptr_t)"Settings",
+	g_CiOptionsMenuItems,
+	menudialog0010559c,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+#endif
 	NULL,
 };
 
@@ -5595,11 +5697,35 @@ struct menuitem g_MainMenuMenuItems[] = {
 void scenarioInit(void);
 
 /**
- * Zombies, straight from the Perfect Menu: the Combat Simulator's Advanced
- * Setup with its scenario already Zombies, as the scenario list's own choice
- * sets it (scenarios.c, scenarioInit(), which offers nothing else), the
- * Combat Simulator's own page passed by: what it settles as it opens and
- * while it shows (menudialogCombatSimulator()) settled here.
+ * The player's name in a Zombies game is the agent's (the Perfect Menu's
+ * file): player 1's, every time Zombies is entered from here, so Player
+ * Setup has no Name of its own (setup.c).
+ */
+static void mainMenuZombiesNameFromAgent(void)
+{
+	char *name = g_PlayerConfigsArray[0].base.name;
+	s32 i;
+
+	if (g_GameFile.name[0] == '\0') {
+		return;
+	}
+
+	for (i = 0; i < (s32)sizeof(g_PlayerConfigsArray[0].base.name) - 2
+			&& i < (s32)sizeof(g_GameFile.name)
+			&& g_GameFile.name[i] != '\0' && g_GameFile.name[i] != '\n'; i++) {
+		name[i] = g_GameFile.name[i];
+	}
+
+	name[i++] = '\n';
+	name[i] = '\0';
+}
+
+/**
+ * Zombies' Solo, from the Perfect Menu's Zombies: the Combat Simulator's
+ * Advanced Setup with its scenario already Zombies, as the scenario list's
+ * own choice sets it (scenarios.c, scenarioInit(), which offers nothing
+ * else), the Combat Simulator's own page passed by: what it settles as it
+ * opens and while it shows (menudialogCombatSimulator()) settled here.
  */
 static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -5612,6 +5738,7 @@ static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct me
 		challengeDetermineUnlockedFeatures();
 		g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
 		scenarioInit();
+		mainMenuZombiesNameFromAgent();
 		g_Vars.waitingtojoin[0] = false;
 		g_Vars.waitingtojoin[1] = false;
 		g_Vars.waitingtojoin[2] = false;
@@ -5627,40 +5754,75 @@ static MenuItemHandlerResult menuhandlerMainMenuZombies(s32 operation, struct me
 	return 0;
 }
 
-// The online game, with Zombies its scenario before any room is made: the
-// one this build plays (scenarios.c offers no other)
+// Zombies' Online: the online game, with Zombies its scenario before any
+// room is made, the one this build plays (scenarios.c offers no other)
 static MenuItemHandlerResult menuhandlerMainMenuOnlineZombies(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	if (operation == MENUOP_SET && g_MpSetup.scenario != MPSCENARIO_ZOMBIES) {
-		g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
-		scenarioInit();
+	if (operation == MENUOP_SET) {
+		if (g_MpSetup.scenario != MPSCENARIO_ZOMBIES) {
+			g_MpSetup.scenario = MPSCENARIO_ZOMBIES;
+			scenarioInit();
+		}
+
+		mainMenuZombiesNameFromAgent();
 	}
 
 	return netLobbyMenuHandlerOnlineMain(operation, item, data);
 }
 
+// The Perfect Menu's Zombies asks which: online, or alone
+struct menuitem g_MainMenuZombiesModeMenuItems[] = {
+	{
+		// netplay: the lobby's rooms (port/src/netlobbymenu.c)
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Online",
+		0,
+		menuhandlerMainMenuOnlineZombies,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Solo",
+		0,
+		menuhandlerMainMenuZombies,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MainMenuZombiesModeMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Zombies",
+	g_MainMenuZombiesModeMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
 /**
- * The Perfect Menu as this build has it: Zombies, the online game, Check for
- * Updates and Exit Game, and nothing else (the full list is
- * g_MainMenuMenuItems, above, which nothing shows).
+ * The Perfect Menu as this build has it: Zombies (Online or Solo), Settings
+ * (the Options pages, a row of this page rather than the page left and right
+ * of it), Check for Updates and Quit. The full list is g_MainMenuMenuItems,
+ * above, which nothing shows.
  */
 struct menuitem g_MainMenuZombiesMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Zombies",
 		0x00000003,
-		menuhandlerMainMenuZombies,
+		(void *)&g_MainMenuZombiesModeMenuDialog,
 	},
 	{
-		// netplay: the lobby's rooms, one step from here (port/src/netlobbymenu.c)
 		MENUITEMTYPE_SELECTABLE,
 		0,
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Online Game",
-		0x00000010,
-		menuhandlerMainMenuOnlineZombies,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Settings",
+		0x00000008,
+		(void *)&g_CiOptionsViaPcMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -5674,15 +5836,20 @@ struct menuitem g_MainMenuZombiesMenuItems[] = {
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Exit Game",
+		(uintptr_t)"Quit",
 		0x00000007,
 		(void *)&g_ExitGameMenuDialog,
 	},
 	{ MENUITEMTYPE_END },
 };
 #define MAINMENU_ITEMS g_MainMenuZombiesMenuItems
+// no Options page beside the Perfect Menu: Settings is a row of it
+#define MAINMENU_OPTIONS_PC NULL
+#define MAINMENU_OPTIONS_PAUSE NULL
 #else
 #define MAINMENU_ITEMS g_MainMenuMenuItems
+#define MAINMENU_OPTIONS_PC &g_CiOptionsViaPcMenuDialog
+#define MAINMENU_OPTIONS_PAUSE &g_CiOptionsViaPauseMenuDialog
 #endif
 
 struct menudialogdef g_CiMenuViaPcMenuDialog = {
@@ -5691,7 +5858,7 @@ struct menudialogdef g_CiMenuViaPcMenuDialog = {
 	MAINMENU_ITEMS,
 	menudialogMainMenu,
 	MENUDIALOGFLAG_STARTSELECTS,
-	&g_CiOptionsViaPcMenuDialog,
+	MAINMENU_OPTIONS_PC,
 };
 
 struct menudialogdef g_CiMenuViaPauseMenuDialog = {
@@ -5700,7 +5867,7 @@ struct menudialogdef g_CiMenuViaPauseMenuDialog = {
 	MAINMENU_ITEMS,
 	menudialogMainMenu,
 	MENUDIALOGFLAG_STARTSELECTS,
-	&g_CiOptionsViaPauseMenuDialog,
+	MAINMENU_OPTIONS_PAUSE,
 };
 
 bool soloChoosePauseDialog(void)

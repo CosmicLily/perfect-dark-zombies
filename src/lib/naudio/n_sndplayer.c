@@ -9,6 +9,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "gesfx.h"
+#include "zmsfx.h"
 #endif
 
 u32 var8009c330;
@@ -128,6 +129,12 @@ static bool sndpEnvTooLong(struct sndstate *state, ALMicroTime *delta)
 		*delta = 5500000;
 		return false;
 	}
+
+	// Zombies' Black Ops II sounds play to their own length: its round music
+	// runs 9 and 14 seconds, its perks' jingles a minute (zmsfx.c)
+	if (zmSfxIsOurs(state->soundnum)) {
+		return false;
+	}
 #endif
 
 	return true;
@@ -241,7 +248,11 @@ void _n_handleEvent(N_ALSndpEvent *event)
 			} else {
 				sp40 = sound->envelope->decayTime / state->pitch / state->basepitch;
 
-				if (sp40 > 5500000) {
+				if (sp40 > 5500000
+#ifndef PLATFORM_N64
+						&& !zmSfxIsOurs(state->soundnum)
+#endif
+						) {
 					sp40 = 5500000;
 				}
 

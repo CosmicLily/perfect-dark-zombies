@@ -28,7 +28,8 @@ model (.zvm), little endian:
 
 animation (.zan):
     "ZAN1", u16 frames, u16 framerate, u16 tracks, u16 notes
-    per track: char bone[32], u16 rotation keys, u16 translation keys, then
+    per track: char bone[32] ("@delta": the root's own motion, translations
+        only), u16 rotation keys, u16 translation keys, then
         (u16 frame, f32 x y z w) each, then (u16 frame, f32 x y z) each
     per note: u16 frame, char name[46]
 """
@@ -45,6 +46,10 @@ from xanim import XAnim  # noqa: E402
 
 # y up to z up: the turn OpenAssetTools put on the root, taken off
 R = [[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0]]
+
+# the track a .zan carries the root's own motion in (tag_origin's delta,
+# xanim.py's delta_trans): translations only, where the root has got to
+DELTA_TRACK = "@delta"
 
 
 def inverse(m):
@@ -144,6 +149,17 @@ def model(src, imgdir, out):
             if tex is not None:
                 img = doc["images"][doc["textures"][tex["index"]]["source"]]
                 istem = os.path.splitext(os.path.basename(img.get("uri", "")))[0]
+
+                # OpenAssetTools takes a material's first picture for its
+                # colour: a zombie head's skin came out as the rim light's
+                # mask (c_gen_arm_rim_mask_norim_c), all black. The model's
+                # own colour map ("~-g..._c") is taken instead
+                if "mask" in istem:
+                    for other in doc["images"]:
+                        ostem = os.path.splitext(os.path.basename(other.get("uri", "")))[0]
+                        if ostem.startswith("~-g") and ostem.endswith("_c"):
+                            istem = ostem
+                            break
                 key = (istem, keep_alpha)
 
                 if key not in pictures:
@@ -191,12 +207,20 @@ def anim(src, out):
     a = XAnim(src)
     tracks = sorted(set(a.rot) | set(a.trans), key=a.names.index)
 
+    # the root's own motion (a zombie's board tear, aligned to the barrier,
+    # carries it to the boards and back) as one more track's translations
+    if a.delta_trans:
+        tracks.append(DELTA_TRACK)
+
     with open(out, "wb") as f:
         f.write(b"ZAN1" + struct.pack("<4H", a.frames, a.framerate, len(tracks), len(a.notes)))
 
         for name in tracks:
-            rot = a.rot.get(name, [])
-            trans = a.trans.get(name, [])
+            if name == DELTA_TRACK:
+                rot, trans = [], a.delta_trans
+            else:
+                rot = a.rot.get(name, [])
+                trans = a.trans.get(name, [])
             f.write(name_field(name, 32) + struct.pack("<2H", len(rot), len(trans)))
 
             for frame, q in rot:

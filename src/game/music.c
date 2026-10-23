@@ -658,6 +658,31 @@ void musicStartSting(s32 tracknum, s32 duration240)
 
 	musicRestoreInterval();
 }
+
+/**
+ * The level's music paused for duration240 with nothing in its place, then
+ * back as after a sting: for a piece played as a sound instead (Zombies'
+ * Black Ops II round music, zmsfx.c).
+ */
+void musicPauseFor(s32 duration240)
+{
+	musicSaveInterval();
+
+	musicQueueStopEvent(TRACKTYPE_MENU);
+	musicQueueStopEvent(TRACKTYPE_DEATH);
+	musicQueueStopEvent(TRACKTYPE_AMBIENT);
+
+	if (g_MusicNrgIsActive) {
+		musicQueueFadeEvent(TRACKTYPE_NRG, 0.1f, FADETYPE_PAUSE);
+	} else {
+		musicQueueFadeEvent(TRACKTYPE_PRIMARY, 0.1f, FADETYPE_PAUSE);
+	}
+
+	g_MusicDeathTimer240 = duration240;
+	g_MusicMpDeathIsPlaying = true;
+
+	musicRestoreInterval();
+}
 #endif
 
 void musicEndDeath(void)

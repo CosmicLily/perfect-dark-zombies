@@ -110,6 +110,10 @@ f32 zombiesSprintGunFrac(void);
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
+bool zombiesReachViewShift(s32 handnum, struct coord *shift);
+f32 zombiesHudIdleAlpha(void);
+bool zombiesHudWoke(void);
+bool zombiesLastStandHoldsGun(void);
 f32 zombiesHandRate(s32 handstate);
 bool zombiesIsWatchedFirstPerson(s32 playernum);
 #ifndef PLATFORM_N64
@@ -7707,6 +7711,7 @@ static bool bgunCycleEquipsPair(s32 right, s32 left)
 void bgunCycleForward(void)
 {
 	if (g_NetReplaying) return; // netplay: a prediction replay moves the player and does nothing else (netpredict.c)
+	if (zombiesLastStandHoldsGun()) return; // Zombies: the last stand's pistol stays in hand (zombies.inc)
 	s32 weaponnum1;
 	s32 weaponnum2;
 	struct player *player = g_Vars.currentplayer;
@@ -7759,6 +7764,7 @@ void bgunCycleForward(void)
 void bgunCycleBack(void)
 {
 	if (g_NetReplaying) return; // netplay: a prediction replay moves the player and does nothing else (netpredict.c)
+	if (zombiesLastStandHoldsGun()) return; // Zombies: the last stand's pistol stays in hand (zombies.inc)
 	s32 weaponnum1;
 	s32 weaponnum2;
 	struct player *player = g_Vars.currentplayer;
@@ -9120,6 +9126,83 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 			busy = true;
 		}
 
+#ifndef PLATFORM_N64
+		// Zombies: the laser goes where the barrel points, as Call of Duty's,
+		// and not to the crosshair; the stock one stayed pinned to the middle
+		// of the screen while the gun swung in a run. The dot is where a ray
+		// along the barrel stops (the query bgunAimThrowAtCrosshair() makes),
+		// the hands' own aim put back after it
+		if (zombiesIsActive() && !busy) {
+			Mtxf *nodemtx = (Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf));
+			struct player *player = g_Vars.currentplayer;
+			struct coord near2d;
+			struct coord dir2d;
+			struct coord dir3d;
+			struct coord hitpos[2];
+			bool hadinfo[2];
+			struct coord olddotpos[2];
+			struct coord olddotrot[2];
+			bool found;
+			f32 len;
+			s32 i;
+
+			near2d.x = nodemtx->m[3][0];
+			near2d.y = nodemtx->m[3][1];
+			near2d.z = nodemtx->m[3][2];
+
+			dir2d.x = nodemtx->m[2][0];
+			dir2d.y = nodemtx->m[2][1];
+			dir2d.z = nodemtx->m[2][2];
+
+			len = sqrtf(dir2d.x * dir2d.x + dir2d.y * dir2d.y + dir2d.z * dir2d.z);
+
+			if (len > 0.0001f) {
+				dir2d.x /= len;
+				dir2d.y /= len;
+				dir2d.z /= len;
+
+				mtx4RotateVec(camGetProjectionMtxF(), &dir2d, &dir3d);
+
+				for (i = 0; i < 2; i++) {
+					hadinfo[i] = player->hands[i].hasdotinfo;
+					olddotpos[i] = player->hands[i].dotpos;
+					olddotrot[i] = player->hands[i].dotrot;
+					hitpos[i] = player->hands[i].hitpos;
+					player->hands[i].hasdotinfo = false;
+				}
+
+				shotCalculateHits(handnum, false, &near2d, &dir2d, &beamnear, &dir3d, 0, 4294836224, false);
+
+				found = player->hands[HAND_RIGHT].hasdotinfo;
+				dotpos = player->hands[HAND_RIGHT].dotpos;
+				dotrot = player->hands[HAND_RIGHT].dotrot;
+
+				for (i = 0; i < 2; i++) {
+					player->hands[i].hasdotinfo = hadinfo[i];
+					player->hands[i].dotpos = olddotpos[i];
+					player->hands[i].dotrot = olddotrot[i];
+					player->hands[i].hitpos = hitpos[i];
+				}
+
+				if (found) {
+					beamfar = dotpos;
+				} else {
+					beamfar.x = beamnear.x + dir3d.x * 500.0f;
+					beamfar.y = beamnear.y + dir3d.y * 500.0f;
+					beamfar.z = beamnear.z + dir3d.z * 500.0f;
+				}
+
+				lasersightSetBeam(handnum, 1, &beamnear, &beamfar);
+
+				if (found && handnum == HAND_RIGHT) {
+					lasersightSetDot(handnum, &dotpos, &dotrot);
+				}
+
+				return;
+			}
+		}
+#endif
+
 		if (busy) {
 			mtxindex = modelFindNodeMtxIndex(node, 0);
 
@@ -9980,6 +10063,15 @@ void bgun0f0a5550(s32 handnum)
 		sp274.x += shift.x;
 		sp274.y += shift.y;
 		sp274.z += shift.z;
+	} else {
+		// Zombies' end: the hands reaching out as the view falls
+		struct coord shift;
+
+		if (zombiesReachViewShift(handnum, &shift)) {
+			sp274.x += shift.x;
+			sp274.y += shift.y;
+			sp274.z += shift.z;
+		}
 	}
 #endif
 
@@ -10626,6 +10718,28 @@ void bgun0f0a5550(s32 handnum)
 				if (WEAPON_IS_GE(weaponnum)
 						|| (hand->state != HANDSTATE_RELOAD && hand->state != HANDSTATE_CHANGEFUNC)) {
 					hand->codaimmuzzlex = hand->muzzlemat.m[3][0] - hand->cammtx.m[3][0];
+
+					// The Reaper's muzzle is one of its three barrels in
+					// turn, another each frame (above): at the sights the
+					// gun hopped between the three. Its middle is taken
+					if (weaponHasFlag2(weaponnum, WEAPONFLAG2_MINIGUN)) {
+						f32 sum = 0.0f;
+						s32 n = 0;
+						s32 b;
+
+						for (b = 0; b < 3; b++) {
+							struct modelnode *barrel = modelGetPart(modeldef, MODELPART_REAPER_001E + b);
+
+							if (barrel) {
+								sum += ((Mtxf *)mtxallocation + modelFindNodeMtxIndex(barrel, 0))->m[3][0];
+								n++;
+							}
+						}
+
+						if (n > 0) {
+							hand->codaimmuzzlex = sum / n - hand->cammtx.m[3][0];
+						}
+					}
 				}
 #endif
 
@@ -10780,6 +10894,12 @@ void bgunTickMaulerCharge(void)
 {
 	struct player *player = g_Vars.currentplayer;
 	s32 i;
+#ifndef PLATFORM_N64
+	// Zombies' Ray Gun winds up three rounds for its burst (invitems.c)
+	const f32 maxcharge = player->gunctrl.weaponnum == WEAPON_ZM_RAYGUN ? 3 : 5;
+#else
+	const f32 maxcharge = 5;
+#endif
 
 	for (i = 0; i < 2; i++) {
 		struct hand *hand = &player->hands[i];
@@ -10794,13 +10914,13 @@ void bgunTickMaulerCharge(void)
 				s32 oldvalue = hand->matmot1;
 				s32 newvalue;
 
-				if (hand->loadedammo[0] >= 2 && hand->matmot1 < 5) {
+				if (hand->loadedammo[0] >= 2 && hand->matmot1 < maxcharge) {
 					charging = true;
 					hand->matmot1 += g_Vars.lvupdate60freal * 0.05f;
 				}
 
-				if (hand->matmot1 > 5) {
-					hand->matmot1 = 5;
+				if (hand->matmot1 > maxcharge) {
+					hand->matmot1 = maxcharge;
 				}
 
 				newvalue = hand->matmot1;
@@ -10925,7 +11045,11 @@ void bgunTickGameplay2(void)
 		}
 	}
 
-	if (weaponHost(player->gunctrl.weaponnum) == WEAPON_MAULER) {
+	if (weaponHost(player->gunctrl.weaponnum) == WEAPON_MAULER
+#ifndef PLATFORM_N64
+			|| player->gunctrl.weaponnum == WEAPON_ZM_RAYGUN
+#endif
+			) {
 		bgunTickMaulerCharge();
 	}
 
@@ -16164,6 +16288,9 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	struct weapon *weapon = weaponFindById(player->gunctrl.weaponnum);
 	u32 alpha;
 	u32 fncolour;
+#ifndef PLATFORM_N64
+	f32 idlealpha = 1; // Zombies' quiet corner (zombiesHudIdleAlpha())
+#endif
 	s32 funcnum;
 	s32 fnfaderinc;
 #if VERSION >= VERSION_NTSC_1_0
@@ -16305,6 +16432,19 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	if (ctrl->fnfader > 128) {
 		fncolour = ((ctrl->fnfader * 2) - 256) << (g_ModColours[MODCOLOUR_AMMOFNSHIFT] & 31) | g_ModColours[MODCOLOUR_AMMOFNFADE];
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies: the corner fades when the gun has been quiet a while, and
+	// comes back with the gun's name (zombies.inc)
+	if (zombiesIsActive()) {
+		idlealpha = zombiesHudIdleAlpha();
+		fncolour = (fncolour & 0xffffff00) | (u32)((fncolour & 0xff) * idlealpha);
+
+		if (zombiesHudWoke()) {
+			ctrl->guntypetimer = 0;
+		}
+	}
+#endif
 
 	gdl = textSetPrimColour(gdl, fncolour);
 
@@ -16448,6 +16588,10 @@ Gfx *bgunDrawHud(Gfx *gdl)
 					alpha = 255 - (ctrl->fnstrtimer - 192) * 255 / 63U;
 					colour = (colour & 0xffffff00) | alpha;
 				}
+
+#ifndef PLATFORM_N64
+				colour = (colour & 0xffffff00) | (u32)((colour & 0xff) * idlealpha);
+#endif
 
 				gdl = textSetPrimColour(gdl, 0);
 

@@ -10,7 +10,8 @@
  * bright the camo is.
  *
  * vGrayscaleColor carries the camo's state: r and g are its phase, high and
- * low byte of a 16 bit turn, b is the style (0, the only one so far) and a its
+ * low byte of a 16 bit turn, b is the style (0 purple and blue, Pack-a-Punch's;
+ * 1 green and 2 red, the Ray Gun's coil plain and upgraded) and a its
  * strength. Every time term is a whole multiple of the phase, so the camo
  * loops without a jump as the phase wraps.
  */
@@ -31,8 +32,16 @@ std::string gfx_camo_fs(const struct CCFeatures& cc) {
          "                  + sin(cq.x + cq.y + 3.0 * cph)) / 3.0;\n"
          "        float cvein = pow(1.0 - clamp(abs(cw) * 4.0, 0.0, 1.0), 3.0);\n"
          "        float chue = 0.5 + 0.5 * sin(cw * 3.0 + cph + cq.x * 0.5);\n"
+         "        float cstyle = floor(vGrayscaleColor.b * 255.0 + 0.5);\n"
          "        vec3 cdeep = mix(vec3(0.22, 0.03, 0.48), vec3(0.03, 0.22, 0.62), chue);\n"
          "        vec3 cglow = mix(vec3(0.85, 0.35, 1.0), vec3(0.35, 0.85, 1.0), chue);\n"
+         "        if (cstyle > 1.5) {\n"
+         "            cdeep = mix(vec3(0.45, 0.02, 0.02), vec3(0.62, 0.10, 0.03), chue);\n"
+         "            cglow = mix(vec3(1.0, 0.30, 0.20), vec3(1.0, 0.65, 0.30), chue);\n"
+         "        } else if (cstyle > 0.5) {\n"
+         "            cdeep = mix(vec3(0.03, 0.32, 0.05), vec3(0.08, 0.50, 0.12), chue);\n"
+         "            cglow = mix(vec3(0.45, 1.0, 0.30), vec3(0.75, 1.0, 0.45), chue);\n"
+         "        }\n"
          "        float clum = dot(texel.rgb, vec3(0.299, 0.587, 0.114));\n"
          "        vec3 camo = cdeep * (0.45 + 1.2 * clum) + cglow * cvein * (0.6 + 0.6 * clum);\n"
          "        texel.rgb = mix(texel.rgb, clamp(camo, 0.0, 1.0), vGrayscaleColor.a);\n"

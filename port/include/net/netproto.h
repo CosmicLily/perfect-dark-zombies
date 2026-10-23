@@ -239,7 +239,17 @@
 // 37 (Zombies' Ray Gun, 2026-10-19): weapon 0x87 (WEAPON_ZM_RAYGUN, NUM_WEAPONS
 //    0x88) and its multiplayer row 0x51 (NUM_MPWEAPONS 0x52); a build without
 //    them would be handed a weapon number past its table
-#define NET_PROTOCOL_VERSION 37
+// 38 (Zombies' scoreboard, 2026-10-20): the Zombies body's version 5 ends,
+//    past the grenades, in each player's u16 kills, downs, revives and
+//    headshots (zombies.inc's g_ZombieStats, the scoreboard's)
+// 39 (Zombies' crawlers and barriers, 2026-10-21): the Zombies body's version
+//    6 ends, past the scoreboard, in ten bytes of crawlers (a bit a bot) and
+//    per barrier s8 its zombie, u16 its tear's 60ths, s8 the board pulled,
+//    s16 its climb's 60ths, s16 its reach's, u8 the reaching arm
+// 40 (Zombies' gibs, 2026-10-21): the Zombies body's version 7 ends in u8
+//    per bot (80) of what has been shot off it: 1 the left arm, 2 the right,
+//    4 the head
+#define NET_PROTOCOL_VERSION 40
 
 #define NETMSG_CONNECT    1
 #define NETMSG_ACCEPT     2

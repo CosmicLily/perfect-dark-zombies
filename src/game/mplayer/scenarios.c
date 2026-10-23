@@ -71,6 +71,8 @@
 #include "game/explosions.h"
 #include "input.h"
 #include "net/net.h"
+#include "zmsfx.h"
+#include "zmchar.h"
 #endif
 
 /**
@@ -203,6 +205,7 @@ MenuItemHandlerResult menuhandlerMpSlowMotion(s32 operation, struct menuitem *it
 
 // Include the code files where each scenario implements its callbacks
 #include "game/modrules.h"
+#include "game/modoptions.h"
 #include "scenarios/combat.inc"
 #include "scenarios/holdthebriefcase.inc"
 #include "scenarios/capturethecase.inc"

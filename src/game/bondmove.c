@@ -60,6 +60,7 @@ bool zombiesIsActive(void);
 void zombiesQuickMelee(void);
 bool zombiesTryDive(void);
 void zombiesTickDive(void);
+void zombiesStanceTick(s32 contpad);
 void zombiesSprintPress(void);
 void zombiesSprintTick(void);
 void zombiesGrenadePress(void);
@@ -1844,8 +1845,14 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 							// handle 1964GEPD style crouch setting
 							s32 crouchsample;
 							if (PLAYER_EXTCFG().crouchmode & CROUCHMODE_TOGGLE) {
-								// press to toggle crouch position
+								// press to toggle crouch position (Zombies' stance is
+								// the button's there, zombiesStanceTick() below)
 								crouchsample = joyGetButtonsPressedOnSample(i, contpad1, 0xffffffff) & BUTTON_CROUCH_CYCLE;
+#ifndef PLATFORM_N64
+								if (zombiesIsActive()) {
+									crouchsample = 0;
+								}
+#endif
 								if (crouchsample) {
 									if (g_Vars.currentplayer->crouchpos <= 0) {
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
@@ -1881,6 +1888,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								}
 							}
 						}
+#ifndef PLATFORM_N64
+						zombiesStanceTick(contpad1);
+#endif
+
 						// prevent uncrouching if we don't fit
 						while (g_Vars.currentplayer->crouchpos > oldcrouchpos && !bwalkCanUncrouch()) {
 							g_Vars.currentplayer->crouchpos--;

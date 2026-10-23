@@ -43,7 +43,7 @@
 #endif
 
 bool zombiesIsActive(void);
-f32 zombiesSpeedScale(void);
+f32 zombiesChrSpeedScale(struct chrdata *chr);
 
 #define PICKUPCRITERIA_DEFAULT  0
 #define PICKUPCRITERIA_CRITICAL 1
@@ -1421,9 +1421,9 @@ f32 botGetStatScale(struct chrdata *chr, s32 stat)
 	}
 
 	// Zombies: walkers in the first rounds, by the round rather than the
-	// slider, so a setup's own speeds are left as they were
+	// slider (a crawler at a crawl), so a setup's own speeds are left as they were
 	if (stat == BOTSTAT_SPEED && zombiesIsActive()) {
-		return zombiesSpeedScale();
+		return zombiesChrSpeedScale(chr);
 	}
 
 	value = chr->aibot->config->stats[stat];

@@ -32,6 +32,7 @@ void _musicStartMpDeath(f32 arg0);
 void musicStartMpDeath(void);
 #ifndef PLATFORM_N64
 void musicStartSting(s32 tracknum, s32 duration240);
+void musicPauseFor(s32 duration240);
 #endif
 void musicEndDeath(void);
 void musicPlayTrackIsolated(s32 tracknum);

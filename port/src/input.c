@@ -91,7 +91,11 @@ static s32 bindsLoaded = 0;
  * normal keys, NONE for one with none, else its keys; no line at all is the
  * default below.
  */
-#define ZLAYOUT_COUNT 10
+#define ZLAYOUT_COUNT 13
+
+#define ZLAYOUT_CROUCH 8
+#define ZLAYOUT_PAUSE  10
+#define ZLAYOUT_STANCE 12
 
 static const struct {
 	u32 ck;
@@ -107,6 +111,9 @@ static const struct {
 	{ CK_0400,  "Sprint" }, // the spectate button's (BUTTON_SPRINT): no spectating in Zombies
 	{ CK_4000,  "Crouch" }, // the half crouch's
 	{ CK_0800,  "Grenade" }, // the roll's (BUTTON_GRENADE): no roll in Zombies
+	{ CK_START, "Pause" }, // Call of Duty's: Escape, Start (Tab is the scoreboard's)
+	{ CK_0040,  "Scoreboard" }, // the left hand's trigger's (BUTTON_SCOREBOARD): no akimbo triggers in Zombies
+	{ CK_8000,  "Stance" }, // the crouch cycle's: a tap crouches, a hold lies prone (zombiesStanceTick())
 };
 
 static u32 zbinds[MAXCONTROLLERS][ZLAYOUT_COUNT][INPUT_MAX_BINDS];
@@ -974,9 +981,20 @@ static void inputZombiesLayoutDefaults(s32 ctrl)
 	zbinds[ctrl][7][0] = kb ? SDL_SCANCODE_LSHIFT : pad + SDL_CONTROLLER_BUTTON_LEFTSTICK;
 	zbinds[ctrl][7][1] = kb ? pad + SDL_CONTROLLER_BUTTON_LEFTSTICK : 0;
 
-	zover[ctrl][8] = 1; // crouch, Call of Duty's: C, B (Ctrl still lies prone)
-	zbinds[ctrl][8][0] = kb ? SDL_SCANCODE_C : pad + SDL_CONTROLLER_BUTTON_B;
-	zbinds[ctrl][8][1] = kb ? pad + SDL_CONTROLLER_BUTTON_B : 0;
+	zover[ctrl][ZLAYOUT_CROUCH] = 1; // crouch, Call of Duty's on a keyboard: C (Ctrl still lies prone)
+	zbinds[ctrl][ZLAYOUT_CROUCH][0] = kb ? SDL_SCANCODE_C : 0;
+
+	// a controller's B is its stance: tapped it crouches, held it lies prone
+	zover[ctrl][ZLAYOUT_STANCE] = 1;
+	zbinds[ctrl][ZLAYOUT_STANCE][0] = pad + SDL_CONTROLLER_BUTTON_B;
+
+	zover[ctrl][ZLAYOUT_PAUSE] = 1; // pause, Call of Duty's: Escape, Start
+	zbinds[ctrl][ZLAYOUT_PAUSE][0] = kb ? SDL_SCANCODE_ESCAPE : pad + SDL_CONTROLLER_BUTTON_START;
+	zbinds[ctrl][ZLAYOUT_PAUSE][1] = kb ? pad + SDL_CONTROLLER_BUTTON_START : 0;
+
+	zover[ctrl][11] = 1; // the scoreboard, Call of Duty's: Tab, Back
+	zbinds[ctrl][11][0] = kb ? SDL_SCANCODE_TAB : pad + SDL_CONTROLLER_BUTTON_BACK;
+	zbinds[ctrl][11][1] = kb ? pad + SDL_CONTROLLER_BUTTON_BACK : 0;
 
 	zover[ctrl][9] = 1; // grenade, Call of Duty's: G, the right bumper
 	zbinds[ctrl][9][0] = kb ? SDL_SCANCODE_G : pad + SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
@@ -1027,6 +1045,18 @@ static void inputZombiesLayoutLoad(s32 ctrl)
 
 			if (vk > 0) {
 				zbinds[ctrl][z][n++] = vk;
+			}
+		}
+	}
+
+	// a layout saved before the stance had a line: its crouch's B is the
+	// stance's now, which takes it as its default
+	if (!zbindStrs[ctrl][ZLAYOUT_STANCE][0]) {
+		const u32 padb = VK_JOY_BEGIN + ctrl * INPUT_MAX_CONTROLLER_BUTTONS + SDL_CONTROLLER_BUTTON_B;
+
+		for (s32 b = 0; b < INPUT_MAX_BINDS; ++b) {
+			if (zbinds[ctrl][ZLAYOUT_CROUCH][b] == padb) {
+				zbinds[ctrl][ZLAYOUT_CROUCH][b] = 0;
 			}
 		}
 	}
@@ -1481,9 +1511,10 @@ s32 inputInit(void)
 		inputSetDefaultKeyBinds(i, 0);
 	}
 
-	if (mouseLockMode != MLOCK_AUTO) {
-		inputLockMouse(mouseLockMode);
-	}
+	// the Mouse page has no Mouse Enabled or Mouse Lock Mode (optionsmenu.c):
+	// on, and locked as it is needed, whatever an older pd.ini says
+	mouseEnabled = 1;
+	mouseLockMode = MLOCK_AUTO;
 
 	// update the axis maps
 	// NOTE: by default sticks get swapped for 1.2: "right stick" here means left stick on your controller
@@ -1503,7 +1534,9 @@ static const u32 *inputLiveBinds(s32 idx, u32 ck, u32 out[INPUT_MAX_BINDS])
 {
 	s32 z;
 
-	if (!inputZombiesOn() || ck == CK_ACCEPT || ck == CK_CANCEL || ck == CK_START) {
+	// Start is the layout's Pause (Escape, Start) in a match, for its Tab to
+	// be the scoreboard's; the menus' accept and cancel keep all theirs
+	if (!inputZombiesOn() || ck == CK_ACCEPT || ck == CK_CANCEL) {
 		return binds[idx][ck];
 	}
 

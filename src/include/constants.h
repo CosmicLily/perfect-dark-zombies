@@ -195,7 +195,8 @@ s32 langpackIsCjk(void);
 // ITEM_TASER and ITEM_TANKSHELLS come just before it): a driver who switched
 // to a gun in the tank switches back to the shells the same way (F3
 // 20260929-062621). The shells are only in the inventory while he drives.
-#define INV_CYCLEABLE(weaponnum) ((weaponnum) < NUM_CYCLEABLE_WEAPONS || ((weaponnum) >= WEAPON_GE_FIRST && (weaponnum) < WEAPON_GE_FIRST + NUM_GE_GUNS) || (weaponnum) == WEAPON_GE_DETONATOR || (weaponnum) == WEAPON_GE_TANKSHELLS || ((weaponnum) >= WEAPON_GE_EXTRA1 && (weaponnum) <= WEAPON_GE_TASER))
+// Zombies' Ray Gun, past GoldenEye's block, is a gun like any other in the cycle.
+#define INV_CYCLEABLE(weaponnum) ((weaponnum) < NUM_CYCLEABLE_WEAPONS || ((weaponnum) >= WEAPON_GE_FIRST && (weaponnum) < WEAPON_GE_FIRST + NUM_GE_GUNS) || (weaponnum) == WEAPON_GE_DETONATOR || (weaponnum) == WEAPON_GE_TANKSHELLS || ((weaponnum) >= WEAPON_GE_EXTRA1 && (weaponnum) <= WEAPON_GE_TASER) || (weaponnum) == WEAPON_ZM_RAYGUN)
 #else
 #define INV_CYCLEABLE(weaponnum) ((weaponnum) < NUM_CYCLEABLE_WEAPONS)
 #endif
@@ -5321,6 +5322,8 @@ enum weaponnum {
 #define BUTTON_GRENADE        BUTTON_ROLL // Zombies' grenade, in Zombies' layout (no roll there)
 #define BUTTON_FIRELEFT       CONT_0040 // Akimbo Triggers: the left hand's own trigger
 #define BUTTON_FIREMODELEFT   CONT_0080 // Akimbo Triggers: the left hand's own fire mode toggle
+#define BUTTON_SCOREBOARD     BUTTON_FIRELEFT // Zombies' scoreboard, in Zombies' layout (no akimbo triggers there)
+#define BUTTON_STANCE         BUTTON_CROUCH_CYCLE // Zombies' stance, in Zombies' layout: a tap crouches, a hold lies prone
 
 #define BUTTON_UI_ACCEPT      CONT_0010
 #define BUTTON_UI_CANCEL      CONT_0020

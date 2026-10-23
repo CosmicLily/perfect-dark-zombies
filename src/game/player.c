@@ -136,6 +136,7 @@
 bool zombiesPlayerGoesDown(s32 playernum, bool force);
 s32 zombiesRespawnRule(s32 playernum);
 s32 zombiesDeadCameraTick(void);
+s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord *look);
 bool zombiesIsActive(void);
 s32 zombiesFirstPersonWatched(void);
 s32 zombiesStartAmmo(s32 weaponnum);
@@ -6554,6 +6555,9 @@ void playerTick(bool arg0)
 			player0f0c1840(&spf4, &camup, &camlook, &deathcamhint, deathcamrooms);
 		} else if (g_Vars.currentplayer->isdead && g_NetMode != NETMODE_NONE && netSpecDeadCameraTick()) {
 			// netplay: a dead co-op player watching the others (netspec.c)
+		} else if (zombiesGameOverCameraTick(&spf4, &camup, &camlook)) {
+			// Zombies' end: the fall to the floor, then the camera over the
+			// arena (zombies.inc)
 		} else if (g_Vars.currentplayer->isdead && zombiesDeadCameraTick()) {
 			// Zombies: a bled-out player watching the others until the next
 			// round (zombies.inc)

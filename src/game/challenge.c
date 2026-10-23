@@ -1089,6 +1089,11 @@ bool challengeIsFeatureUnlocked(s32 featurenum)
 	if (featurenum < 0 || featurenum >= ARRAYCOUNT(g_MpFeaturesUnlocked)) {
 		return false;
 	}
+
+	// This build is Zombies', and an agent made today has every arena,
+	// gun and option the Combat Simulator's challenges would have given
+	// it: nothing is locked behind them
+	return true;
 #endif
 
 	if ((g_ModUnlocks & MODUNLOCK_MPOPTIONS) && (featurenum == MPFEATURE_SLOWMOTION || featurenum == MPFEATURE_ONEHITKILLS)) {

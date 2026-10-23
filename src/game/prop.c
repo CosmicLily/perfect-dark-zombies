@@ -61,7 +61,8 @@
 #include "gebeanstage.h"
 
 #ifndef PLATFORM_N64
-bool zombiesShellBlast(struct gset *gset, struct coord *pos);
+bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms);
+bool zombiesIsActive(void);
 #endif
 
 bool zombiesKnifeStrike(bool landing);
@@ -1012,6 +1013,17 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 					objHit(&shotdata, &shotdata.hits[i]);
 				}
 
+#ifndef PLATFORM_N64
+				// Zombies' Ray Gun goes through glass, Skedar's light shafts
+				// among it: they are glass objects, and its shell burst on
+				// them short of the zombies behind
+				if (zombiesIsActive() && shotdata.gset.weaponnum == WEAPON_ZM_RAYGUN && obj
+						&& (hitprop->type == PROPTYPE_OBJ)
+						&& (obj->type == OBJTYPE_GLASS || obj->type == OBJTYPE_TINTEDGLASS)) {
+					continue;
+				}
+#endif
+
 				if (shotdata.hits[i].bulletproof) {
 					blockedbyprop = true;
 					doexplosiveshells = explosiveshells;
@@ -1039,7 +1051,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 					func0f065e74(&root->pos, root->rooms, &exppos, exprooms);
 #ifndef PLATFORM_N64
 					// Zombies' Ray Gun: its own blast and bolt, no explosion
-					if (!zombiesShellBlast(&shotdata.gset, &exppos))
+					if (!zombiesShellBlast(&shotdata.gset, &exppos, exprooms))
 #endif
 					explosionCreateSimple(0, &exppos, exprooms, EXPLOSIONTYPE_PHOENIX, g_Vars.currentplayernum);
 				}
@@ -1099,7 +1111,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 				if (explosiveshells) {
 #ifndef PLATFORM_N64
 					// Zombies' Ray Gun: its own blast and bolt, no explosion
-					if (!zombiesShellBlast(&shotdata.gset, &sp694.pos))
+					if (!zombiesShellBlast(&shotdata.gset, &sp694.pos, rooms2))
 #endif
 					explosionCreateSimple(NULL, &sp694.pos, rooms2, EXPLOSIONTYPE_PHOENIX, g_Vars.currentplayernum);
 				} else {

@@ -71,6 +71,8 @@ void zombiesPoseThrowArms(struct chrdata *chr, struct model *model);
 bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop);
 bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj);
 Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model);
+bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *chr);
+bool zombiesCodTestHit(struct prop *prop, struct shotdata *shotdata);
 
 /**
  * The floor under a chr. On a level converted from GoldenEye it is asked of
@@ -4774,7 +4776,10 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_PREPASS_EXT);
 			xblaMeshSetDepthPass(XBLAMESH_DEPTHPASS_DEPTH);
 
-			modelRender(&renderdata, model);
+			// Zombies: Black Ops II's zombie is drawn instead, below
+			if (!zombiesRenderCodZombie(&renderdata, chr)) {
+				modelRender(&renderdata, model);
+			}
 
 			for (child = prop->child; child; child = child->next) {
 				if (!zombiesBodyHidesHeld(chr, child)) {
@@ -4786,6 +4791,9 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			gSPSetExtraGeometryModeEXT(renderdata.gdl++, G_DEPTH_FRONT_EXT);
 			xblaMeshSetDepthPass(XBLAMESH_DEPTHPASS_FRONT);
 		}
+
+		// Zombies: Black Ops II's own zombie in place of the body (zombies.inc)
+		if (!zombiesRenderCodZombie(&renderdata, chr))
 #endif
 		modelRender(&renderdata, model);
 
@@ -5775,6 +5783,14 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 
 	if ((chr->chrflags & CHRCFLAG_HIDDEN) == 0 && (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)) {
 		f32 radius = chrGetHitRadius(chr);
+
+#ifndef PLATFORM_N64
+		// Zombies: Black Ops II's zombie is shot on its own bones, not on the
+		// body under it (zombies.inc)
+		if (prop->z - 400 < shotdata->distance && zombiesCodTestHit(prop, shotdata)) {
+			return;
+		}
+#endif
 
 		if (prop->z - radius < shotdata->distance) {
 			struct model *model = chr->model;

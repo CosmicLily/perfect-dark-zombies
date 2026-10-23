@@ -1,4 +1,4 @@
-﻿// Prototype Zombies mode, hooked into Combat for now.
+// Prototype Zombies mode, hooked into Combat for now.
 
 void scenarioCreateHudmsg(s32 playernum, char *message);
 void botSpawn(struct chrdata *chr, u8 respawning);
@@ -167,6 +167,7 @@ extern s32 g_ZombieCfgStartRound;
 extern s32 g_ZombieCfgPowerups;
 extern s32 g_ZombieCfgRoundMusic;
 extern s32 g_ZombieCfgGroans;
+extern s32 g_ZombieCfgPerkLimit;
 #define ZOMBIE_POINTS_HIT      10
 #define ZOMBIE_POINTS_KILL     60
 #define ZOMBIE_POINTS_HEADSHOT 100
@@ -174,6 +175,18 @@ extern s32 g_ZombieCfgGroans;
 #define ZOMBIE_POINTS_BLAST    50
 
 static s32 g_ZombiePoints[MAX_PLAYERS];
+
+// The match's scoreboard (zombiesRenderScoreboard()), as Black Ops II's has
+// it: the zombies each player killed, the times they went down, the players
+// they got up again, and their kills by a shot to the head
+struct zombiestats {
+	u16 kills;
+	u16 downs;
+	u16 revives;
+	u16 headshots;
+};
+
+static struct zombiestats g_ZombieStats[MAX_PLAYERS];
 
 // Online, a seat nobody plays: a host that takes joins in progress has every
 // seat a player from the start, the open ones dead and hidden. Not a player
@@ -299,6 +312,8 @@ static void zombiesResetPoints(void)
 		g_ZombieCook60[i] = -1;
 	}
 
+	memset(g_ZombieStats, 0, sizeof(g_ZombieStats));
+
 	for (i = 0; i < ZOMBIE_MAX_POPUPS; i++) {
 		g_ZombiePopups[i].age60 = -1;
 	}
@@ -373,6 +388,63 @@ bool zombiesInstaKillOn(void)
 	return zombiesIsActive() && g_ZombieInstaKill60 > 0;
 }
 
+static void zombiesNetKeepSound(s32 sound, f32 pitch, s32 chr);
+
+static s32 g_ZombieAtBarrier[MAX_BOTS]; // below: the barrier each zombie is held at
+static bool g_ZombieReachThrough = false; // a swipe through a barrier's boards landing (zombiesReachHit())
+static f32 g_ZombieBlowDamage = -1;       // a zombie's blow landing: what chrDamage() is to take, -1 none
+
+// chrDamage(), about to take a player's health: a zombie's blow's damage, as
+// it is, or -1 when this is no blow of a zombie's (zombiesReachHit())
+f32 zombiesBlowDamage(void)
+{
+	return g_ZombieBlowDamage;
+}
+
+/**
+ * chrDamage(), a zombie's blow landing on a player: its attack cry, Black
+ * Ops II's (zmsfx.c), from the zombie. The host's, heard online from the
+ * same zombie on every machine. True when the blow is stopped: a zombie still
+ * tearing at a barrier's boards reaches no one through them, as in Call of
+ * Duty (the barriers stand against Perfect Dark's walls, so it waits on the
+ * player's side of them)
+ */
+bool zombiesZombieSwipe(struct chrdata *zchr)
+{
+	s32 vox;
+	s32 i;
+
+	if (!zombiesIsActive() || !zchr || !zchr->prop || !zchr->aibot) {
+		return false;
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		if (g_MpBotChrPtrs[i] == zchr && g_ZombieAtBarrier[i] >= 0 && !g_ZombieReachThrough) {
+			return true;
+		}
+	}
+
+	if (NET_CLIENT) {
+		return false;
+	}
+
+	// the Groans setting is every zombie voice's
+	vox = g_ZombieCfgGroans ? zmSfxPickVox(ZMVOX_ATTACK, rngRandom()) : -1;
+
+	if (vox >= 0) {
+		const f32 pitch = 0.94f + RANDOMFRAC() * 0.12f;
+
+		psCreate(NULL, zchr->prop, zmSfxSound(vox), -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+		zombiesNetKeepSound(ZMSFX_NET(vox), pitch, func0f18d074(mpPlayerGetIndex(zchr)));
+	}
+
+	return false;
+}
+
+static void zombiesMaybeCrawler(struct chrdata *zchr);
+static void zombiesMaybeGib(struct chrdata *zchr, s32 hitpart, bool explosion, bool killed);
+static void zombiesPickMoveClass(s32 i);
+
 // Called from chrDamage() for every hit that lands on a living zombie.
 void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim)
 {
@@ -383,6 +455,14 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 	if (!aprop || aprop->type != PROPTYPE_PLAYER || g_ZombieGameOver || NET_CLIENT) {
 		return;
 	}
+
+	// its legs blown off, now and then, by a blast it lives through
+	if (explosion && !killed) {
+		zombiesMaybeCrawler(victim);
+	}
+
+	// an arm shot off, or the head on a killing headshot
+	zombiesMaybeGib(victim, hitpart, explosion, killed);
 
 	playernum = playermgrGetPlayerNumByProp(aprop);
 
@@ -409,6 +489,27 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 
 	g_ZombiePoints[playernum] += value;
 	zombiesAddPopup(playernum, value);
+
+	if (killed && g_ZombieStats[playernum].kills < 0xffff) {
+		g_ZombieStats[playernum].kills++;
+
+		if (hitpart == HITPART_HEAD && !explosion && !ismelee) {
+			g_ZombieStats[playernum].headshots++;
+		}
+	}
+
+	// its death cry, Black Ops II's, from where it fell (heard online from
+	// the same zombie on every machine)
+	if (killed && victim && victim->prop) {
+		const s32 vox = g_ZombieCfgGroans ? zmSfxPickVox(ZMVOX_DEATH, rngRandom()) : -1;
+
+		if (vox >= 0) {
+			const f32 pitch = 0.94f + RANDOMFRAC() * 0.12f;
+
+			psCreate(NULL, victim->prop, zmSfxSound(vox), -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+			zombiesNetKeepSound(ZMSFX_NET(vox), pitch, func0f18d074(mpPlayerGetIndex(victim)));
+		}
+	}
 
 	// a kill may leave a power-up where the zombie fell
 	if (killed && victim) {
@@ -507,7 +608,7 @@ static void zombiesTickRegen(s32 playernum)
 }
 
 #define ZOMBIE_MAX_ALIVE 24
-#define ZOMBIE_ROUND_BREAK 300 // frames between clearing a round and the next one starting
+#define ZOMBIE_ROUND_BREAK 600 // frames between clearing a round and the next one starting: Black Ops II's ten seconds (zombie_between_round_time)
 #define ZOMBIE_AI_PER_PLAYER 6 // World at War's zombie_ai_per_player
 
 // How many zombies a round sends, as World at War's _zombiemode.gsc works it
@@ -649,6 +750,126 @@ f32 zombiesSpeedScale(void)
 	return 1.0f;
 }
 
+/**
+ * Crawlers: an explosion that leaves a zombie standing blows its legs off one
+ * time in ZOMBIE_CRAWLER_ODDS, as Call of Duty's gibs them; it goes on on its
+ * hands (zmchar.c's crawler, Black Ops II's _g_upclean and _g_legsoff) at a
+ * crawl's pace. The host's, online in the scenario block (version 6).
+ */
+#define ZOMBIE_CRAWLER_ODDS  3
+
+static u8 g_ZombieCrawler[MAX_BOTS];
+
+static s32 zombiesBotIndex(struct chrdata *chr)
+{
+	s32 i;
+
+	for (i = 0; chr && i < g_BotCount && i < MAX_BOTS; i++) {
+		if (g_MpBotChrPtrs[i] == chr) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+static void zombiesTestShoot(void);
+
+static bool zombiesChrIsCrawler(struct chrdata *chr)
+{
+	const s32 i = zombiesBotIndex(chr);
+
+	return i >= 0 && g_ZombieCrawler[i];
+}
+
+/**
+ * Gibs, Call of Duty's: a hit on an arm that leaves a zombie standing takes
+ * the arm off one time in ZOMBIE_GIB_ARM_ODDS (one arm, the first), and a
+ * killing headshot pops the head one time in ZOMBIE_GIB_HEAD_ODDS. The host's,
+ * online in the scenario block (version 7); every machine throws the arm
+ * itself when it sees it go (zombiesRenderCodZombie()).
+ */
+#define ZGIB_LARM 0x01
+#define ZGIB_RARM 0x02
+#define ZGIB_HEAD 0x04
+
+#define ZOMBIE_GIB_ARM_ODDS  3
+#define ZOMBIE_GIB_HEAD_ODDS 2
+
+static u8 g_ZombieGib[MAX_BOTS];
+
+static void zombiesMaybeGib(struct chrdata *zchr, s32 hitpart, bool explosion, bool killed)
+{
+	const s32 i = zombiesBotIndex(zchr);
+
+	if (i < 0) {
+		return;
+	}
+
+	if (!killed && !(g_ZombieGib[i] & (ZGIB_LARM | ZGIB_RARM))) {
+		const bool left = hitpart == HITPART_LBICEP || hitpart == HITPART_LFOREARM || hitpart == HITPART_LHAND;
+		const bool right = hitpart == HITPART_RBICEP || hitpart == HITPART_RFOREARM || hitpart == HITPART_RHAND;
+
+		if ((left || right) && rngRandom() % ZOMBIE_GIB_ARM_ODDS == 0) {
+			g_ZombieGib[i] |= left ? ZGIB_LARM : ZGIB_RARM;
+		}
+	}
+
+	if (killed && hitpart == HITPART_HEAD && !explosion && rngRandom() % ZOMBIE_GIB_HEAD_ODDS == 0) {
+		g_ZombieGib[i] |= ZGIB_HEAD;
+	}
+}
+
+static void zombiesMaybeCrawler(struct chrdata *zchr)
+{
+	const s32 i = zombiesBotIndex(zchr);
+
+	if (i >= 0 && !g_ZombieCrawler[i] && !chrIsDead(zchr) && rngRandom() % ZOMBIE_CRAWLER_ODDS == 0) {
+		g_ZombieCrawler[i] = 1;
+	}
+}
+
+// botGetStatScale()'s, for a zombie's speed: the round's, or a crawl
+/**
+ * Each zombie's pace, Call of Duty's: at its spawn the round's speed (the
+ * round times ZOMBIE_MOVE_PER_ROUND) give or take ZOMBIE_MOVE_SPREAD, under 35
+ * a walker, under 70 a runner, else a sprinter - every one walks the first
+ * three rounds, walkers and runners mix to round 8, then runners and
+ * sprinters. Each goes at its own animation's speed over the ground (the
+ * walk's 37.6 inches a second, the run's 108, the sprint's 142), as a share of
+ * a simulant's run, which measures 147 (0.55 of it was 81: every zombie of
+ * round 1 went at a run). A crawler crawls: a walker at the crawl's 14, the
+ * others at the crawl sprint's 40.
+ */
+#define ZOMBIE_MOVE_PER_ROUND 8
+#define ZOMBIE_MOVE_SPREAD    20
+#define ZOMBIE_SIM_RUN        147.0f // inches a second, a simulant's run
+
+enum { ZOMBIE_WALKER, ZOMBIE_RUNNER, ZOMBIE_SPRINTER };
+
+static u8 g_ZombieMoveClass[MAX_BOTS];
+
+static void zombiesPickMoveClass(s32 i)
+{
+	const s32 speed = g_ZombieRound * ZOMBIE_MOVE_PER_ROUND
+		+ (s32)(rngRandom() % (ZOMBIE_MOVE_SPREAD * 2 + 1)) - ZOMBIE_MOVE_SPREAD;
+
+	g_ZombieMoveClass[i] = speed <= 35 ? ZOMBIE_WALKER : speed <= 70 ? ZOMBIE_RUNNER : ZOMBIE_SPRINTER;
+}
+
+f32 zombiesChrSpeedScale(struct chrdata *chr)
+{
+	static const f32 inches[3] = { 37.6f, 108.3f, 142.1f };
+	const s32 i = zombiesBotIndex(chr);
+	const s32 cls = i >= 0 ? g_ZombieMoveClass[i] : ZOMBIE_WALKER;
+
+	if (zombiesChrIsCrawler(chr)) {
+		return (cls == ZOMBIE_WALKER ? 14.3f : 39.6f) / ZOMBIE_SIM_RUN;
+	}
+
+	return inches[cls] / ZOMBIE_SIM_RUN;
+}
+
 // Barriers and buyable doors (below, before zombiesTick())
 static s32 g_ZombieSpawnAt = -1;            // the barrier the zombie being sent in goes to, -1 a pad
 static s32 g_ZombieAtBarrier[MAX_BOTS];     // the barrier each zombie is held at, -1 none
@@ -670,6 +891,9 @@ static bool zombiesSpawnOne(void)
 			// boards until they are torn off (zombiesChooseSpawnLocation())
 			g_ZombieSpawnAt = zombiesBarrierPick();
 			g_ZombieAtBarrier[i] = -1;
+			g_ZombieCrawler[i] = 0;
+			g_ZombieGib[i] = 0;
+			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
 
 			if (g_ZombieSpawnAt >= 0) {
@@ -918,6 +1142,59 @@ static void zombiesPlaySoundHere(s32 sound, f32 pitch)
 	if (handle && pitch != 1.0f) {
 		audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *)&pitch);
 	}
+}
+
+/**
+ * One of Black Ops II's own sounds (zmsfx.c, a ZMSFX_ slot), from prop
+ * (heard from where it is) or, with none, as zombiesPlaySoundHere() plays;
+ * online, the same on every machine. False when its file is not there, for
+ * the caller to play the game's own instead.
+ */
+static bool zombiesPlayCodSound(s32 slot, struct prop *prop)
+{
+	const s32 id = zmSfxSound(slot);
+
+	if (id <= 0) {
+		return false;
+	}
+
+	zombiesNetKeepSound(ZMSFX_NET(slot), 1.0f, -1);
+
+	if (prop) {
+		psCreate(NULL, prop, id, -1, -1, 0, 0, PSTYPE_NONE, NULL, 1.0f, NULL, -1, -1, -1, -1);
+	} else if (g_NetMode == NETMODE_NONE || g_ZombieSoundFor < 0 || netIsLocalSlot(g_ZombieSoundFor)) {
+		// online, one player's own (a drink) only on that player's machine
+		zombiesPlaySoundHere(id, 1.0f);
+	}
+
+	return true;
+}
+
+static void zombiesPlaySound(s32 sound, f32 pitch);
+
+// Black Ops II's sound for something (zombiesPlayCodSound()), or the game's
+// own in its place when its file is not there (fallback 0: none)
+static void zombiesCodOr(s32 slot, struct prop *prop, s32 fallback, f32 pitch)
+{
+	if (!zombiesPlayCodSound(slot, prop) && fallback) {
+		zombiesPlaySound(fallback, pitch);
+	}
+}
+
+/**
+ * A perk bought, as Black Ops II sounds it: zmb_cha_ching for the buyer, and
+ * from the machine the bottle dropping out and the perk's sting
+ * (mus_perks_*_sting; Electric Cherry has none). The game's own when the
+ * files are not there.
+ */
+static void zombiesPerkBought(s32 perk, struct prop *machine)
+{
+	if (!zombiesPlayCodSound(ZMSFX_PERK_BUY, NULL)) {
+		zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+	}
+
+	zombiesPlayCodSound(ZMSFX_PERK_DISPENSE, machine);
+	zombiesPlayCodSound(ZMSFX_PERK_STING + perk, machine);
 }
 
 // Heard by everyone on this machine; online, a sound of one player's (its
@@ -1279,10 +1556,17 @@ static void zombiesPlaceJuggernog(void)
  *   end - the player is back up by themselves after ZOMBIE_QR_SELF60, and it
  *   can be bought ZOMBIE_QR_SOLO_BUYS times a match, as Call of Duty's solo
  *   one can. With others, a player who has it revives in half the time.
- * - Speed Cola (3000): reloads twice as fast (zombiesHandRate(), bondgun.c).
+ * - Juggernog (2500): a zombie's blow is half a player's health, a fifth with
+ *   it - two hits down, or five (zombiesReachHit()).
+ * - Speed Cola (3000): reloads twice as fast (zombiesHandRate(), bondgun.c),
+ *   and puts a barrier's boards back twice as fast.
  * - Double Tap (2000): fires a third faster, and every bullet counts twice,
  *   as Black Ops 2's Double Tap II (zombiesHandRate(), zombiesBulletScale()).
- * - Stamin-Up (2000): moves 15% faster (zombiesMoveScale(), bondwalk.c).
+ * - Stamin-Up (2000): moves 7% faster and sprints twice as long
+ *   (zombiesMoveScale(), bondwalk.c; zombiesSprintTick()).
+ *
+ * Four at once at the most, as Black Ops II has it: the Settings page's Perk
+ * Limit (zombiesPerksFull()).
  * - Mule Kick (4000): a third gun (zombiesGunLimit()). Going down takes the
  *   third gun with it; drinking Mule Kick again gives that gun back.
  * - Deadshot Daiquiri (1500): aimed down the sights, a bullet that hits a
@@ -1314,7 +1598,7 @@ static void zombiesPlaceJuggernog(void)
 #define ZOMBIE_SPEEDCOLA_RATE   2.0f
 #define ZOMBIE_DOUBLETAP_RATE   1.33f
 #define ZOMBIE_DOUBLETAP_DAMAGE 2.0f
-#define ZOMBIE_STAMINUP_SPEED   1.15f
+#define ZOMBIE_STAMINUP_SPEED   1.07f  // Call of Duty's 7% (it was 15%); its sprint twice as long besides
 #define ZOMBIE_DOWNED_SPEED     0.35f  // a downed player's crawl, of their squatting pace
 #define ZOMBIE_COD_WALK         1.0f   // Call of Duty's 190 inches a second is Perfect Dark's own run (zombiesMoveScale())
 
@@ -1348,6 +1632,14 @@ static bool g_ZombiePerkNeedsRelease[MAX_PLAYERS];
 static s32 g_ZombieQrSoloBuys = 0;
 static s32 g_ZombieSelfRevive60[MAX_PLAYERS];  // Quick Revive alone: 60ths until up again, 0 for none
 
+// Alive, standing or down (zombiesPlayerIsUp() is standing only)
+static bool zombiesPlayerAlive(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+
+	return player && player->prop && !player->isdead;
+}
+
 // The perks in the order they were drunk, as the HUD's row shows them: Call of
 // Duty's line up as bought and never move. Going down clears it.
 static s32 g_ZombiePerkOrder[MAX_PLAYERS][ZOMBIEPERK_COUNT];
@@ -1377,6 +1669,29 @@ bool zombiesPlayerHasPerk(s32 playernum, s32 perk)
 	}
 
 	return perk == ZOMBIEPERK_JUGGERNOG ? g_ZombieHasJugg[playernum] : g_ZombieHasPerk[playernum][perk];
+}
+
+/**
+ * The perk limit: how many a player may have at once, the Settings page's
+ * Perk Limit, 1 to 99 (Black Ops II's four by default; nine and over is
+ * every perk). A
+ * player with that many is offered nothing at a machine until going down
+ * loses them.
+ */
+static bool zombiesPerksFull(s32 playernum)
+{
+	s32 n = 0;
+	s32 perk;
+
+	if (g_ZombieCfgPerkLimit >= ZOMBIEPERK_COUNT) {
+		return false;
+	}
+
+	for (perk = 0; perk < ZOMBIEPERK_COUNT; perk++) {
+		n += zombiesPlayerHasPerk(playernum, perk);
+	}
+
+	return n >= (g_ZombieCfgPerkLimit > 0 ? g_ZombieCfgPerkLimit : 1);
 }
 
 static void zombiesResetPerks(void)
@@ -1901,6 +2216,50 @@ static void zombiesMeshVertex(const struct objvertex *ov, Vtx *v, Col *c, s32 sl
 
 static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const char *label);
 
+// The Ray Gun's glow (its coil's bands): vmconv.py's "raygun_2", a plain
+// white picture Black Ops II's shader colours green. Lit, like a sign, and
+// green (zombiesMeshBuildFrom()).
+static bool zombiesMaterialIsRayGlow(const char *name)
+{
+	return strcmp(name, "raygun_2") == 0;
+}
+
+/**
+ * The coil's own camo, animated as Pack-a-Punch's is (SHADER_OPT_CAMO): green
+ * on the Ray Gun, red Pack-a-Punched. Its material calls the first list as it
+ * starts and the second as it ends (zombiesMeshBuildFrom()), and the gun's
+ * renderer writes both each frame (zombiesRayGlowWrite()): the coil's camo,
+ * and then the gun's own again (the upgraded gun's camo, or none).
+ */
+static Gfx g_ZombieRayGlowOn[4];
+static Gfx g_ZombieRayGlowOff[4];
+
+#define ZOMBIE_CAMO_PLAIN 0 // the camo's styles (port/fast3d/gfx_cc.cpp)
+#define ZOMBIE_CAMO_GREEN 1
+#define ZOMBIE_CAMO_RED   2
+
+static void zombiesRayGlowWrite(bool papped)
+{
+	u32 phase = (u32)(g_Vars.lvframe60 % 480) * 65536 / 480;
+	Gfx *g = g_ZombieRayGlowOn;
+
+	gDPSetGrayscaleColorEXT(g++, (phase >> 8) & 0xff, phase & 0xff,
+			papped ? ZOMBIE_CAMO_RED : ZOMBIE_CAMO_GREEN, 0xff);
+	gDPGrayscaleEXT(g++, 2);
+	gSPEndDisplayList(g++);
+
+	g = g_ZombieRayGlowOff;
+
+	if (papped) {
+		gDPSetGrayscaleColorEXT(g++, (phase >> 8) & 0xff, phase & 0xff, ZOMBIE_CAMO_PLAIN, 0xff);
+		gDPGrayscaleEXT(g++, 2);
+	} else {
+		gDPGrayscaleEXT(g++, 0);
+	}
+
+	gSPEndDisplayList(g++);
+}
+
 // A material lit with the power on: its name ends "_on" (Black Ops II's
 // "mtl_zombie_vending_jugg_on", "..._vent_power_on", "..._logo_on"). Not the
 // Mob of the Dead machines' bodies, which carry the name whole (Deadshot's
@@ -1939,6 +2298,9 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 
 	zm->tried = true;
 
+	// the coil's camo lists, filled before any list calls them
+	zombiesRayGlowWrite(false);
+
 	snprintf(path, sizeof(path), "%s", fsFullPath(rel));
 
 	if (fsFileSize(path) <= 0) {
@@ -1956,7 +2318,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 	// one triangle command and a material's state before each
 	zm->vtx = malloc(sizeof(Vtx) * m->numtris * 3);
 	zm->col = malloc(sizeof(Col) * m->numtris * 3);
-	maxgfx = m->numtris * 3 + m->numdraws * 16 + 8;
+	maxgfx = m->numtris * 3 + m->numdraws * 18 + 8; // 18: two for the Ray Gun coil's camo lists
 	zm->gdl = malloc(sizeof(Gfx) * maxgfx);
 
 	if (!zm->vtx || !zm->col || !zm->gdl) {
@@ -1990,6 +2352,17 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 			continue;
 		}
 
+		// Glass and a blood decal: see-through, which this list (all of it
+		// opaque) cannot draw. Drawn solid, the glass was a gray slab over
+		// Deadshot's front and Electric Cherry's, and the blood a dark block;
+		// cut out in the list (an alpha compare, then the opaque mode put back
+		// after it) every draw after the first such one was gone, the whole of
+		// Deadshot and PhD Flopper with it. Without them the machine's front
+		// behind the glass is seen.
+		if (mat && (strstr(mat->name, "glass") || strstr(mat->name, "blood"))) {
+			continue;
+		}
+
 		if (mat && mat->kind == OBJMAT_IMAGE) {
 			tile = modelpackBindMaterial(mat, &alpha, &soft);
 		}
@@ -2006,18 +2379,13 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 
 		gDPPipeSync(gdl++);
 
-		// A light with the power on - Black Ops II's "_on" materials, its
-		// unlit_replace technique at fifteen to twenty-five times - glows:
-		// the picture brightened by its own baked shade on top of itself,
-		// whatever the room
-		if (mat && zombiesMaterialIsOn(mat->name)) {
-			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, TEXEL0, 0, 0, 0, 1,
-					0, 0, 0, COMBINED, 0, 0, 0, 1);
-		} else
-		// A sign is lit, as the machine's is with the power on: not darkened
-		// by the room (the second cycle's primitive colour, set round the
-		// list, is the room's light)
-		if (mat && strstr(mat->name, "sign")) {
+		// Lit with the power on - Black Ops II's "_on" materials, a sign, the
+		// Ray Gun's coil - its picture as it is, not darkened by the room (the
+		// second cycle's primitive colour, set round the list, is the room's
+		// light). They used to be brightened by their own shade on top, with
+		// a glow round the machine besides: the "_on" pictures are lit
+		// already, and the machines looked like lamps.
+		if (mat && (zombiesMaterialIsOn(mat->name) || strstr(mat->name, "sign") || zombiesMaterialIsRayGlow(mat->name))) {
 			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, 0, 0, 0, 0, 1,
 					0, 0, 0, COMBINED, 0, 0, 0, 1);
 		} else {
@@ -2030,6 +2398,11 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 				XBLATEX_TILE, XBLATEX_TILE, 0,
 				G_TX_WRAP | G_TX_NOMIRROR, G_TX_WRAP | G_TX_NOMIRROR,
 				XBLATEX_TILE_MASK, XBLATEX_TILE_MASK, G_TX_NOLOD, G_TX_NOLOD);
+
+		// the Ray Gun's coil in its own camo (zombiesRayGlowWrite())
+		if (mat && zombiesMaterialIsRayGlow(mat->name)) {
+			gSPDisplayList(gdl++, g_ZombieRayGlowOn);
+		}
 
 		numgfx = (u32)(gdl - zm->gdl);
 
@@ -2072,6 +2445,14 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 
 				for (j = 0; j < numslots; j++) {
 					zombiesMeshVertex(&m->vertices[slots[j]], &zm->vtx[numvtx + j], &zm->col[numvtx + j], j);
+
+					// the Ray Gun's coil: Black Ops II's shader makes its white
+					// green, and this is the colour it is drawn in
+					if (mat && zombiesMaterialIsRayGlow(mat->name)) {
+						zm->col[numvtx + j].r = 0x50;
+						zm->col[numvtx + j].g = 0xff;
+						zm->col[numvtx + j].b = 0x40;
+					}
 				}
 
 				gSPColor(gdl++, &zm->col[numvtx], numslots);
@@ -2132,6 +2513,11 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 			tris[numtris * 3 + 1] = (u8)corner[2];
 			tris[numtris * 3 + 2] = (u8)corner[1];
 			numtris++;
+		}
+
+		// and the gun's own camo again after it
+		if (mat && zombiesMaterialIsRayGlow(mat->name)) {
+			gSPDisplayList(&zm->gdl[numgfx++], g_ZombieRayGlowOff);
 		}
 
 		// the draw's vertices, a run of their own, when they turn
@@ -2268,15 +2654,10 @@ static bool zombiesMachineMeshPoint(s32 id, struct defaultobj *obj, const f32 ob
 static f32 zombiesGroundAt(struct coord *pos, RoomNum *rooms);
 
 /**
- * A machine's light on what is round it, as Call of Duty's machines cast
- * theirs: a soft glow in the perk's colour round its lit sign, turned to the
- * camera, and a pool of it on the floor in front. Both are a round falloff
- * added onto what is there (G_ADDITIVE_EXT), tested against the depth and
- * not written to it, in the translucent pass.
+ * A round falloff, added onto what is there (G_ADDITIVE_EXT), tested against
+ * the depth and not written to it: the Ray Gun's bolts' (zombiesRenderRayFx())
  */
 #define ZOMBIE_GLOW_TEX   32
-#define ZOMBIE_GLOW_HALO  0x70 // the glow's strength round the sign
-#define ZOMBIE_GLOW_FLOOR 0x68 // and on the floor
 
 static u8 g_ZombieGlowTex[ZOMBIE_GLOW_TEX * ZOMBIE_GLOW_TEX] __attribute__((aligned(8)));
 static bool g_ZombieGlowTexMade = false;
@@ -2301,27 +2682,18 @@ static void zombiesGlowTexMake(void)
 	g_ZombieGlowTexMade = true;
 }
 
-// A machine's colour: the perk's, Pack-a-Punch's purple
-static void zombiesMachineGlowColour(s32 id, u8 rgb[3])
-{
-	if (id >= 0 && id < ZOMBIEPERK_COUNT) {
-		rgb[0] = g_ZombiePerks[id].colour[0];
-		rgb[1] = g_ZombiePerks[id].colour[1];
-		rgb[2] = g_ZombiePerks[id].colour[2];
-	} else {
-		rgb[0] = 0xb0;
-		rgb[1] = 0x40;
-		rgb[2] = 0xff;
-	}
-}
-
 // One quad: corners a, b, c, d in the space mtx takes into the view
+// The texture the next quads are drawn with, across (zombiesRayTex() loads
+// the Ray Gun's 64 ring as well as the 32 glow): the quad's s and t span it
+// whole, or the ring showed only its top left quarter
+static s32 g_ZombieQuadTex = ZOMBIE_GLOW_TEX;
+
 static Gfx *zombiesGlowQuad(Gfx *gdl, Mtxf *mtx, const s16 corners[4][3])
 {
 	Vtx *vtx = gfxAllocate(sizeof(Vtx) * 4);
 	Col *col = gfxAllocate(sizeof(Col) * 4);
-	static const s16 st[4][2] = { { 0, 0 }, { ZOMBIE_GLOW_TEX << 5, 0 },
-		{ ZOMBIE_GLOW_TEX << 5, ZOMBIE_GLOW_TEX << 5 }, { 0, ZOMBIE_GLOW_TEX << 5 } };
+	const s16 full = g_ZombieQuadTex << 5;
+	const s16 st[4][2] = { { 0, 0 }, { full, 0 }, { full, full }, { 0, full } };
 	s32 i;
 
 	if (!vtx || !col) {
@@ -2377,6 +2749,7 @@ struct zombierayfx {
 	f32 dist;     // the head's way along
 	f32 maxdist;  // where it lands
 	f32 age60;    // since it landed, -1 still in flight
+	bool red;     // a Pack-a-Punched Ray Gun's: red, as Call of Duty's Porter's X2
 };
 
 static struct zombierayfx g_ZombieRayFx[ZOMBIE_RAYFX_MAX];
@@ -2386,6 +2759,8 @@ static s32 g_ZombieRayRingState = 0; // 0 not read, 1 read, -1 not there (the gl
 
 // gunfx.c: a shot's tracer; true when it is one of the Ray Gun's, made a
 // bolt here and no tracer of the host's wanted
+static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum);
+
 bool zombiesRayBoltCreate(s32 weaponnum, struct coord *from, struct coord *to)
 {
 	struct zombierayfx *fx = NULL;
@@ -2435,6 +2810,15 @@ bool zombiesRayBoltCreate(s32 weaponnum, struct coord *from, struct coord *to)
 	fx->dist = 0;
 	fx->age60 = -1;
 	fx->on = true;
+	fx->red = false;
+
+	// whose muzzle it left: theirs upgraded is red
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		if (g_Vars.players[i] && (from == &g_Vars.players[i]->hands[0].muzzlepos
+					|| from == &g_Vars.players[i]->hands[1].muzzlepos)) {
+			fx->red = zombiesGunIsPapped(i, WEAPON_ZM_RAYGUN);
+		}
+	}
 
 	return true;
 }
@@ -2523,11 +2907,13 @@ static Gfx *zombiesRayTex(Gfx *gdl, bool ring)
 	gDPPipeSync(gdl++);
 
 	if (ring && g_ZombieRayRingState > 0) {
+		g_ZombieQuadTex = ZOMBIE_RAYFX_RINGTEX;
 		gDPLoadTextureBlock(gdl++, g_ZombieRayRing, G_IM_FMT_I, G_IM_SIZ_8b,
 				ZOMBIE_RAYFX_RINGTEX, ZOMBIE_RAYFX_RINGTEX, 0,
 				G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
 				G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
 	} else {
+		g_ZombieQuadTex = ZOMBIE_GLOW_TEX;
 		gDPLoadTextureBlock(gdl++, g_ZombieGlowTex, G_IM_FMT_I, G_IM_SIZ_8b,
 				ZOMBIE_GLOW_TEX, ZOMBIE_GLOW_TEX, 0,
 				G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
@@ -2537,7 +2923,418 @@ static Gfx *zombiesRayTex(Gfx *gdl, bool ring)
 	return gdl;
 }
 
+/**
+ * Electric Cherry's burst as a reload begins, from Black Ops II's own pictures
+ * (Mob of the Dead's fx_alcatraz_electric_cherry_player: its effect file does
+ * not dump, its pictures do; tools/zombies/fxbake.py's cherry into the build's
+ * zombies/viewmodel/): a blue flash at the player's middle (fxt_light_flare_
+ * cool), the electric ring widening out to the shock's reach over the floor
+ * (fxt_fx_emp_ring_wave), and lightning (fxt_env_lighting_bolt_ground, eight
+ * bolts) from the player to each zombie it shocks, or out across the floor
+ * when there are none, flickering from one bolt to the next. Added light,
+ * drawn with the Ray Gun's (zombiesRenderRayFx()). Each machine draws the
+ * bursts it is told of (zombiesCherryBurst()).
+ */
+#define ZOMBIE_CHERRY_FX60     40     // the burst's 60ths: its ring and its bolts (Black Ops II's is near 0.8 s)
+#define ZOMBIE_CHERRY_ZAP60    50     // a shocked zombie's crackle (fx_alcatraz_electric_cherry_sm), and the sparkles
+#define ZOMBIE_CHERRY_FLASH60  10.0f  // the flash's
+#define ZOMBIE_CHERRY_STAND60  30.0f  // the bolts standing round the player
+#define ZOMBIE_CHERRY_STANDS   6      // how many
+#define ZOMBIE_CHERRY_SPARKLES 18
+// its colour, as Black Ops II's: violet round a white core (the pictures are white)
+#define ZOMBIE_CHERRY_R 0xc8
+#define ZOMBIE_CHERRY_G 0xb8
+#define ZOMBIE_CHERRY_B 0xff
+#define ZOMBIE_CHERRY_BOLTS    8      // the most bolts a burst throws
+#define ZOMBIE_CHERRY_BOLTW    18.0f  // a bolt's half width
+#define ZOMBIE_CHERRY_TEX      64     // the ring's and the flash's side
+#define ZOMBIE_CHERRY_BOLTTEX_W 32
+#define ZOMBIE_CHERRY_BOLTTEX_H 64
+
+static struct {
+	bool on;
+	struct coord at;      // the player's middle
+	f32 reach;            // the ring's widest
+	f32 age60;
+	s32 numbolts;
+	struct coord to[ZOMBIE_CHERRY_BOLTS];
+	s32 bot[ZOMBIE_CHERRY_BOLTS]; // the zombie each bolt struck, -1 the floor
+} g_ZombieCherryFx[MAX_PLAYERS];
+
+static s32 g_ZombieCherryFxFrame = -1;
+static s32 g_ZombieCherryTexState = 0; // 0 not read, 1 read, -1 not there (no burst drawn)
+static u8 g_ZombieCherryRing[ZOMBIE_CHERRY_TEX * ZOMBIE_CHERRY_TEX] __attribute__((aligned(8)));
+static u8 g_ZombieCherryFlare[ZOMBIE_CHERRY_TEX * ZOMBIE_CHERRY_TEX] __attribute__((aligned(8)));
+static u8 g_ZombieCherryBolts[8][ZOMBIE_CHERRY_BOLTTEX_W * ZOMBIE_CHERRY_BOLTTEX_H] __attribute__((aligned(8)));
+
+static bool zombiesCherryTexRead(const char *rel, void *dst, u32 want)
+{
+	u8 *data;
+	u32 size = 0;
+
+	if (fsFileSize(fsFullPath(rel)) <= 0 || (data = fsFileLoad(rel, &size)) == NULL) {
+		return false;
+	}
+
+	if (size == want) {
+		memcpy(dst, data, want);
+	}
+
+	sysMemFree(data);
+
+	return size == want;
+}
+
+static void zombiesCherryTexLoad(void)
+{
+	g_ZombieCherryTexState = zombiesCherryTexRead("$E/zombies/viewmodel/cherry_ring.i8", g_ZombieCherryRing, sizeof(g_ZombieCherryRing))
+		&& zombiesCherryTexRead("$E/zombies/viewmodel/cherry_flare.i8", g_ZombieCherryFlare, sizeof(g_ZombieCherryFlare))
+		&& zombiesCherryTexRead("$E/zombies/viewmodel/cherry_bolts.i8", g_ZombieCherryBolts, sizeof(g_ZombieCherryBolts))
+		? 1 : -1;
+}
+
+// A quad round pos, as zombiesRayQuad()'s, its picture's s across b and t
+// along a (a bolt's length), sw by th texels
+static Gfx *zombiesCherryQuad(Gfx *gdl, Mtxf *cam, struct coord *pos, const f32 a[3], const f32 b[3], s32 sw, s32 th)
+{
+	Mtxf world;
+	Mtxf *mtx = gfxAllocateMatrix();
+	Vtx *vtx = gfxAllocate(sizeof(Vtx) * 4);
+	Col *col = gfxAllocate(sizeof(Col) * 4);
+	const f32 sa[4] = { -1, 1, 1, -1 };
+	const f32 sb[4] = { -1, -1, 1, 1 };
+	s32 i;
+
+	if (!vtx || !col) {
+		return gdl;
+	}
+
+	for (i = 0; i < 4; i++) {
+		vtx[i].x = (s16)(a[0] * sa[i] + b[0] * sb[i]);
+		vtx[i].y = (s16)(a[1] * sa[i] + b[1] * sb[i]);
+		vtx[i].z = (s16)(a[2] * sa[i] + b[2] * sb[i]);
+		vtx[i].flags = 0;
+		vtx[i].colour = (u8)(i * 4);
+		vtx[i].s = sb[i] > 0 ? sw << 5 : 0;
+		vtx[i].t = sa[i] > 0 ? th << 5 : 0;
+		col[i].r = col[i].g = col[i].b = col[i].a = 0xff;
+	}
+
+	mtx4LoadTranslation(pos, &world);
+	mtx4MultMtx4(cam, &world, mtx);
+
+	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+	gSPColor(gdl++, col, 4);
+	gSPVertex(gdl++, vtx, 4, 0);
+	gSPTri4(gdl++, 0, 1, 2, 0, 2, 3, 0, 0, 0, 0, 0, 0);
+
+	return gdl;
+}
+
+static Gfx *zombiesCherryTex(Gfx *gdl, const void *tex, s32 w, s32 h)
+{
+	gDPPipeSync(gdl++);
+	gDPLoadTextureBlock(gdl++, tex, G_IM_FMT_I, G_IM_SIZ_8b, w, h, 0,
+			G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
+			G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+
+	return gdl;
+}
+
+// zombiesRenderRayFx()'s, its render state set: every burst going, aged
+static Gfx *zombiesRenderCherryFx(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3])
+{
+	s32 adv;
+	s32 p;
+
+	if (g_ZombieCherryFxFrame < 0 || g_Vars.lvframe60 < g_ZombieCherryFxFrame) {
+		g_ZombieCherryFxFrame = g_Vars.lvframe60;
+	}
+
+	adv = g_Vars.lvframe60 - g_ZombieCherryFxFrame;
+	g_ZombieCherryFxFrame = g_Vars.lvframe60;
+
+	for (p = 0; p < MAX_PLAYERS; p++) {
+		struct coord centre;
+		bool mine;
+		f32 f;
+		f32 a[3];
+		f32 b[3];
+		s32 k;
+		s32 n;
+
+		if (!g_ZombieCherryFx[p].on) {
+			continue;
+		}
+
+		g_ZombieCherryFx[p].age60 += adv;
+
+		if (g_ZombieCherryFx[p].age60 >= ZOMBIE_CHERRY_ZAP60) {
+			g_ZombieCherryFx[p].on = false;
+			continue;
+		}
+
+		// each zombie it struck crackling, where it is now: a small flare
+		// at its chest and two short bolts across it, turning, going out
+		for (n = 0; n < g_ZombieCherryFx[p].numbolts; n++) {
+			const s32 bot = g_ZombieCherryFx[p].bot[n];
+			const f32 g = 1 - g_ZombieCherryFx[p].age60 / ZOMBIE_CHERRY_ZAP60;
+			struct chrdata *zchr = bot >= 0 && bot < g_BotCount ? g_MpBotChrPtrs[bot] : NULL;
+			struct coord chest;
+			s32 j;
+
+			if (!zchr || !zchr->prop) {
+				continue;
+			}
+
+			chest = zchr->prop->pos;
+			chest.y = zchr->ground + 75;
+
+			// in front of the body, toward the camera: at its middle the body
+			// hid all but the edges
+			{
+				f32 tx = campos->x - chest.x;
+				f32 ty = campos->y - chest.y;
+				f32 tz = campos->z - chest.z;
+				const f32 tl = sqrtf(tx * tx + ty * ty + tz * tz);
+
+				if (tl > 1) {
+					chest.x += tx / tl * 25;
+					chest.y += ty / tl * 25;
+					chest.z += tz / tl * 25;
+				}
+			}
+
+			for (k = 0; k < 3; k++) {
+				a[k] = up[k] * 32;
+				b[k] = right[k] * 32;
+			}
+
+			gdl = zombiesCherryTex(gdl, g_ZombieCherryFlare, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+			gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B, (u8)(0xff * g * (((s32)g_ZombieCherryFx[p].age60 + n) % 3 ? 1.0f : 0.5f)));
+			gdl = zombiesCherryQuad(gdl, cam, &chest, a, b, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+
+			for (j = 0; j < 2; j++) {
+				const f32 ang = (n * 2.1f + j * 1.7f) + g_ZombieCherryFx[p].age60 * 0.35f;
+				const s32 frame = (n + j * 4 + (s32)(g_ZombieCherryFx[p].age60 / 2)) % 8;
+
+				// a bolt up and down the body, leaning round in the camera's plane
+				for (k = 0; k < 3; k++) {
+					a[k] = (up[k] * cosf(ang) + right[k] * sinf(ang)) * 45;
+					b[k] = (right[k] * cosf(ang) - up[k] * sinf(ang)) * 10;
+				}
+
+				gdl = zombiesCherryTex(gdl, g_ZombieCherryBolts[frame], ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+				gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B, (u8)(0xff * g));
+				gdl = zombiesCherryQuad(gdl, cam, &chest, a, b, ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+			}
+		}
+
+		if (g_ZombieCherryFx[p].age60 >= ZOMBIE_CHERRY_FX60) {
+			continue;
+		}
+
+		f = g_ZombieCherryFx[p].age60 / ZOMBIE_CHERRY_FX60;
+
+		// Seen by the player it is round: from their eye the middle is under
+		// the camera and the floor's ring and bolts below the view, behind
+		// the gun. So for them it goes from the gun - ahead of the eye, low -
+		// and the ring spreads at their chest.
+		if (p == g_Vars.currentplayernum && g_Vars.players[p] && g_Vars.players[p]->prop
+				&& (campos->x - g_Vars.players[p]->prop->pos.x) * (campos->x - g_Vars.players[p]->prop->pos.x)
+				+ (campos->z - g_Vars.players[p]->prop->pos.z) * (campos->z - g_Vars.players[p]->prop->pos.z) < 40 * 40) {
+			struct player *viewer = g_Vars.players[p];
+
+			mine = true;
+			centre.x = campos->x + viewer->cam_look.x * 40;
+			centre.y = campos->y - 25;
+			centre.z = campos->z + viewer->cam_look.z * 40;
+		} else {
+			mine = false;
+			centre = g_ZombieCherryFx[p].at;
+		}
+
+		// the ring, flat, widening and going
+		{
+			struct coord at = g_ZombieCherryFx[p].at;
+			const f32 r = 30 + (g_ZombieCherryFx[p].reach - 30) * sqrtf(f);
+
+			at.y = mine ? campos->y - 45 : at.y - 60;
+
+			a[0] = r; a[1] = 0; a[2] = 0;
+			b[0] = 0; b[1] = 0; b[2] = r;
+
+			gdl = zombiesCherryTex(gdl, g_ZombieCherryRing, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+			gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B, (u8)(0x90 * (1 - f)));
+			gdl = zombiesCherryQuad(gdl, cam, &at, a, b, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+		}
+
+		// the flash, facing the camera
+		if (g_ZombieCherryFx[p].age60 < ZOMBIE_CHERRY_FLASH60) {
+			const f32 g = 1 - g_ZombieCherryFx[p].age60 / ZOMBIE_CHERRY_FLASH60;
+			// the player's own small and softer: 40 ahead of the eye a big one
+			// washed out a quarter of the screen
+			const f32 size = (mine ? 22 : 90) * (0.5f + 0.5f * g);
+
+			for (k = 0; k < 3; k++) {
+				a[k] = up[k] * size;
+				b[k] = right[k] * size;
+			}
+
+			gdl = zombiesCherryTex(gdl, g_ZombieCherryFlare, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+			gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B, (u8)((mine ? 0xb0 : 0xff) * g));
+			gdl = zombiesCherryQuad(gdl, cam, &centre, a, b, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+		}
+
+		// The bolts standing round the player, as Black Ops II's: tall and
+		// thick, from the floor to well over the head, a ring of them a
+		// stride out, each a new one of the eight every two 60ths and moving
+		// round a little at each, turned to the camera about the upright. The
+		// player sees them filling the view ahead and at its sides.
+		if (g_ZombieCherryFx[p].age60 < ZOMBIE_CHERRY_STAND60) {
+			const f32 g = g_ZombieCherryFx[p].age60 < ZOMBIE_CHERRY_STAND60 / 2 ? 1
+				: 2 - 2 * g_ZombieCherryFx[p].age60 / ZOMBIE_CHERRY_STAND60;
+			const s32 tick = (s32)(g_ZombieCherryFx[p].age60 / 2);
+			const f32 floor = g_ZombieCherryFx[p].at.y - 80;
+			s32 j;
+
+			for (j = 0; j < ZOMBIE_CHERRY_STANDS; j++) {
+				const f32 ang = j * (2 * M_PI / ZOMBIE_CHERRY_STANDS) + ((tick * 5 + j * 3) % 7) * 0.12f;
+				const f32 radius = 50 + ((tick * 3 + j * 7) % 5) * 8;
+				const s32 frame = (tick + j * 3) % 8;
+				struct coord at;
+				f32 tx;
+				f32 tz;
+				f32 tl;
+				s32 twice;
+
+				at.x = g_ZombieCherryFx[p].at.x + sinf(ang) * radius;
+				at.y = floor + 130;
+				at.z = g_ZombieCherryFx[p].at.z + cosf(ang) * radius;
+
+				// across: level, square to the way to the camera
+				tx = campos->x - at.x;
+				tz = campos->z - at.z;
+				tl = sqrtf(tx * tx + tz * tz);
+
+				if (tl < 1) {
+					continue;
+				}
+
+				a[0] = 0; a[1] = 135; a[2] = 0;
+				b[0] = -tz / tl * 34; b[1] = 0; b[2] = tx / tl * 34;
+
+				gdl = zombiesCherryTex(gdl, g_ZombieCherryBolts[frame], ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+				gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B,
+						(u8)(0xff * g * ((tick + j) % 3 ? 1.0f : 0.6f)));
+
+				// twice over: some of the eight are faint, and added once
+				// they barely showed against a bright wall
+				for (twice = 0; twice < 2; twice++) {
+					gdl = zombiesCherryQuad(gdl, cam, &at, a, b, ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+				}
+			}
+		}
+
+		// Sparkles hanging in the air round the player, drifting up, going
+		// out one by one: each its own place, pace and time, from its number
+		if (g_ZombieCherryFx[p].age60 < ZOMBIE_CHERRY_FX60) {
+			s32 j;
+
+			gdl = zombiesCherryTex(gdl, g_ZombieCherryFlare, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+
+			for (j = 0; j < ZOMBIE_CHERRY_SPARKLES; j++) {
+				const u32 h = (u32)(j + 1) * 2654435761u;
+				const f32 life = 0.5f + (h >> 8 & 0xff) / 512.0f; // its share of the time
+				const f32 t = g_ZombieCherryFx[p].age60 / ZOMBIE_CHERRY_FX60 / life;
+				const f32 ang = (h & 0xff) * (2 * M_PI / 256);
+				const f32 radius = 25 + (h >> 16 & 0xff) * 110 / 255.0f;
+				struct coord at;
+
+				if (t >= 1) {
+					continue;
+				}
+
+				at.x = g_ZombieCherryFx[p].at.x + sinf(ang) * radius;
+				at.y = g_ZombieCherryFx[p].at.y - 70 + (h >> 24) * 200 / 255.0f + t * 40;
+				at.z = g_ZombieCherryFx[p].at.z + cosf(ang) * radius;
+
+				for (k = 0; k < 3; k++) {
+					a[k] = up[k] * 5;
+					b[k] = right[k] * 5;
+				}
+
+				gDPSetPrimColor(gdl++, 0, 0, 0xf0, 0xec, 0xff, (u8)(0xff * (1 - t) * ((j + (s32)g_ZombieCherryFx[p].age60) % 4 ? 1.0f : 0.4f)));
+				gdl = zombiesCherryQuad(gdl, cam, &at, a, b, ZOMBIE_CHERRY_TEX, ZOMBIE_CHERRY_TEX);
+			}
+		}
+
+		// the bolts, each a new one of the eight every few 60ths, flickering
+		for (n = 0; n < g_ZombieCherryFx[p].numbolts && f < 0.6f; n++) {
+			const s32 frame = (n * 3 + (s32)(g_ZombieCherryFx[p].age60 / 3)) % 8;
+			struct coord *from = &centre;
+			struct coord *to = &g_ZombieCherryFx[p].to[n];
+			const s32 bot = g_ZombieCherryFx[p].bot[n];
+
+			// to the zombie where it is now
+			if (bot >= 0 && bot < g_BotCount && g_MpBotChrPtrs[bot] && g_MpBotChrPtrs[bot]->prop) {
+				*to = g_MpBotChrPtrs[bot]->prop->pos;
+				to->y = g_MpBotChrPtrs[bot]->ground + 70;
+			}
+			struct coord mid;
+			f32 along[3];
+			f32 tocam[3];
+			f32 side[3];
+			f32 len;
+
+			along[0] = to->x - from->x;
+			along[1] = to->y - from->y;
+			along[2] = to->z - from->z;
+			mid.x = from->x + along[0] / 2;
+			mid.y = from->y + along[1] / 2;
+			mid.z = from->z + along[2] / 2;
+			tocam[0] = campos->x - mid.x;
+			tocam[1] = campos->y - mid.y;
+			tocam[2] = campos->z - mid.z;
+			side[0] = along[1] * tocam[2] - along[2] * tocam[1];
+			side[1] = along[2] * tocam[0] - along[0] * tocam[2];
+			side[2] = along[0] * tocam[1] - along[1] * tocam[0];
+			len = sqrtf(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+
+			if (len <= 0) {
+				continue;
+			}
+
+			for (k = 0; k < 3; k++) {
+				a[k] = along[k] / 2;
+				b[k] = side[k] / len * ZOMBIE_CHERRY_BOLTW;
+			}
+
+			gdl = zombiesCherryTex(gdl, g_ZombieCherryBolts[frame], ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+			gDPSetPrimColor(gdl++, 0, 0, ZOMBIE_CHERRY_R, ZOMBIE_CHERRY_G, ZOMBIE_CHERRY_B, (u8)(((s32)g_ZombieCherryFx[p].age60 + n) % 4 == 0 ? 0x90 : 0xff));
+			gdl = zombiesCherryQuad(gdl, cam, &mid, a, b, ZOMBIE_CHERRY_BOLTTEX_W, ZOMBIE_CHERRY_BOLTTEX_H);
+		}
+	}
+
+	return gdl;
+}
+
+static bool zombiesCherryFxAny(void)
+{
+	s32 p;
+
+	for (p = 0; p < MAX_PLAYERS; p++) {
+		if (g_ZombieCherryFx[p].on) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 // propobj.c's propsRenderBeams(): every bolt and ring, in the world
+Gfx *zombiesRenderGibs(Gfx *gdl);
+
 Gfx *zombiesRenderRayFx(Gfx *gdl)
 {
 	Mtxf *cam = camGetWorldToScreenMtxf();
@@ -2551,10 +3348,22 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 		return gdl;
 	}
 
+	// arms shot off, flying (below)
+	gdl = zombiesRenderGibs(gdl);
+
 	zombiesRayFxTick();
 
 	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
 		any |= g_ZombieRayFx[i].on;
+	}
+
+	// Electric Cherry's bursts too (above)
+	if (g_ZombieCherryTexState == 0) {
+		zombiesCherryTexLoad();
+	}
+
+	if (g_ZombieCherryTexState > 0) {
+		any |= zombiesCherryFxAny();
 	}
 
 	if (!any) {
@@ -2600,6 +3409,10 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
 	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
 	gSPSetExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
+
+	if (g_ZombieCherryTexState > 0) {
+		gdl = zombiesRenderCherryFx(gdl, cam, campos, right, up);
+	}
 
 	gdl = zombiesRayTex(gdl, false);
 
@@ -2647,7 +3460,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 				b[k] = side[k] / len * ZOMBIE_RAYFX_WIDTH;
 			}
 
-			gDPSetPrimColor(gdl++, 0, 0, 0x40, 0xff, 0x30, 0xe0);
+			gDPSetPrimColor(gdl++, 0, 0, fx->red ? 0xff : 0x40, fx->red ? 0x30 : 0xff, fx->red ? 0x20 : 0x30, 0xe0);
 			gdl = zombiesRayQuad(gdl, cam, &mid, a, b);
 		}
 
@@ -2656,7 +3469,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 			b[k] = up[k] * ZOMBIE_RAYFX_HEAD;
 		}
 
-		gDPSetPrimColor(gdl++, 0, 0, 0xa0, 0xff, 0x90, 0xff);
+		gDPSetPrimColor(gdl++, 0, 0, fx->red ? 0xff : 0xa0, fx->red ? 0x90 : 0xff, fx->red ? 0x80 : 0x90, 0xff);
 		gdl = zombiesRayQuad(gdl, cam, &head, a, b);
 	}
 
@@ -2689,7 +3502,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 			}
 
 			gdl = zombiesRayTex(gdl, false);
-			gDPSetPrimColor(gdl++, 0, 0, 0x60, 0xff, 0x50, (u8)(0xff * f));
+			gDPSetPrimColor(gdl++, 0, 0, fx->red ? 0xff : 0x60, fx->red ? 0x50 : 0xff, fx->red ? 0x40 : 0x50, (u8)(0xff * f));
 			gdl = zombiesRayQuad(gdl, cam, &at, a, b);
 		}
 
@@ -2702,158 +3515,12 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 		}
 
 		gdl = zombiesRayTex(gdl, true);
-		gDPSetPrimColor(gdl++, 0, 0, 0x50, 0xff, 0x40, (u8)(0xff * (1 - f)));
+		gDPSetPrimColor(gdl++, 0, 0, fx->red ? 0xff : 0x50, fx->red ? 0x40 : 0xff, fx->red ? 0x30 : 0x40, (u8)(0xff * (1 - f)));
 		gdl = zombiesRayQuad(gdl, cam, &at, a, b);
 	}
 
-	gDPPipeSync(gdl++);
-	gSPClearExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
-	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
-
-	return gdl;
-}
-
-
-static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
-{
-	struct zombiemesh *zm = &g_ZombieMeshes[id];
-	Mtxf *cam = camGetWorldToScreenMtxf();
-	struct coord sign;
-	struct coord floor;
-	struct coord front;
-	f32 objpos[3];
-	f32 scale;
-	f32 r;
-	u8 rgb[3];
-	s32 i;
-
-	if (!zm->gdl || zm->width <= 0 || zm->height <= 0) {
-		return gdl;
-	}
-
-	// the sign: near the top, at the front, across the middle
-	objpos[0] = zm->midx;
-	objpos[1] = -(zm->zmin + zm->depth + 6);
-	objpos[2] = zm->ymin + zm->height * 0.86f;
-
-	if (!zombiesMachineMeshPoint(id, obj, objpos, &sign, &front)) {
-		return gdl;
-	}
-
-	// the floor in front: its foot, a little out from its front
-	objpos[1] = -(zm->zmin + zm->depth + 30);
-	objpos[2] = zm->ymin + 1.5f;
-
-	if (!zombiesMachineMeshPoint(id, obj, objpos, &floor, NULL)) {
-		return gdl;
-	}
-
-	if (!g_ZombieGlowTexMade) {
-		zombiesGlowTexMake();
-	}
-
-	// The floor itself, which the model's foot need not be on: looked up
-	// once for each place the machine stands
-	{
-		static struct coord at[ZOMBIE_PAP_ID + 1];
-		static f32 ground[ZOMBIE_PAP_ID + 1];
-		static bool known[ZOMBIE_PAP_ID + 1];
-
-		if (!known[id] || at[id].x != obj->prop->pos.x || at[id].y != obj->prop->pos.y || at[id].z != obj->prop->pos.z) {
-			struct coord probe = floor;
-
-			probe.y = obj->prop->pos.y;
-			ground[id] = zombiesGroundAt(&probe, obj->prop->rooms);
-			at[id] = obj->prop->pos;
-			known[id] = true;
-		}
-
-		// none found (off a ledge): the model's foot
-		if (ground[id] > floor.y - 100 && ground[id] < obj->prop->pos.y + 50) {
-			floor.y = ground[id] + 1.5f;
-		}
-	}
-
-	zombiesMachineGlowColour(id, rgb);
-
-	gDPPipeSync(gdl++);
-	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
-	gDPSetRenderMode(gdl++, G_RM_ZB_XLU_SURF, G_RM_ZB_XLU_SURF2);
-	gDPSetCombineLERP(gdl++, 0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0,
-			0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0);
-	gDPSetTextureFilter(gdl++, G_TF_BILERP);
-	gDPSetTexturePersp(gdl++, G_TP_PERSP);
-	gDPSetTextureLOD(gdl++, G_TL_TILE);
-	gDPSetTextureLUT(gdl++, G_TT_NONE);
-	gDPSetTextureConvert(gdl++, G_TC_FILT);
-	gDPSetAlphaCompare(gdl++, G_AC_NONE);
-	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
-	gDPLoadTextureBlock(gdl++, g_ZombieGlowTex, G_IM_FMT_I, G_IM_SIZ_8b,
-			ZOMBIE_GLOW_TEX, ZOMBIE_GLOW_TEX, 0,
-			G_TX_CLAMP | G_TX_NOMIRROR, G_TX_CLAMP | G_TX_NOMIRROR,
-			G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
-	gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
-	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
-	gSPSetExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
-
-	// The pool on the floor: a flat quad, across the machine's front and out
-	// from it, in the world
-	{
-		Mtxf world;
-		Mtxf *mtx = gfxAllocateMatrix();
-		f32 across = zm->width * ZOMBIE_MESH_SCALE * 0.9f;
-		f32 out = 90;
-		const s16 corners[4][3] = {
-			{ (s16)-across, 0, (s16)-out }, { (s16)across, 0, (s16)-out },
-			{ (s16)across, 0, (s16)out }, { (s16)-across, 0, (s16)out },
-		};
-
-		mtx4LoadIdentity(&world);
-		// x across the front, z out of it
-		world.m[0][0] = front.z;
-		world.m[0][2] = -front.x;
-		world.m[2][0] = front.x;
-		world.m[2][2] = front.z;
-		world.m[3][0] = floor.x;
-		world.m[3][1] = floor.y;
-		world.m[3][2] = floor.z;
-
-		mtx4MultMtx4(cam, &world, mtx);
-
-		gDPSetPrimColor(gdl++, 0, 0, rgb[0], rgb[1], rgb[2], ZOMBIE_GLOW_FLOOR);
-		gdl = zombiesGlowQuad(gdl, mtx, corners);
-	}
-
-	// The halo round the sign: a square turned to the camera, the sign's
-	// place taken into the view and the square laid out there
-	{
-		Mtxf *mtx = gfxAllocateMatrix();
-		f32 c[3];
-		s16 h;
-
-		scale = sqrtf(cam->m[0][0] * cam->m[0][0] + cam->m[0][1] * cam->m[0][1] + cam->m[0][2] * cam->m[0][2]);
-		// by the width of a perk machine at most: Pack-a-Punch on its table is
-		// two metres across, and its halo washed the walls behind purple
-		r = (zm->width < 100 ? zm->width : 100) * ZOMBIE_MESH_SCALE * 0.9f;
-		h = (s16)r;
-
-		for (i = 0; i < 3; i++) {
-			c[i] = cam->m[0][i] * sign.x + cam->m[1][i] * sign.y + cam->m[2][i] * sign.z + cam->m[3][i];
-		}
-
-		mtx4LoadIdentity(mtx);
-		mtx->m[0][0] = mtx->m[1][1] = mtx->m[2][2] = scale;
-		mtx->m[3][0] = c[0];
-		mtx->m[3][1] = c[1];
-		mtx->m[3][2] = c[2];
-
-		{
-			const s16 corners[4][3] = { { -h, h, 0 }, { h, h, 0 }, { h, -h, 0 }, { -h, -h, 0 } };
-
-			gDPSetPrimColor(gdl++, 0, 0, rgb[0], rgb[1], rgb[2], ZOMBIE_GLOW_HALO);
-			gdl = zombiesGlowQuad(gdl, mtx, corners);
-		}
-	}
+	// the next quads are the glow texture's
+	g_ZombieQuadTex = ZOMBIE_GLOW_TEX;
 
 	gDPPipeSync(gdl++);
 	gSPClearExtraGeometryModeEXT(gdl++, G_ADDITIVE_EXT);
@@ -2861,6 +3528,7 @@ static Gfx *zombiesRenderMachineGlow(Gfx *gdl, s32 id, struct defaultobj *obj)
 
 	return gdl;
 }
+
 
 static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj);
@@ -2924,9 +3592,9 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 		return false;
 	}
 
-	// drawn in the opaque pass; the translucent one has its glow
+	// all of it in the opaque pass (a glow round it in the translucent one
+	// made the machines look like lamps: gone)
 	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
-		renderdata->gdl = zombiesRenderMachineGlow(renderdata->gdl, id, obj);
 		return true;
 	}
 
@@ -3450,6 +4118,7 @@ static Gfx *zombiesRenderThrowViewmodel(Gfx *gdl)
 
 f32 zombiesSprintGunFrac(void);
 f32 zombiesGunLowerFrac(void);
+static f32 zombiesGameOverGunLower(void);
 f32 zombiesHandRate(s32 handstate);
 
 /**
@@ -3498,6 +4167,8 @@ struct zombievmgun {
 	bool ok;
 	s32 numparts;
 	s32 sightpart; // which part is j_gun, -1 none
+	u32 capsules;  // the parts that are its vials (tag_battery_*), a bit each: tinted
+	u32 dials;     // ... and its dial (tag_knob): no camo on either, Pack-a-Punched
 	struct zombiemesh meshes[ZOMBIE_VMGUN_PARTS];
 	s32 ticks[ZVM_COUNT];
 	const f32 *mtx[ZVM_COUNT];
@@ -3586,6 +4257,14 @@ static bool zombiesVmGunLoad(struct zombievmgun *gun)
 
 			if (strcmp(bone, "j_gun") == 0) {
 				gun->sightpart = gun->numparts;
+			}
+
+			if (strncmp(bone, "tag_battery", 11) == 0) {
+				gun->capsules |= 1u << gun->numparts;
+			}
+
+			if (strcmp(bone, "tag_knob") == 0) {
+				gun->dials |= 1u << gun->numparts;
 			}
 
 			gun->numparts++;
@@ -3694,7 +4373,22 @@ static void zombiesVmGunTick(s32 playernum, struct zombievmgun *gun, s32 weaponn
 	// on through the clip: the reload's over the host's reload, Speed Cola's
 	// rate and all
 	if (g_ZombieVm[playernum].clip == ZVM_RELOAD) {
+		// Black Ops II's own reload sounds, as the clip passes each: the
+		// lid open, the vial out, the new one in, the lid shut (zmsfx.c)
+		static const f32 at[4] = { 0.04f, 0.26f, 0.52f, 0.80f };
+		static const s32 slot[4] = { ZMSFX_RAYGUN_RELOAD_OPEN, ZMSFX_RAYGUN_RELOAD_OUT, ZMSFX_RAYGUN_RELOAD_IN, ZMSFX_RAYGUN_RELOAD_CLOSE };
+		const f32 was = g_ZombieVm[playernum].t / gun->ticks[ZVM_RELOAD];
+		f32 now;
+		s32 k;
+
 		g_ZombieVm[playernum].t += dt * zombiesHandRate(HANDSTATE_RELOAD) * gun->ticks[ZVM_RELOAD] / ZOMBIE_VMGUN_PDRELOAD;
+		now = g_ZombieVm[playernum].t / gun->ticks[ZVM_RELOAD];
+
+		for (k = 0; k < 4; k++) {
+			if (weaponnum == WEAPON_ZM_RAYGUN && was < at[k] && now >= at[k] && zmSfxSound(slot[k])) {
+				zombiesPlaySoundHere(zmSfxSound(slot[k]), 1.0f);
+			}
+		}
 	} else {
 		g_ZombieVm[playernum].t += dt;
 	}
@@ -3830,10 +4524,30 @@ static void zombiesVmGunAds(struct zombievmgun *gun, f32 *pose, f32 frac)
 	}
 }
 
+static bool zombiesGunIsPapped(s32 playernum, s32 weaponnum);
+
+/**
+ * The gun and the hands a little further off than the bake has them: it
+ * filled too much of the view. Moved out along the line from the eye, so
+ * the gun is the same shape, smaller in the view and where it was, and down
+ * the sights its ring stays on the eye's line.
+ */
+#define ZOMBIE_VMGUN_FAR 1.2f
+
+static void zombiesVmGunFar(Mtxf *m)
+{
+	m->m[3][0] *= ZOMBIE_VMGUN_FAR;
+	m->m[3][1] *= ZOMBIE_VMGUN_FAR;
+	m->m[3][2] *= ZOMBIE_VMGUN_FAR;
+}
+
+static Gfx *zombiesCamoAt(Gfx *gdl);
+
 Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 {
 	const s32 playernum = g_Vars.currentplayernum;
 	struct player *player = g_Vars.currentplayer;
+	bool papped;
 	struct zombievmgun *gun;
 	struct model *handmodel;
 	struct modelrenderdata renderdata = {NULL, true, 3};
@@ -3922,6 +4636,7 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 
 	for (j = 0; j < n; j++) {
 		zombiesDrinkMtx(pose + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
+		zombiesVmGunFar(&matrices[j]);
 		matrices[j].m[3][1] -= lower * ZOMBIE_VMGUN_LOWER;
 	}
 
@@ -3967,6 +4682,11 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 	handmodel->matrices = saved;
 	gdl = renderdata.gdl;
 
+	papped = zombiesGunIsPapped(playernum, weaponnum);
+
+	// the coil's camo, this frame's and the gun's (green, or red upgraded)
+	zombiesRayGlowWrite(papped);
+
 	// the gun's parts, each as its bone has it
 	for (j = 0; j < gun->numparts; j++) {
 		struct zombiemesh *zm = &gun->meshes[j];
@@ -3978,11 +4698,42 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 
 		mtx = gfxAllocateMatrix();
 		zombiesDrinkMtx(pose + (ZOMBIE_DRINK_JOINTS + j) * 12, g_ZombieBottleObjAxes, mtx);
+		zombiesVmGunFar(mtx);
 		mtx->m[3][1] -= lower * ZOMBIE_VMGUN_LOWER;
-		// half the room's light over a bright base, as the machines and the
-		// bottles are: the room's alone left a dim room's gun near black
-		gdl = zombiesBottleDraw(gdl, zm, mtx, 0x80 + (player->gunshadecol[0] >> 1),
-				0x80 + (player->gunshadecol[1] >> 1), 0x80 + (player->gunshadecol[2] >> 1));
+
+		// a third of the room's light over a bright base: the room's alone
+		// left a dim room's gun near black, and half of it still looked dull
+		{
+			u8 rgb[3];
+			s32 c;
+
+			for (c = 0; c < 3; c++) {
+				rgb[c] = 0xb0 + player->gunshadecol[c] * 0x4f / 0xff;
+			}
+
+			// the vials: Buried's green, Pack-a-Punch's red
+			if (gun->capsules & (1u << j)) {
+				if (papped) {
+					rgb[0] = 0xff;
+					rgb[1] = rgb[1] / 5;
+					rgb[2] = rgb[2] / 6;
+				} else {
+					rgb[0] = rgb[0] / 4;
+					rgb[1] = 0xff;
+					rgb[2] = rgb[2] / 4;
+				}
+			}
+
+			// Pack-a-Punched: camo over the gun, as Call of Duty's, but not
+			// over the dial or the vials
+			if (papped && !((gun->capsules | gun->dials) & (1u << j))) {
+				gdl = zombiesCamoAt(gdl);
+				gdl = zombiesBottleDraw(gdl, zm, mtx, rgb[0], rgb[1], rgb[2]);
+				gDPGrayscaleEXT(gdl++, 0);
+			} else {
+				gdl = zombiesBottleDraw(gdl, zm, mtx, rgb[0], rgb[1], rgb[2]);
+			}
+		}
 	}
 
 	mtxF2LBulk(matrices, n);
@@ -4036,19 +4787,11 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 
 	matrices = gfxAllocate(n * sizeof(Mtxf));
 
+	// Both hands, as Black Ops II's drink has them: the left one takes the
+	// cap off (its sndnt#evt_perk_bottle_open, frame 16). It was put behind
+	// the eye, and the cap came off the bottle by itself.
 	for (j = 0; j < n; j++) {
 		zombiesDrinkMtx(frame + (j < ZOMBIE_DRINK_JOINTS ? j : 0) * 12, NULL, &matrices[j]);
-
-		// The drink is the right hand's. The hand model with a gun shows no
-		// left hand, but the fists (bare hands) have both, and the left one
-		// stood at the edge of the view; put behind the eye here, as good as
-		// not there. Not folded to nothing: a matrix of no size has no
-		// inverse, and the release's meshes, lit from one, lost both hands
-		if (j >= ZOMBIE_DRINK_LEFTHAND && j < ZOMBIE_DRINK_JOINTS) {
-			matrices[j].m[3][0] = 0;
-			matrices[j].m[3][1] = 0;
-			matrices[j].m[3][2] = 20000;
-		}
 	}
 
 	// in bgunRender()'s depth and projection, which the guns have set
@@ -4070,10 +4813,31 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 	modelUpdateRelations(handmodel);
 
 	// the release's meshes keep a model's pose for the rest of the pass
-	// (xblamesh.c), and the hands may have been drawn on the gun already
-	xblaMeshPassBegin();
-	modelRender(&renderdata, handmodel);
-	xblaMeshPassBegin();
+	// (xblamesh.c), and the hands may have been drawn on the gun already;
+	// the left hand switched on (a gun's hand model holds it off), and put
+	// back as it was, as the grenade's throw does
+	{
+		struct modelnode *node = modelGetPart(handmodel->definition, MODELPART_HAND_LEFT);
+		struct modelrwdata_toggle *left = NULL;
+		bool wasvisible = false;
+
+		if (node && (node->type & 0xff) == MODELNODETYPE_TOGGLE) {
+			left = modelGetNodeRwData(handmodel, node);
+		}
+
+		if (left) {
+			wasvisible = left->visible;
+			left->visible = true;
+		}
+
+		xblaMeshPassBegin();
+		modelRender(&renderdata, handmodel);
+		xblaMeshPassBegin();
+
+		if (left) {
+			left->visible = wasvisible;
+		}
+	}
 
 	handmodel->matrices = saved;
 	gdl = renderdata.gdl;
@@ -4152,7 +4916,17 @@ static struct modelnode *zombiesPositionAbove(struct modelnode *node)
 	return NULL;
 }
 
+static bool zombiesBodyArmOf(struct model *model, struct zombiebodyarm *arm, s32 handpart);
+static bool zombiesThrowBodyLoad(void);
+static bool zombiesDrinkClipOn(void);
+
 static bool zombiesBodyArm(struct model *model, struct zombiebodyarm *arm)
+{
+	return zombiesBodyArmOf(model, arm, MODELPART_CHR_RIGHTHAND);
+}
+
+// The arm up from a hand (MODELPART_CHR_RIGHTHAND or _LEFTHAND)
+static bool zombiesBodyArmOf(struct model *model, struct zombiebodyarm *arm, s32 handpart)
 {
 	struct modelnode *hand;
 	struct modelnode *elbow;
@@ -4166,7 +4940,7 @@ static bool zombiesBodyArm(struct model *model, struct zombiebodyarm *arm)
 		return false;
 	}
 
-	hand = modelGetPart(model->definition, MODELPART_CHR_RIGHTHAND);
+	hand = modelGetPart(model->definition, handpart);
 
 	if (!hand || (hand->type & 0xff) != MODELNODETYPE_POSITION) {
 		return false;
@@ -4385,7 +5159,9 @@ void zombiesPoseDrinkArm(struct chrdata *chr, struct model *model)
 
 	t = zombiesBodyDrinkT(chr, NULL);
 
-	if (t < 0 || !zombiesBodyArm(model, &arm)) {
+	// Black Ops II's own drink on the body, when its clip is there
+	// (zombiesPoseThrowArms()): this arm bent to it is what was had before
+	if (t < 0 || zombiesDrinkClipOn() || !zombiesBodyArm(model, &arm)) {
 		return;
 	}
 
@@ -5234,7 +6010,7 @@ void zombiesPoseDive(struct chrdata *chr, struct model *model)
  * down the body's own offsets from the chest. Without the file the body
  * throws with nothing.
  */
-#define ZOMBIE_THROWBODY_PARTS 7 // the chest (part 2) and the arms (3 to 8)
+#define ZOMBIE_THROWBODY_PARTS 8 // the chest (part 2), the arms (3 to 8) and the head's turn in the chest's
 #define ZOMBIE_THROWBODY_IN    9 // 60ths from the body's own pose into the clip
 #define ZOMBIE_THROWBODY_LETGO 10 // the frag gone from the body's hand: the arm out (the stand throw's 7th frame)
 
@@ -5243,8 +6019,25 @@ enum {
 	ZTCLIP_STAND,
 	ZTCLIP_CROUCH,
 	ZTCLIP_PRONE,
+	ZTCLIP_DRINK, // a perk's drink, Black Ops II's third person p_zombie_perkacola_drink
 	ZTCLIP_COUNT
 };
+
+/**
+ * The drink on the body, Black Ops II's own: its clip (65 frames at 30) from
+ * the bottle coming up, two of the drink's 60ths a frame, easing in and out
+ * over ZOMBIE_THROWBODY_IN. Its notes: the bottle picked up (14), drunk (31),
+ * thrown (46); held in the left hand all the while (anim_gunhand "left").
+ */
+// Off until it is right (2026-10-22): the clip's check sheet curls the right
+// arm over the head to drink, as Black Ops II's does, but laid on the body in
+// the game an arm stood out straight in front at that frame. The bent arm
+// (zombiesPoseDrinkArm()) brings the bottle to the mouth meanwhile.
+#define ZOMBIE_DRINKBODY_CLIP   0
+#define ZOMBIE_DRINKBODY_PICKUP 28 // the drink's 60ths: the bottle in the left hand,
+#define ZOMBIE_DRINKBODY_UNCAP  40 // its cap off,
+#define ZOMBIE_DRINKBODY_THROW  92 // and thrown away
+#define ZOMBIE_DRINKBODY_END    128
 
 static struct {
 	bool tried;
@@ -5315,6 +6108,12 @@ static bool zombiesThrowBodyLoad(void)
 	return true;
 }
 
+// The drink on the body is Black Ops II's clip (ZOMBIE_DRINKBODY_CLIP, and the file there)
+static bool zombiesDrinkClipOn(void)
+{
+	return ZOMBIE_DRINKBODY_CLIP && zombiesThrowBodyLoad();
+}
+
 // A clip's parts at frame f (fractions between frames), as quaternions
 static void zombiesThrowBodySample(s32 clip, f32 f, f32 q[ZOMBIE_THROWBODY_PARTS][4])
 {
@@ -5359,6 +6158,27 @@ static bool zombiesThrowBodyAt(s32 playernum, s32 *clip, f32 *frame, f32 *weight
 	f32 f;
 
 	*weight = 1;
+
+	// a perk being drunk (no throw meanwhile)
+	if (g_ZombieThrowStage[playernum] == ZTHROW_NONE) {
+		if (!ZOMBIE_DRINKBODY_CLIP) {
+			return false;
+		}
+
+		const s32 dt = g_ZombieDrink60[playernum] - DRINK_GUNDOWN;
+
+		if (g_ZombieDrink60[playernum] < 0 || dt < 0 || dt >= ZOMBIE_DRINKBODY_END) {
+			return false;
+		}
+
+		*clip = ZTCLIP_DRINK;
+		*frame = dt / 2.0f;
+		*weight = MIN((f32)dt / ZOMBIE_THROWBODY_IN, (f32)(ZOMBIE_DRINKBODY_END - dt) / ZOMBIE_THROWBODY_IN);
+		*weight = *weight < 0 ? 0 : *weight > 1 ? 1 : *weight;
+		*weight = *weight * *weight * (3 - 2 * *weight);
+
+		return *weight > 0;
+	}
 
 	switch (g_ZombieThrowStage[playernum]) {
 	case ZTHROW_DOWN:
@@ -5454,6 +6274,153 @@ static bool zombiesBodyThrowing(struct chrdata *chr, bool *inhand)
 	return stage == ZTHROW_PIN || stage == ZTHROW_HOLD || stage == ZTHROW_OUT;
 }
 
+/**
+ * zombiesPoseThrowArms()'s head, before the chest is set: every matrix of the
+ * nodes under the body's head spot turned by D = H * L^-1 about the neck (the
+ * first of them), where L is the chest's turn as the body has it (chest, live)
+ * and H the clip's head on the chest it is about to have (want, mixed in by
+ * weight); and carried as the chest's turn carries the neck.
+ */
+static void zombiesThrowBodyHead(struct model *model, Mtxf *chest, Mtxf *want, const f32 qhead[4], f32 weight)
+{
+	static u8 seen[512];
+	const f32 qnone[4] = { 1, 0, 0, 0 };
+	struct modelnode *spot = NULL;
+	struct modelnode *node;
+	Mtxf live;
+	Mtxf mixed;
+	Mtxf head;
+	Mtxf h;
+	f32 ql[4];
+	f32 qw[4];
+	f32 qc[4];
+	f32 qh[4];
+	f32 r[3][3];
+	f32 pivot[3];
+	f32 moved[3];
+	f32 off[3];
+	bool havepivot = false;
+	s32 n = model->definition->nummatrices;
+	s32 i;
+	s32 k;
+
+	for (node = model->definition->rootnode; node && !spot;) {
+		if ((node->type & 0xff) == MODELNODETYPE_HEADSPOT) {
+			spot = node;
+			break;
+		}
+
+		if (node->child) {
+			node = node->child;
+		} else {
+			while (node) {
+				if (node->next) {
+					node = node->next;
+					break;
+				}
+
+				node = node->parent;
+			}
+		}
+	}
+
+	if (!spot || !spot->child || n > (s32)sizeof(seen)) {
+		return;
+	}
+
+	// the chest as it is and as it will be, the head's turn on it
+	zombiesMtxQuat(chest, ql);
+	quaternion0f097044(want, qw);
+	quaternion0f0976c0(ql, qw);
+	quaternionSlerp(ql, qw, weight, qc);
+	quaternionToMtx(ql, &live);
+	quaternionToMtx(qc, &mixed);
+
+	{
+		f32 qn[4] = { qnone[0], qnone[1], qnone[2], qnone[3] };
+		f32 qt[4] = { qhead[0], qhead[1], qhead[2], qhead[3] };
+
+		quaternion0f0976c0(qn, qt);
+		quaternionSlerp(qn, qt, weight, qh);
+		quaternionToMtx(qh, &head);
+	}
+
+	mtx00015be4(&mixed, &head, &h);
+
+	// D = H * L^-1 (L a turn: its inverse its transpose), as rows
+	for (i = 0; i < 3; i++) {
+		for (k = 0; k < 3; k++) {
+			r[i][k] = h.m[0][i] * live.m[0][k] + h.m[1][i] * live.m[1][k] + h.m[2][i] * live.m[2][k];
+		}
+	}
+
+	bzero(seen, n);
+
+	for (node = spot->child; node;) {
+		if ((node->type & 0xff) == MODELNODETYPE_POSITION) {
+			struct modelrodata_position *rodata = &node->rodata->position;
+			s32 e;
+
+			for (e = 0; e < 3; e++) {
+				const s32 idx = rodata->mtxindexes[e];
+
+				if (idx < 0 || idx >= n || seen[idx]) {
+					continue;
+				}
+
+				seen[idx] = 1;
+
+				// the neck: the first, the pivot, carried with the chest's
+				// own turn about its middle
+				if (!havepivot) {
+					havepivot = true;
+
+					for (i = 0; i < 3; i++) {
+						pivot[i] = model->matrices[idx].m[3][i];
+						off[i] = pivot[i] - chest->m[3][i];
+					}
+
+					{
+						f32 local[3];
+
+						for (i = 0; i < 3; i++) {
+							local[i] = live.m[i][0] * off[0] + live.m[i][1] * off[1] + live.m[i][2] * off[2];
+						}
+
+						for (i = 0; i < 3; i++) {
+							moved[i] = chest->m[3][i] + mixed.m[0][i] * local[0] + mixed.m[1][i] * local[1]
+								+ mixed.m[2][i] * local[2] - pivot[i];
+						}
+					}
+				}
+
+				zombiesMtxTurnAbout(&model->matrices[idx], r, pivot);
+
+				for (i = 0; i < 3; i++) {
+					model->matrices[idx].m[3][i] += moved[i];
+				}
+			}
+		}
+
+		if (node->child) {
+			node = node->child;
+		} else {
+			while (node && node != spot) {
+				if (node->next) {
+					node = node->next;
+					break;
+				}
+
+				node = node->parent;
+			}
+
+			if (node == spot) {
+				break;
+			}
+		}
+	}
+}
+
 // chr.c, after the body's animation, a dive's pose and a drink's arm
 void zombiesPoseThrowArms(struct chrdata *chr, struct model *model)
 {
@@ -5478,7 +6445,8 @@ void zombiesPoseThrowArms(struct chrdata *chr, struct model *model)
 
 	playernum = playermgrGetPlayerNumByProp(chr->prop);
 
-	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieThrowStage[playernum] == ZTHROW_NONE
+	// a throw, or a drink (zombiesThrowBodyAt())
+	if (playernum < 0 || playernum >= MAX_PLAYERS
 			|| !zombiesThrowBodyLoad() || !zombiesThrowBodyAt(playernum, &clip, &frame, &weight)) {
 		return;
 	}
@@ -5583,6 +6551,12 @@ void zombiesPoseThrowArms(struct chrdata *chr, struct model *model)
 		}
 	}
 
+	// the head: everything under the body's head spot (the head's own nodes)
+	// turned as the clip has it in the chest's frame. Perfect Dark's body has
+	// no neck, and the head was left as the body's own animation had it -
+	// upright through a drink, its bottle held up before the face.
+	zombiesThrowBodyHead(model, &model->matrices[nodes[2]->rodata->position.mtxindex0], &rot[2], q[7], weight);
+
 	for (j = 2; j <= 8; j++) {
 		struct modelrodata_position *rodata = &nodes[j]->rodata->position;
 
@@ -5651,7 +6625,1234 @@ bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop)
 	return prop == chr->weapons_held[0] || prop == chr->weapons_held[1];
 }
 
+/**
+ * Black Ops II's own zombie drawn in place of a zombie's Perfect Dark body
+ * (zmchar.c): chrRender(), for each body it is about to draw. True when it
+ * was drawn here and the body is not; the body still stands, unseen, for
+ * everything else (shots, the hit parts, the walk), and its held props are
+ * drawn as they were.
+ *
+ * Its animation is chosen by how fast the zombie is going - idle, walk, run,
+ * sprint, Call of Duty's own speeds between them - and played as fast as it
+ * goes, so that its feet keep up with the ground; a change blends over
+ * ZOMBIE_COD_BLEND60. Dying, it plays one of Call of Duty's four deaths
+ * through once and lies at its end.
+ */
+#define ZOMBIE_COD_SCALE   2.54f // our units an inch: Call of Duty's zombie at its own size
+#define ZOMBIE_COD_BLEND60 12    // one animation into the next
+#define ZOMBIE_COD_IDLE    8.0f  // inches a second: slower than this stands
+#define ZOMBIE_COD_RUN     72.0f // between the walk's 37.6 and the run's 108
+#define ZOMBIE_COD_SPRINT  125.0f
+#define ZOMBIE_COD_CRAWLFAST 25.0f // between the crawl's 14 and its sprint's 40
+#define ZOMBIE_COD_REACH     150.0f // how near a player a zombie swipes at them: Call of Duty's 60 inches (a bot's own punch reaches 210)
+
+static struct {
+	s32 anim;
+	f32 frame;
+	s32 from;          // the animation blended out of, and its frame
+	f32 fromframe;
+	f32 blend;         // what is left of it, 1 to 0
+	f32 speed;         // inches a second, smoothed
+	struct coord last; // where it was at its last tick
+	s32 tickframe;     // the level frame it was last ticked on
+	struct chrdata *chr;
+} g_ZombieCod[MAX_BOTS];
+
+/**
+ * A zombie's swipe, Black Ops II's: begun in the game's tick (the host's) when
+ * a player is in reach, and dealt at its clip's own "fire" notes - the walking
+ * swipe's frame 6, the standing one's 25 and 39, the crawler's 24 and 54 - to
+ * a player still in reach and in sight, a zombie's blow each
+ * (ZOMBIE_REACH_BLOW). The body under it no longer hurts anyone with its own
+ * punch (chrPunchInflictDamage()), so what is seen is what lands.
+ */
+static struct {
+	s32 anim;          // its swipe, -1 none
+	s32 t60;           // how far through
+	u32 fired;         // which of its blows have been dealt
+	s32 rest60;        // till it may swing again
+	s32 near60;        // how long a player has been in its reach, for the swing to begin
+	struct coord last; // where it was a tick ago, for whether it is walking
+} g_ZombieSwing[MAX_BOTS];
+
+/**
+ * A zombie off a ledge: Black Ops II's jump down (zmcharJumpDown()) nearest
+ * the drop, taken up where its root leaves the ledge. Perfect Dark's own fall
+ * carries the body; the clip goes as far down as the zombie has gone, drawn at
+ * its feet rather than on the floor below, and plays its landing out once it
+ * is down.
+ */
+#define ZOMBIE_COD_DROP 30.0f // inches: a fall deeper is a jump down (Call of Duty's least is 48; a stair's is a few)
+
+static struct {
+	s32 stage;   // 0 on its floor, 1 in the air, 2 landing
+	s32 anim;
+	f32 floor;   // its feet's height the last time it stood
+	f32 top;     // the ledge's
+	f32 leave;   // the clip's frame off the ledge
+	f32 land;    // and on the floor
+} g_ZombieCodFall[MAX_BOTS];
+
+static Mtxf g_ZombieCodPlace[MAX_BOTS]; // each one's place as last drawn: its vertices' units into the world
+static bool g_ZombieCodPlaced[MAX_BOTS];
+
+static bool zombiesCodIsDeath(s32 anim)
+{
+	return (anim >= ZMCHAR_DEATH_A && anim <= ZMCHAR_DEATH_D) || anim == ZMCHAR_CRAWL_DEATH_A || anim == ZMCHAR_CRAWL_DEATH_B;
+}
+
+// Whether a player who is up stands in a zombie's reach
+static bool zombiesCodNearPlayer(struct chrdata *chr)
+{
+	s32 p;
+
+	for (p = 0; p < PLAYERCOUNT(); p++) {
+		struct prop *pp = g_Vars.players[p] ? g_Vars.players[p]->prop : NULL;
+
+		if (pp && zombiesPlayerIsUp(p)) {
+			const f32 dx = pp->pos.x - chr->prop->pos.x;
+			const f32 dy = pp->pos.y - chr->prop->pos.y;
+			const f32 dz = pp->pos.z - chr->prop->pos.z;
+
+			if (dx * dx + dz * dz < ZOMBIE_COD_REACH * ZOMBIE_COD_REACH && dy < 120 && dy > -120) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static void zombiesCodSet(s32 i, s32 anim)
+{
+	if (g_ZombieCod[i].anim == anim) {
+		return;
+	}
+
+	g_ZombieCod[i].from = g_ZombieCod[i].anim;
+	g_ZombieCod[i].fromframe = g_ZombieCod[i].frame;
+	g_ZombieCod[i].blend = 1;
+	g_ZombieCod[i].anim = anim;
+	g_ZombieCod[i].frame = 0;
+}
+
+static bool zombiesCodBarrier(s32 i, struct chrdata *chr, s32 *anim, f32 *frame);
+static void zombiesCodBarrierPlace(s32 i, Mtxf *world);
+
+static void zombiesReachHit(struct chrdata *zchr, s32 playernum);
+
+// A swipe's blows, its clip's "fire" notes (frames at 30 a second), 0 ending
+#define ZOMBIE_SWING_REST60 90 // a breath between one swipe and the next (45 was still too quick, a tester)
+// A player in reach this long before the swing begins: begun the tick one
+// came in reach, the walking swipe's blow (its frame 6, a fifth of a second)
+// caught a player running past for a moment
+#define ZOMBIE_SWING_WINDUP60 21
+
+static const u8 *zombiesSwingFires(s32 anim)
+{
+	static const u8 walking[] = { 6, 0 };
+	// one blow a swing: the standing swipe's and the crawler's second (39, 54)
+	// landed hard on the first and a player went down in one swing
+	static const u8 standing[] = { 25, 0 };
+	static const u8 crawling[] = { 24, 0 };
+
+	return anim == ZMCHAR_ATTACK ? walking : anim == ZMCHAR_STAND_ATTACK ? standing : crawling;
+}
+
+// zombiesCodOwnsBlows() asks, for chrPunchInflictDamage(): whether the swipes are these
+bool zombiesCodOwnsBlows(void)
+{
+	return zombiesIsActive() && zmcharReady();
+}
+
+/**
+ * zombiesTick()'s, the host's, each tick: every zombie's swipe begun, moved
+ * on and its blows dealt, whether it is drawn or not
+ */
+static void zombiesTickSwings(void)
+{
+	const f32 secs = g_Vars.lvupdate60freal / 60.0f;
+	s32 i;
+
+	if (!zombiesCodOwnsBlows() || NET_CLIENT) {
+		return;
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		f32 moved;
+
+		// no zombie carries a shield: a darksim (round 9 on) spawned with
+		// one on an arena that has them, and could pick one up
+		if (zchr && zchr->cshield > 0) {
+			zchr->cshield = 0;
+		}
+
+		if (!zchr || !zchr->prop || chrIsDead(zchr) || zchr->actiontype == ACT_DIE || zchr->actiontype == ACT_DEAD
+				|| g_ZombieAtBarrier[i] >= 0) {
+			g_ZombieSwing[i].anim = -1;
+
+			if (zchr && zchr->prop) {
+				g_ZombieSwing[i].last = zchr->prop->pos;
+			}
+
+			continue;
+		}
+
+		moved = sqrtf((zchr->prop->pos.x - g_ZombieSwing[i].last.x) * (zchr->prop->pos.x - g_ZombieSwing[i].last.x)
+				+ (zchr->prop->pos.z - g_ZombieSwing[i].last.z) * (zchr->prop->pos.z - g_ZombieSwing[i].last.z));
+		g_ZombieSwing[i].last = zchr->prop->pos;
+
+		if (g_ZombieSwing[i].anim < 0 && g_ZombieSwing[i].rest60 > 0) {
+			g_ZombieSwing[i].rest60 -= g_Vars.lvupdate60;
+			continue;
+		}
+
+		if (g_ZombieSwing[i].anim < 0) {
+			if (!zombiesCodNearPlayer(zchr)) {
+				g_ZombieSwing[i].near60 = 0;
+				continue;
+			}
+
+			g_ZombieSwing[i].near60 += g_Vars.lvupdate60;
+
+			if (g_ZombieSwing[i].near60 >= ZOMBIE_SWING_WINDUP60) {
+				const bool walking = secs > 0 && moved / ZOMBIE_COD_SCALE / secs >= ZOMBIE_COD_IDLE;
+
+				g_ZombieSwing[i].anim = g_ZombieCrawler[i] ? ZMCHAR_CRAWL_ATTACK : walking ? ZMCHAR_ATTACK : ZMCHAR_STAND_ATTACK;
+				g_ZombieSwing[i].t60 = 0;
+				g_ZombieSwing[i].fired = 0;
+				g_ZombieSwing[i].near60 = 0;
+			}
+
+			continue;
+		}
+
+		{
+			const s32 anim = g_ZombieSwing[i].anim;
+			const u8 *fires = zombiesSwingFires(anim);
+			f32 frame;
+			s32 f;
+
+			g_ZombieSwing[i].t60 += g_Vars.lvupdate60;
+			frame = g_ZombieSwing[i].t60 * zmcharAnimRate(anim) / 60.0f;
+
+			for (f = 0; fires[f]; f++) {
+				if (frame >= fires[f] && !(g_ZombieSwing[i].fired & (1u << f))) {
+					s32 p;
+
+					g_ZombieSwing[i].fired |= 1u << f;
+
+					// the nearest player still in its reach, and in sight of it
+					for (p = 0; p < PLAYERCOUNT(); p++) {
+						struct prop *pp = g_Vars.players[p] ? g_Vars.players[p]->prop : NULL;
+						f32 dx;
+						f32 dy;
+						f32 dz;
+
+						if (!pp || !zombiesPlayerIsUp(p)) {
+							continue;
+						}
+
+						dx = pp->pos.x - zchr->prop->pos.x;
+						dy = pp->pos.y - zchr->prop->pos.y;
+						dz = pp->pos.z - zchr->prop->pos.z;
+
+						// in its reach still, no more (it had 15 to spare)
+						if (dx * dx + dz * dz < ZOMBIE_COD_REACH * ZOMBIE_COD_REACH
+								&& dy < 120 && dy > -120
+								&& cdTestLos04(&zchr->prop->pos, zchr->prop->rooms, &pp->pos,
+									CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_BG)) {
+							zombiesReachHit(zchr, p);
+							break;
+						}
+					}
+				}
+			}
+
+			if (frame >= zmcharAnimFrames(anim) - 1) {
+				g_ZombieSwing[i].anim = -1;
+				g_ZombieSwing[i].rest60 = ZOMBIE_SWING_REST60;
+			}
+		}
+	}
+}
+
+// zombiesCodTick()'s: true while the zombie is jumping down a ledge, its
+// animation and frame set
+static bool zombiesCodFall(s32 i, struct chrdata *chr, bool dying, bool crawler)
+{
+	const f32 above = chr->manground - chr->ground;
+
+	if (dying || chr->ground <= -100000) {
+		g_ZombieCodFall[i].stage = 0;
+		g_ZombieCodFall[i].floor = chr->manground;
+		return false;
+	}
+
+	if (g_ZombieCodFall[i].stage == 0) {
+		f32 drop;
+		s32 anim;
+
+		if (above < ZOMBIE_COD_DROP * ZOMBIE_COD_SCALE) {
+			if (above < 5) {
+				g_ZombieCodFall[i].floor = chr->manground;
+			}
+
+			return false;
+		}
+
+		drop = MAX(g_ZombieCodFall[i].floor, chr->manground) - chr->ground;
+		anim = zmcharJumpDown(drop / ZOMBIE_COD_SCALE, crawler, &g_ZombieCodFall[i].leave, &g_ZombieCodFall[i].land);
+
+		if (anim < 0) {
+			return false;
+		}
+
+		g_ZombieCodFall[i].stage = 1;
+		g_ZombieCodFall[i].anim = anim;
+		g_ZombieCodFall[i].top = MAX(g_ZombieCodFall[i].floor, chr->manground);
+		zombiesCodSet(i, anim);
+		g_ZombieCodFall[i].floor = chr->manground;
+	}
+
+	if (g_ZombieCodFall[i].stage == 1) {
+		if (above > 2) {
+			// the clip's root as far down its fall as the zombie is down its own
+			const f32 frac = MIN(1.0f, MAX(0.0f, (g_ZombieCodFall[i].top - chr->manground)
+						/ MAX(1.0f, g_ZombieCodFall[i].top - chr->ground)));
+			f32 pos[3];
+			f32 q[4];
+			f32 bottom;
+			f32 f;
+
+			zmcharAnimRoot(g_ZombieCodFall[i].anim, g_ZombieCodFall[i].land, pos, q);
+			bottom = pos[2];
+
+			for (f = g_ZombieCodFall[i].leave; f < g_ZombieCodFall[i].land; f += 0.25f) {
+				zmcharAnimRoot(g_ZombieCodFall[i].anim, f, pos, q);
+
+				if (pos[2] <= bottom * frac) {
+					break;
+				}
+			}
+
+			// never back up it: a floor further down found on the way
+			g_ZombieCodFall[i].leave = f;
+			g_ZombieCod[i].frame = f;
+		} else {
+			g_ZombieCodFall[i].stage = 2;
+			g_ZombieCod[i].frame = g_ZombieCodFall[i].land;
+		}
+	} else {
+		// down: its landing at the clip's own pace
+		g_ZombieCod[i].frame += zmcharAnimRate(g_ZombieCodFall[i].anim) * g_Vars.lvupdate60freal / 60.0f;
+
+		if (g_ZombieCod[i].frame >= zmcharAnimFrames(g_ZombieCodFall[i].anim) - 1 || above > ZOMBIE_COD_DROP * ZOMBIE_COD_SCALE) {
+			g_ZombieCodFall[i].stage = 0;
+			g_ZombieCodFall[i].floor = chr->manground;
+			return false;
+		}
+	}
+
+	if (g_ZombieCod[i].blend > 0) {
+		g_ZombieCod[i].blend = MAX(0, g_ZombieCod[i].blend - g_Vars.lvupdate60freal / ZOMBIE_COD_BLEND60);
+	}
+
+	return true;
+}
+
+// The zombie's animation moved on by this frame's time, once a level frame;
+// forced (0 or more) at a barrier, which keeps its own time (zombiesCodBarrier())
+static void zombiesCodTick(s32 i, struct chrdata *chr, s32 forced, f32 forcedframe)
+{
+	const f32 secs = g_Vars.lvupdate60freal / 60.0f;
+	const bool dying = chr->actiontype == ACT_DIE || chr->actiontype == ACT_DEAD;
+	const bool crawler = g_ZombieCrawler[i] != 0;
+	f32 frames;
+	f32 rate;
+
+	// a new zombie in the slot: from its idle, where it is
+	if (g_ZombieCod[i].chr != chr) {
+		g_ZombieCod[i].chr = chr;
+		g_ZombieCod[i].anim = ZMCHAR_IDLE;
+		g_ZombieCod[i].frame = (f32)((i * 7) % 30); // not the game's random: a drawing never steers the game
+		g_ZombieCod[i].blend = 0;
+		g_ZombieCod[i].speed = 0;
+		g_ZombieCod[i].last = chr->prop->pos;
+		g_ZombieCod[i].tickframe = g_Vars.lvframenum;
+		g_ZombieCodPlaced[i] = false;
+		g_ZombieCodFall[i].stage = 0;
+		g_ZombieCodFall[i].floor = chr->manground;
+	}
+
+	if (g_ZombieCod[i].tickframe == g_Vars.lvframenum) {
+		return;
+	}
+
+	g_ZombieCod[i].tickframe = g_Vars.lvframenum;
+
+	// its pace over the floor, inches a second, eased so a step or a stop
+	// for a frame does not flick it from one animation to another
+	if (secs > 0) {
+		const f32 dx = chr->prop->pos.x - g_ZombieCod[i].last.x;
+		const f32 dz = chr->prop->pos.z - g_ZombieCod[i].last.z;
+		f32 now = sqrtf(dx * dx + dz * dz) / ZOMBIE_COD_SCALE / secs;
+
+		// a jump across the map (a respawn) is no pace
+		if (now > 600) {
+			now = g_ZombieCod[i].speed;
+		}
+
+		g_ZombieCod[i].speed += (now - g_ZombieCod[i].speed) * MIN(1.0f, secs * 6);
+	}
+
+	g_ZombieCod[i].last = chr->prop->pos;
+
+	// off a ledge: before a swipe or a barrier, which never happen in the air
+	if (zombiesCodFall(i, chr, dying, crawler)) {
+		return;
+	}
+
+	if (forced >= 0 && !dying) {
+		zombiesCodSet(i, forced);
+		g_ZombieCod[i].frame = forcedframe;
+
+		if (g_ZombieCod[i].blend > 0) {
+			g_ZombieCod[i].blend -= g_Vars.lvupdate60freal / ZOMBIE_COD_BLEND60;
+			g_ZombieCod[i].blend = MAX(0, g_ZombieCod[i].blend);
+		}
+
+		return;
+	}
+
+	if (dying) {
+		if (!zombiesCodIsDeath(g_ZombieCod[i].anim)) {
+			zombiesCodSet(i, crawler ? ZMCHAR_CRAWL_DEATH_A + (s32)((i + g_Vars.lvframenum) % 2)
+					: ZMCHAR_DEATH_A + (s32)((i + g_Vars.lvframenum) % 4));
+		}
+	} else if (NET_CLIENT && zombiesCodNearPlayer(chr)) {
+		// in reach of a player: its swipes, on the move or standing (the
+		// host's own are its swings, zombiesTickSwings(), which a client has not)
+		zombiesCodSet(i, crawler ? ZMCHAR_CRAWL_ATTACK
+				: g_ZombieCod[i].speed >= ZOMBIE_COD_IDLE ? ZMCHAR_ATTACK : ZMCHAR_STAND_ATTACK);
+	} else if (crawler) {
+		zombiesCodSet(i, g_ZombieCod[i].speed < ZOMBIE_COD_CRAWLFAST ? ZMCHAR_CRAWL : ZMCHAR_CRAWL_SPRINT);
+	} else if (g_ZombieCod[i].speed < ZOMBIE_COD_IDLE) {
+		zombiesCodSet(i, ZMCHAR_IDLE);
+	} else if (g_ZombieCod[i].speed < ZOMBIE_COD_RUN) {
+		zombiesCodSet(i, ZMCHAR_WALK);
+	} else if (g_ZombieCod[i].speed < ZOMBIE_COD_SPRINT) {
+		zombiesCodSet(i, ZMCHAR_RUN);
+	} else {
+		zombiesCodSet(i, ZMCHAR_SPRINT);
+	}
+
+	// as fast as it goes over the ground, or a death at its own pace
+	rate = zmcharAnimRate(g_ZombieCod[i].anim);
+
+	if (zmcharAnimSpeed(g_ZombieCod[i].anim) > 0) {
+		f32 k = g_ZombieCod[i].speed / zmcharAnimSpeed(g_ZombieCod[i].anim);
+
+		rate *= k < 0.6f ? 0.6f : k > 1.6f ? 1.6f : k;
+	}
+
+	frames = zmcharAnimFrames(g_ZombieCod[i].anim);
+	g_ZombieCod[i].frame += rate * secs;
+
+	if (frames > 1) {
+		if (zombiesCodIsDeath(g_ZombieCod[i].anim)) {
+			if (g_ZombieCod[i].frame > frames - 1) {
+				g_ZombieCod[i].frame = frames - 1;
+			}
+		} else {
+			while (g_ZombieCod[i].frame >= frames - 1) {
+				g_ZombieCod[i].frame -= frames - 1;
+			}
+		}
+	}
+
+	if (g_ZombieCod[i].blend > 0) {
+		g_ZombieCod[i].blend -= g_Vars.lvupdate60freal / ZOMBIE_COD_BLEND60;
+
+		if (g_ZombieCod[i].blend < 0) {
+			g_ZombieCod[i].blend = 0;
+		}
+	}
+}
+
+/**
+ * Which of Tranzit's bodies and heads a zombie wears (zmchar.h's
+ * ZMCHAR_LOOK): a hash of its bot slot and the round, the same on every
+ * machine online without a word between them and never the game's random,
+ * a new mix each round; and its legs, a crawler's or not
+ */
+static s32 zombiesCodLook(s32 i)
+{
+	const u32 h = (u32)(i + 1) * 2654435761u ^ (u32)g_ZombieRound * 40503u;
+
+	return ZMCHAR_LOOK((h >> 8) % ZMCHAR_BODIES, (h >> 16) % ZMCHAR_HEADS, g_ZombieCrawler[i] != 0)
+		| (g_ZombieGib[i] & ZGIB_LARM ? ZMCHAR_LOOK_NOLARM : 0)
+		| (g_ZombieGib[i] & ZGIB_RARM ? ZMCHAR_LOOK_NORARM : 0)
+		| (g_ZombieGib[i] & ZGIB_HEAD ? ZMCHAR_LOOK_NOHEAD : 0);
+}
+
+static void zombiesCodGibFresh(s32 i, struct chrdata *chr);
+
+bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *chr)
+{
+	f32 theta;
+	bool atbarrier;
+	Mtxf world;
+	Mtxf *mtx;
+	s32 i;
+	u32 room;
+
+	if (!zombiesIsActive() || !chr || !chr->aibot || !chr->prop || chr->prop->type != PROPTYPE_CHR
+			|| !zmcharReady()) {
+		return false;
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS && i < ZMCHAR_SLOTS; i++) {
+		if (g_MpBotChrPtrs[i] == chr) {
+			break;
+		}
+	}
+
+	if (i >= g_BotCount || i >= MAX_BOTS || i >= ZMCHAR_SLOTS) {
+		return false;
+	}
+
+	// all of it in the opaque pass
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	{
+		s32 forced = -1;
+		f32 forcedframe = 0;
+
+		atbarrier = zombiesCodBarrier(i, chr, &forced, &forcedframe);
+
+		// a swipe, as the game's tick has it (zombiesTickSwings())
+		if (!atbarrier && g_ZombieSwing[i].anim >= 0) {
+			forced = g_ZombieSwing[i].anim;
+			forcedframe = g_ZombieSwing[i].t60 * zmcharAnimRate(forced) / 60.0f;
+		}
+
+		zombiesCodTick(i, chr, forced, forcedframe);
+	}
+
+	// a body chrRender() fades (a corpse going, chrRender()'s alpha in
+	// envcolour's low byte) goes at half way: this one is drawn solid
+	if (renderdata->unk30 == 8 && (renderdata->envcolour & 0xff) < 0x80) {
+		return true;
+	}
+
+	// Call of Duty's x (the way it faces), y (its left) and z (up), into the
+	// world at its feet
+	theta = chrGetInverseTheta(chr);
+	mtx4LoadIdentity(&world);
+	world.m[0][0] = sinf(theta) * ZOMBIE_COD_SCALE / 4.0f;
+	world.m[0][2] = cosf(theta) * ZOMBIE_COD_SCALE / 4.0f;
+	world.m[1][0] = cosf(theta) * ZOMBIE_COD_SCALE / 4.0f;
+	world.m[1][1] = 0;
+	world.m[1][2] = -sinf(theta) * ZOMBIE_COD_SCALE / 4.0f;
+	world.m[2][2] = 0;
+	world.m[2][1] = ZOMBIE_COD_SCALE / 4.0f;
+	world.m[3][0] = chr->prop->pos.x;
+	world.m[3][1] = chr->ground;
+	world.m[3][2] = chr->prop->pos.z;
+
+	// in the air off a ledge: at its feet, not on the floor it is falling to
+	if (g_ZombieCodFall[i].stage == 1) {
+		world.m[3][1] = chr->manground;
+	}
+
+	// at a barrier: in its frame, carried by the clip's own root motion
+	if (atbarrier) {
+		zombiesCodBarrierPlace(i, &world);
+	}
+
+	// kept, for a shot's test against its bones (zombiesCodTestHit())
+	g_ZombieCodPlace[i] = world;
+	g_ZombieCodPlaced[i] = true;
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+	// the room's light on the body (not the colour the scenario marks a
+	// zombie with, which renderdata carries: it came out yellow-green)
+	room = (u32)chr->shadecol[0] << 24 | (u32)chr->shadecol[1] << 16 | (u32)chr->shadecol[2] << 8;
+
+	renderdata->gdl = zmcharDraw(renderdata->gdl, i, zombiesCodLook(i),
+			mtx, g_ZombieCod[i].anim, g_ZombieCod[i].frame,
+			g_ZombieCod[i].from, g_ZombieCod[i].fromframe, g_ZombieCod[i].blend,
+			0x80 + ((room >> 24) & 0xff) * 0x7f / 0xff,
+			0x80 + ((room >> 16) & 0xff) * 0x7f / 0xff,
+			0x80 + ((room >> 8) & 0xff) * 0x7f / 0xff);
+
+	// an arm or the head newly shot off: thrown, as this machine sees it go
+	zombiesCodGibFresh(i, chr);
+
+	return true;
+}
+
+/**
+ * An arm shot off flies (Call of Duty's c_zom_zombie_g_larmspawn and
+ * _rarmspawn, as models/gib_*), tumbling, from the shoulder it left, falls to
+ * the floor the zombie stood on and lies there a few seconds; a head popped
+ * is a burst of blood. Each machine starts its own when it sees a zombie's
+ * gibs change (zombiesCodGibFresh()), drawn after the props
+ * (zombiesRenderGibs(), from zombiesRenderRayFx()).
+ */
+#define ZOMBIE_FLYING_MAX   12
+#define ZOMBIE_FLYING_LIFE  240     // 60ths it lies before it goes
+#define ZOMBIE_FLYING_ARM   60.0f   // an arm's length, its longest side
+#define ZOMBIE_FLYING_GRAV  0.35f   // units a 60th a 60th
+
+static struct {
+	bool on;
+	s32 mesh;          // 0 the left arm, 1 the right
+	struct coord pos;
+	struct coord vel;  // units a 60th
+	f32 axis[3];       // its tumble
+	f32 angle;
+	f32 spin;          // radians a 60th
+	f32 floor;
+	f32 life60;
+} g_ZombieFlying[ZOMBIE_FLYING_MAX];
+
+static struct zombiemesh g_ZombieGibMeshes[2];
+static u8 g_ZombieGibSeen[MAX_BOTS];
+static s32 g_ZombieFlyingTick = -1;
+
+// A place on the zombie as it was last drawn, from a joint of its own
+static bool zombiesCodJointWorld(s32 i, const char *name, f32 up, struct coord *out)
+{
+	const f32 (*pose)[3] = zmcharSlotPose(i);
+	const s32 j = zmcharJoint(name);
+	const Mtxf *place = &g_ZombieCodPlace[i];
+	f32 p[3];
+	s32 c;
+
+	if (pose == NULL || j < 0 || !g_ZombieCodPlaced[i]) {
+		return false;
+	}
+
+	for (c = 0; c < 3; c++) {
+		p[c] = pose[j][c] * 4;
+	}
+
+	p[2] += up * 4;
+
+	out->x = place->m[0][0] * p[0] + place->m[1][0] * p[1] + place->m[2][0] * p[2] + place->m[3][0];
+	out->y = place->m[0][1] * p[0] + place->m[1][1] * p[1] + place->m[2][1] * p[2] + place->m[3][1];
+	out->z = place->m[0][2] * p[0] + place->m[1][2] * p[1] + place->m[2][2] * p[2] + place->m[3][2];
+
+	return true;
+}
+
+// zombiesRenderCodZombie(), as it draws one: what has newly come off it, thrown
+static void zombiesCodGibFresh(s32 i, struct chrdata *chr)
+{
+	u8 fresh;
+
+	// respawned whole: what came off its last life is forgotten
+	g_ZombieGibSeen[i] &= g_ZombieGib[i];
+	fresh = g_ZombieGib[i] & ~g_ZombieGibSeen[i];
+	s32 side;
+
+	if (!fresh) {
+		return;
+	}
+
+	g_ZombieGibSeen[i] |= fresh;
+
+	for (side = 0; side < 2; side++) {
+		struct coord at;
+		s32 k;
+
+		if (!(fresh & (side == 0 ? ZGIB_LARM : ZGIB_RARM))
+				|| !zombiesCodJointWorld(i, side == 0 ? "j_shoulder_le" : "j_shoulder_ri", 0, &at)) {
+			continue;
+		}
+
+		for (k = 0; k < ZOMBIE_FLYING_MAX && g_ZombieFlying[k].on; k++);
+
+		if (k == ZOMBIE_FLYING_MAX) {
+			k = (i + side) % ZOMBIE_FLYING_MAX;
+		}
+
+		g_ZombieFlying[k].on = true;
+		g_ZombieFlying[k].mesh = side;
+		g_ZombieFlying[k].pos = at;
+		// out to its own side and up, away from where the shot came: a
+		// hash of the slot for the rest, never the game's random
+		g_ZombieFlying[k].vel.x = (at.x - chr->prop->pos.x) * 0.06f + ((i * 37) % 7 - 3) * 0.3f;
+		g_ZombieFlying[k].vel.y = 3.2f;
+		g_ZombieFlying[k].vel.z = (at.z - chr->prop->pos.z) * 0.06f + ((i * 53) % 7 - 3) * 0.3f;
+		g_ZombieFlying[k].axis[0] = 0.6f;
+		g_ZombieFlying[k].axis[1] = 0.3f;
+		g_ZombieFlying[k].axis[2] = side ? 0.74f : -0.74f;
+		g_ZombieFlying[k].angle = 0;
+		g_ZombieFlying[k].spin = 0.18f + (i % 5) * 0.03f;
+		g_ZombieFlying[k].floor = chr->ground + 4;
+		g_ZombieFlying[k].life60 = 0;
+	}
+
+	// the head: a burst of blood where it was
+	if (fresh & ZGIB_HEAD) {
+		struct coord at;
+		struct coord up = { 0, 1, 0 };
+		s32 n;
+
+		if (zombiesCodJointWorld(i, "j_head", 4, &at)) {
+			for (n = 0; n < 3; n++) {
+				sparksCreate(chr->prop->rooms[0], chr->prop, &at, &up, NULL, SPARKTYPE_FLESH_LARGE);
+				sparksCreate(chr->prop->rooms[0], chr->prop, &at, &up, NULL, SPARKTYPE_BLOOD);
+			}
+		}
+	}
+}
+
+Gfx *zombiesRenderGibs(Gfx *gdl)
+{
+	static const char *const files[2] = {
+		"$E/zombies/models/gib_larmspawn/gib_larmspawn.obj",
+		"$E/zombies/models/gib_rarmspawn/gib_rarmspawn.obj",
+	};
+	s32 k;
+
+	// flown on once a level frame
+	if (g_ZombieFlyingTick != g_Vars.lvframenum) {
+		const f32 dt = g_Vars.lvupdate60freal;
+
+		g_ZombieFlyingTick = g_Vars.lvframenum;
+
+		for (k = 0; k < ZOMBIE_FLYING_MAX; k++) {
+			if (!g_ZombieFlying[k].on) {
+				continue;
+			}
+
+			g_ZombieFlying[k].life60 += dt;
+
+			if (g_ZombieFlying[k].life60 > ZOMBIE_FLYING_LIFE) {
+				g_ZombieFlying[k].on = false;
+				continue;
+			}
+
+			if (g_ZombieFlying[k].pos.y > g_ZombieFlying[k].floor || g_ZombieFlying[k].vel.y > 0) {
+				g_ZombieFlying[k].vel.y -= ZOMBIE_FLYING_GRAV * dt;
+				g_ZombieFlying[k].pos.x += g_ZombieFlying[k].vel.x * dt;
+				g_ZombieFlying[k].pos.y += g_ZombieFlying[k].vel.y * dt;
+				g_ZombieFlying[k].pos.z += g_ZombieFlying[k].vel.z * dt;
+				g_ZombieFlying[k].angle += g_ZombieFlying[k].spin * dt;
+
+				// on the floor: it stops there
+				if (g_ZombieFlying[k].pos.y <= g_ZombieFlying[k].floor && g_ZombieFlying[k].vel.y < 0) {
+					g_ZombieFlying[k].pos.y = g_ZombieFlying[k].floor;
+					g_ZombieFlying[k].vel.x = g_ZombieFlying[k].vel.z = 0;
+				}
+			}
+		}
+	}
+
+	for (k = 0; k < ZOMBIE_FLYING_MAX; k++) {
+		struct zombiemesh *zm;
+		f32 longest;
+		f32 s;
+		f32 a[3];
+		f32 c;
+		f32 sn;
+		f32 len;
+		f32 mid[3];
+		Mtxf local;
+		Mtxf *mtx;
+		s32 r;
+		s32 col;
+
+		if (!g_ZombieFlying[k].on) {
+			continue;
+		}
+
+		zm = &g_ZombieGibMeshes[g_ZombieFlying[k].mesh];
+
+		if (!zm->tried) {
+			zombiesMeshBuildFrom(zm, files[g_ZombieFlying[k].mesh], g_ZombieFlying[k].mesh ? "a right arm" : "a left arm");
+		}
+
+		if (!zm->gdl) {
+			continue;
+		}
+
+		longest = MAX(zm->width, MAX(zm->height, zm->depth));
+		s = longest > 0 ? ZOMBIE_FLYING_ARM / longest / ZOMBIE_MESH_FIXED : 1;
+
+		// its tumble: a turn about its axis (Rodrigues')
+		len = sqrtf(g_ZombieFlying[k].axis[0] * g_ZombieFlying[k].axis[0] + g_ZombieFlying[k].axis[1] * g_ZombieFlying[k].axis[1]
+				+ g_ZombieFlying[k].axis[2] * g_ZombieFlying[k].axis[2]);
+
+		for (r = 0; r < 3; r++) {
+			a[r] = g_ZombieFlying[k].axis[r] / len;
+		}
+
+		c = cosf(g_ZombieFlying[k].angle);
+		sn = sinf(g_ZombieFlying[k].angle);
+		mtx4LoadIdentity(&local);
+
+		for (col = 0; col < 3; col++) {
+			for (r = 0; r < 3; r++) {
+				f32 v = a[r] * a[col] * (1 - c);
+
+				if (r == col) {
+					v += c;
+				} else {
+					// the cross term: +a[3-r-col] one way round, - the other
+					const s32 o = 3 - r - col;
+					const f32 sign = ((col + 1) % 3 == r) ? 1 : -1;
+
+					v += sign * a[o] * sn;
+				}
+
+				local.m[col][r] = v * s;
+			}
+		}
+
+		// its middle where it is
+		mid[0] = zm->midx * ZOMBIE_MESH_FIXED;
+		mid[1] = (zm->ymin + zm->height / 2) * ZOMBIE_MESH_FIXED;
+		mid[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
+
+		local.m[3][0] = g_ZombieFlying[k].pos.x - (local.m[0][0] * mid[0] + local.m[1][0] * mid[1] + local.m[2][0] * mid[2]);
+		local.m[3][1] = g_ZombieFlying[k].pos.y - (local.m[0][1] * mid[0] + local.m[1][1] * mid[1] + local.m[2][1] * mid[2]);
+		local.m[3][2] = g_ZombieFlying[k].pos.z - (local.m[0][2] * mid[0] + local.m[1][2] * mid[1] + local.m[2][2] * mid[2]);
+
+		mtx = gfxAllocateMatrix();
+		mtx4MultMtx4(camGetWorldToScreenMtxf(), &local, mtx);
+		gdl = zombiesBottleDraw(gdl, zm, mtx, 0xc0, 0xc0, 0xc0);
+	}
+
+	return gdl;
+}
+
+/**
+ * A shot at one of Black Ops II's zombies is tested against its own bones as
+ * it was last drawn (zmchar.c), not Perfect Dark's body under it, which
+ * stands upright wherever the zombie leans, reaches or crawls: a crawler's
+ * head is two feet in front of that body, and the air over it was its chest.
+ * Each part a capsule on a bone (inches: the bone's two joints and a radius),
+ * the head a ball over j_head along the neck. A crawler has no legs.
+ */
+struct zombiecodpart {
+	const char *from;
+	const char *to;
+	f32 radius;
+	s32 hitpart;
+	bool legs;
+};
+
+static const struct zombiecodpart g_ZombieCodParts[] = {
+	{ "j_mainroot",    "j_spinelower", 7.0f, HITPART_PELVIS,   false },
+	{ "j_spinelower",  "j_spineupper", 7.5f, HITPART_TORSO,    false },
+	{ "j_spineupper",  "j_neck",       4.5f, HITPART_TORSO,    false }, // slim: the head's ball is just over it
+	{ "j_shoulder_le", "j_elbow_le",   3.0f, HITPART_LBICEP,   false },
+	{ "j_elbow_le",    "j_wrist_le",   2.6f, HITPART_LFOREARM, false },
+	{ "j_wrist_le",    "j_mid_le_1",   2.6f, HITPART_LHAND,    false },
+	{ "j_shoulder_ri", "j_elbow_ri",   3.0f, HITPART_RBICEP,   false },
+	{ "j_elbow_ri",    "j_wrist_ri",   2.6f, HITPART_RFOREARM, false },
+	{ "j_wrist_ri",    "j_mid_ri_1",   2.6f, HITPART_RHAND,    false },
+	{ "j_hip_le",      "j_knee_le",    4.0f, HITPART_LTHIGH,   true },
+	{ "j_knee_le",     "j_ankle_le",   3.2f, HITPART_LSHIN,    true },
+	{ "j_ankle_le",    "j_ball_le",    2.6f, HITPART_LFOOT,    true },
+	{ "j_hip_ri",      "j_knee_ri",    4.0f, HITPART_RTHIGH,   true },
+	{ "j_knee_ri",     "j_ankle_ri",   3.2f, HITPART_RSHIN,    true },
+	{ "j_ankle_ri",    "j_ball_ri",    2.6f, HITPART_RFOOT,    true },
+};
+
+#define ZOMBIE_COD_HEADRADIUS 5.0f // inches: a ball 1.6 of the neck's length above j_head
+
+// The ray's distance along itself to its nearest to the segment a-b, and how near
+static f32 zombiesRaySegment(const f32 o[3], const f32 d[3], const f32 a[3], const f32 b[3], f32 *t)
+{
+	f32 ab[3];
+	f32 ao[3];
+	f32 dd = 0;
+	f32 de = 0;
+	f32 ee = 0;
+	f32 df = 0;
+	f32 ef = 0;
+	f32 den;
+	f32 s;
+	f32 diff[3];
+	f32 len = 0;
+	s32 c;
+
+	for (c = 0; c < 3; c++) {
+		ab[c] = b[c] - a[c];
+		ao[c] = o[c] - a[c];
+		dd += d[c] * d[c];
+		de += d[c] * ab[c];
+		ee += ab[c] * ab[c];
+		df += d[c] * ao[c];
+		ef += ab[c] * ao[c];
+	}
+
+	den = dd * ee - de * de;
+	s = den > 1e-6f ? (dd * ef - de * df) / den : 0;
+	s = s < 0 ? 0 : s > 1 ? 1 : s;
+	*t = dd > 0 ? (de * s - df) / dd : 0;
+
+	if (*t < 0) {
+		*t = 0;
+		s = ee > 0 ? ef / ee : 0;
+		s = s < 0 ? 0 : s > 1 ? 1 : s;
+	}
+
+	for (c = 0; c < 3; c++) {
+		diff[c] = o[c] + d[c] * *t - (a[c] + ab[c] * s);
+		len += diff[c] * diff[c];
+	}
+
+	return sqrtf(len);
+}
+
+// One of Perfect Dark's body's boxes for a hit part, for blood and bruises
+static struct modelnode *zombiesChrBboxNode(struct model *model, s32 hitpart)
+{
+	struct modelnode *node = model->definition->rootnode;
+	struct modelnode *any = NULL;
+
+	while (node) {
+		if ((node->type & 0xff) == MODELNODETYPE_BBOX) {
+			union modelrodata *rodata = node->rodata;
+
+			if (rodata->bbox.hitpart == hitpart) {
+				return node;
+			}
+
+			if (any == NULL || rodata->bbox.hitpart == HITPART_TORSO) {
+				any = node;
+			}
+		}
+
+		if (node->child) {
+			node = node->child;
+		} else {
+			while (node) {
+				if (node->next) {
+					node = node->next;
+					break;
+				}
+
+				node = node->parent;
+			}
+		}
+	}
+
+	return any;
+}
+
+/**
+ * --zombies-test-shoot WHAT (head, chest or air: a foot over the head): with
+ * --zombies-test-zombie's camera, a real shot from it every half second at
+ * that point of the zombie it follows, as it was last drawn; the hit test
+ * logs what it hit (part 0, none). For a run nobody is playing.
+ */
+static bool g_ZombieTestShooting = false;
+
+static void zombiesTestShoot(void)
+{
+	static s32 what = -2;
+	const char *arg;
+	s32 b;
+
+	if (what == -2) {
+		arg = sysArgGetString("--zombies-test-shoot");
+		what = arg == NULL ? -1 : strcmp(arg, "head") == 0 ? 0 : strcmp(arg, "chest") == 0 ? 1 : 2;
+	}
+
+	if (what < 0 || g_Vars.lvframenum % 30 != 0 || !zmcharReady()) {
+		return;
+	}
+
+	for (b = 0; b < g_BotCount && b < ZMCHAR_SLOTS; b++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[b];
+		const f32 (*pose)[3] = zmcharSlotPose(b);
+		const s32 head = zmcharJoint("j_head");
+		const s32 chest = zmcharJoint("j_spineupper");
+		f32 p[3];
+		struct coord target;
+		struct coord pos3d;
+		struct coord dir3d;
+		struct coord pos2d;
+		struct coord dir2d;
+		Mtxf *place = &g_ZombieCodPlace[b];
+		s32 c;
+
+		if (!zchr || !zchr->prop || chrIsDead(zchr) || !g_ZombieCodPlaced[b] || pose == NULL || head < 0 || chest < 0
+				|| g_ZombieCod[b].chr != zchr || (g_ZombieAtBarrier[b] >= 0) != (sysArgGetInt("--zombies-test-atbarrier", 0) != 0)) {
+			continue;
+		}
+
+		for (c = 0; c < 3; c++) {
+			p[c] = (what == 1 ? pose[chest][c] : pose[head][c]) * 4;
+		}
+
+		if (what == 2) {
+			p[2] += 14 * 4;
+		} else if (what == 0) {
+			p[2] += 3 * 4;
+		}
+
+		target.x = place->m[0][0] * p[0] + place->m[1][0] * p[1] + place->m[2][0] * p[2] + place->m[3][0];
+		target.y = place->m[0][1] * p[0] + place->m[1][1] * p[1] + place->m[2][1] * p[2] + place->m[3][1];
+		target.z = place->m[0][2] * p[0] + place->m[1][2] * p[1] + place->m[2][2] * p[2] + place->m[3][2];
+
+		pos3d = g_Vars.currentplayer->cam_pos;
+		dir3d.x = target.x - pos3d.x;
+		dir3d.y = target.y - pos3d.y;
+		dir3d.z = target.z - pos3d.z;
+		guNormalize(&dir3d.x, &dir3d.y, &dir3d.z);
+
+		mtx4TransformVec(camGetWorldToScreenMtxf(), &pos3d, &pos2d);
+		mtx4RotateVec(camGetWorldToScreenMtxf(), &dir3d, &dir2d);
+
+		g_ZombieTestShooting = true;
+		shotCalculateHits(HAND_RIGHT, true, &pos2d, &dir2d, &pos3d, &dir3d, 0, 4294836224, false);
+		g_ZombieTestShooting = false;
+		return;
+	}
+}
+
+bool zombiesCodTestHit(struct prop *prop, struct shotdata *shotdata)
+{
+	struct chrdata *chr = prop->chr;
+	const f32 (*pose)[3];
+	Mtxf view;
+	f32 o[3];
+	f32 d[3];
+	f32 dlen;
+	f32 best = 1e30f;
+	s32 hitpart = 0;
+	f32 inch;
+	bool crawler;
+	s32 i;
+	s32 k;
+
+	if (!zombiesIsActive() || !chr || !chr->aibot || !zmcharReady()) {
+		return false;
+	}
+
+	i = zombiesBotIndex(chr);
+
+	if (i < 0 || i >= ZMCHAR_SLOTS || !g_ZombieCodPlaced[i] || g_ZombieCod[i].chr != chr
+			|| (pose = zmcharSlotPose(i)) == NULL) {
+		return false;
+	}
+
+	crawler = g_ZombieCrawler[i] != 0;
+
+	// the zombie's own inches into the camera's space, where the shot is
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &g_ZombieCodPlace[i], &view);
+
+	for (k = 0; k < 3; k++) {
+		o[k] = shotdata->gunpos2d.f[k];
+		d[k] = shotdata->gundir2d.f[k];
+	}
+
+	dlen = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+
+	if (dlen <= 0) {
+		return true;
+	}
+
+	for (k = 0; k < 3; k++) {
+		d[k] /= dlen;
+	}
+
+	// an inch in the camera's space: the place's scale, four units an inch
+	inch = 4.0f * sqrtf(view.m[0][0] * view.m[0][0] + view.m[0][1] * view.m[0][1] + view.m[0][2] * view.m[0][2]);
+
+	for (k = 0; k <= (s32)ARRAYCOUNT(g_ZombieCodParts); k++) {
+		s32 ja;
+		s32 jb;
+		f32 a[3];
+		f32 b[3];
+		f32 r;
+		f32 t;
+		f32 near;
+		s32 part;
+		s32 c;
+
+		if (k < (s32)ARRAYCOUNT(g_ZombieCodParts)) {
+			const struct zombiecodpart *p = &g_ZombieCodParts[k];
+
+			if (p->legs && crawler) {
+				continue;
+			}
+
+			// an arm shot off is not there to be shot again
+			if (((g_ZombieGib[i] & ZGIB_LARM) && (p->hitpart == HITPART_LBICEP || p->hitpart == HITPART_LFOREARM || p->hitpart == HITPART_LHAND))
+					|| ((g_ZombieGib[i] & ZGIB_RARM) && (p->hitpart == HITPART_RBICEP || p->hitpart == HITPART_RFOREARM || p->hitpart == HITPART_RHAND))) {
+				continue;
+			}
+
+			ja = zmcharJoint(p->from);
+			jb = zmcharJoint(p->to);
+			r = p->radius;
+			part = p->hitpart;
+		} else {
+			if (g_ZombieGib[i] & ZGIB_HEAD) {
+				continue;
+			}
+
+			// the head: a ball over j_head, along the neck
+			ja = zmcharJoint("j_neck");
+			jb = zmcharJoint("j_head");
+			r = ZOMBIE_COD_HEADRADIUS;
+			part = HITPART_HEAD;
+		}
+
+		if (ja < 0 || jb < 0) {
+			continue;
+		}
+
+		for (c = 0; c < 3; c++) {
+			const f32 pa = pose[ja][c] * 4;
+			const f32 pb = pose[jb][c] * 4;
+
+			a[c] = pa;
+			b[c] = pb;
+		}
+
+		if (part == HITPART_HEAD) {
+			f32 head[3];
+
+			for (c = 0; c < 3; c++) {
+				head[c] = b[c] + (b[c] - a[c]) * 0.6f;
+			}
+
+			memcpy(a, head, sizeof(a));
+			memcpy(b, head, sizeof(b));
+		}
+
+		// both ends into the camera's space
+		{
+			f32 ca[3];
+			f32 cb[3];
+
+			for (c = 0; c < 3; c++) {
+				ca[c] = view.m[0][c] * a[0] + view.m[1][c] * a[1] + view.m[2][c] * a[2] + view.m[3][c];
+				cb[c] = view.m[0][c] * b[0] + view.m[1][c] * b[1] + view.m[2][c] * b[2] + view.m[3][c];
+			}
+
+			near = zombiesRaySegment(o, d, ca, cb, &t);
+			r *= inch;
+
+			if (near < r) {
+				t -= sqrtf(r * r - near * near);
+				t = t < 0 ? 0 : t;
+
+				if (t < best) {
+					best = t;
+					hitpart = part;
+				}
+			}
+		}
+	}
+
+	if (g_ZombieTestShooting) {
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-shoot: bot %d%s hit at part %d", i, crawler ? " (a crawler)" : "", hitpart);
+	}
+
+	if (hitpart > 0) {
+		struct hitthing thing;
+		struct coord at;
+		struct coord facing;
+		f32 depth;
+
+		at.x = o[0] + d[0] * best;
+		at.y = o[1] + d[1] * best;
+		at.z = o[2] + d[2] * best;
+		depth = -at.z;
+
+		if (depth < shotdata->distance) {
+			struct coord world;
+			struct modelnode *node = zombiesChrBboxNode(chr->model, hitpart);
+
+			bzero(&thing, sizeof(thing));
+			thing.texturenum = -1;
+			mtx4TransformVec(camGetProjectionMtxF(), &at, &world);
+			facing.x = -shotdata->gundir3d.x;
+			facing.y = -shotdata->gundir3d.y;
+			facing.z = -shotdata->gundir3d.z;
+
+			if (node) {
+				hitCreate(shotdata, prop, depth, hitpart, node, &thing, 0, NULL, chr->model, true,
+						chrGetShield(chr) > 0.0f, &world, &facing);
+			}
+		}
+	}
+
+	return true;
+}
+
 // chrRender()'s, after the body in its opaque pass: the bottle in the hand
+// A mesh held in an arm's hand (a frag, a perk's bottle): at the middle of the
+// palm, in the hand's own turn, its OBJ's tenths of an inch to model units
+static Gfx *zombiesBodyMeshInHand(Gfx *gdl, struct chrdata *chr, struct model *model,
+		struct zombiebodyarm *arm, struct zombiemesh *zm)
+{
+	Mtxf *mtx = model->matrices;
+	Mtxf *out;
+	f32 e[3];
+	f32 h[3];
+	f32 palm[3];
+	f32 lower;
+	f32 scale;
+	s32 i;
+	s32 j;
+
+	for (i = 0; i < 3; i++) {
+		e[i] = mtx[arm->elbow[0]].m[3][i];
+		h[i] = mtx[arm->hand].m[3][i];
+	}
+
+	lower = sqrtf((h[0] - e[0]) * (h[0] - e[0]) + (h[1] - e[1]) * (h[1] - e[1]) + (h[2] - e[2]) * (h[2] - e[2]));
+	scale = sqrtf(mtx[arm->hand].m[1][0] * mtx[arm->hand].m[1][0]
+			+ mtx[arm->hand].m[1][1] * mtx[arm->hand].m[1][1]
+			+ mtx[arm->hand].m[1][2] * mtx[arm->hand].m[1][2]);
+
+	if (lower <= 0 || scale <= 0) {
+		return gdl;
+	}
+
+	for (i = 0; i < 3; i++) {
+		palm[i] = h[i] + (h[i] - e[i]) * ZOMBIE_BODYDRINK_PALM * scale / lower;
+	}
+
+	out = gfxAllocateMatrix();
+
+	for (j = 0; j < 3; j++) {
+		for (i = 0; i < 3; i++) {
+			out->m[j][i] = (mtx[arm->hand].m[0][i] * g_ZombieBottleObjAxes[0][j]
+				+ mtx[arm->hand].m[1][i] * g_ZombieBottleObjAxes[1][j]
+				+ mtx[arm->hand].m[2][i] * g_ZombieBottleObjAxes[2][j]) * arm->perinch / 10.0f;
+		}
+
+		out->m[j][3] = 0;
+	}
+
+	out->m[3][0] = palm[0];
+	out->m[3][1] = palm[1];
+	out->m[3][2] = palm[2];
+	out->m[3][3] = 1;
+
+	return zombiesBottleDraw(gdl, zm, out,
+			0x80 + (chr->shadecol[0] >> 1), 0x80 + (chr->shadecol[1] >> 1), 0x80 + (chr->shadecol[2] >> 1));
+}
+
 Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model)
 {
 	struct zombiebodyarm arm;
@@ -5680,47 +7881,28 @@ Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model)
 		bool inhand = false;
 
 		if (zombiesBodyThrowing(chr, &inhand) && inhand && zombiesFragMesh(0) && zombiesBodyArm(model, &arm)) {
-			mtx = model->matrices;
+			gdl = zombiesBodyMeshInHand(gdl, chr, model, &arm, zombiesFragMesh(0));
+		}
 
-			for (i = 0; i < 3; i++) {
-				e[i] = mtx[arm.elbow[0]].m[3][i];
-				h[i] = mtx[arm.hand].m[3][i];
-			}
+		return gdl;
+	}
 
-			lower = sqrtf((h[0] - e[0]) * (h[0] - e[0]) + (h[1] - e[1]) * (h[1] - e[1]) + (h[2] - e[2]) * (h[2] - e[2]));
-			scale = sqrtf(mtx[arm.hand].m[1][0] * mtx[arm.hand].m[1][0]
-					+ mtx[arm.hand].m[1][1] * mtx[arm.hand].m[1][1]
-					+ mtx[arm.hand].m[1][2] * mtx[arm.hand].m[1][2]);
+	// Black Ops II's drink on the body (ZTCLIP_DRINK): the bottle in the hand
+	// that lifts it to the mouth from its pick-up to its throw, its cap on it
+	// until it comes off. The clip's note says the left (anim_gunhand), but
+	// retargeted onto Perfect Dark's body it is the right arm that drinks:
+	// in the left the bottle hung at the hip.
+	if (zombiesDrinkClipOn()) {
+		if (t >= ZOMBIE_DRINKBODY_PICKUP && t < ZOMBIE_DRINKBODY_THROW
+				&& zombiesBodyArmOf(model, &arm, MODELPART_CHR_RIGHTHAND)) {
+			for (part = 0; part < ZOMBIE_DRINK_PARTS; part++) {
+				struct zombiemesh *zm = zombiesBottleMesh(perk, part);
 
-			if (lower <= 0 || scale <= 0) {
-				return gdl;
-			}
-
-			for (i = 0; i < 3; i++) {
-				palm[i] = h[i] + (h[i] - e[i]) * ZOMBIE_BODYDRINK_PALM * scale / lower;
-			}
-
-			// the frag in the hand's frame, its OBJ's tenths of an inch to
-			// model units
-			out = gfxAllocateMatrix();
-
-			for (j = 0; j < 3; j++) {
-				for (i = 0; i < 3; i++) {
-					out->m[j][i] = (mtx[arm.hand].m[0][i] * g_ZombieBottleObjAxes[0][j]
-						+ mtx[arm.hand].m[1][i] * g_ZombieBottleObjAxes[1][j]
-						+ mtx[arm.hand].m[2][i] * g_ZombieBottleObjAxes[2][j]) * arm.perinch / 10.0f;
+				// the bottle's second part is its cap
+				if (zm && (part == 0 || t < ZOMBIE_DRINKBODY_UNCAP)) {
+					gdl = zombiesBodyMeshInHand(gdl, chr, model, &arm, zm);
 				}
-
-				out->m[j][3] = 0;
 			}
-
-			out->m[3][0] = palm[0];
-			out->m[3][1] = palm[1];
-			out->m[3][2] = palm[2];
-			out->m[3][3] = 1;
-
-			gdl = zombiesBottleDraw(gdl, zombiesFragMesh(0), out,
-					0x80 + (chr->shadecol[0] >> 1), 0x80 + (chr->shadecol[1] >> 1), 0x80 + (chr->shadecol[2] >> 1));
 		}
 
 		return gdl;
@@ -6636,7 +8818,7 @@ static void zombiesTickPerkMachines(s32 playernum)
 	g_ZombieNearPerk[playernum] = -1;
 
 	if (g_ZombieMarking || !zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0
-			|| g_ZombieNearDowned[playernum] >= 0) {
+			|| g_ZombieNearDowned[playernum] >= 0 || zombiesPerksFull(playernum)) {
 		g_ZombiePerkHeld60[playernum] = 0;
 		return;
 	}
@@ -6695,13 +8877,16 @@ static void zombiesTickPerkMachines(s32 playernum)
 	cost = zombiesPerkCost(near);
 
 	if (g_ZombiePoints[playernum] < cost) {
-		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		if (!zombiesPlayCodSound(ZMSFX_PERK_DENY, NULL)) {
+			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		}
+
 		return;
 	}
 
 	g_ZombiePoints[playernum] -= cost;
 	zombiesAddPopup(playernum, -cost);
-	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+	zombiesPerkBought(near, zombiesPerkMachineProp(near));
 
 	if (near == ZOMBIEPERK_QUICKREVIVE && zombiesPlayersInPlay() < 2) {
 		g_ZombieQrSoloBuys++;
@@ -6756,7 +8941,9 @@ static void zombiesGivePerkEx(s32 playernum, s32 perk, bool quiet)
 		}
 	}
 
-	if (!quiet) {
+	// the drink's belch is Black Ops II's (zombiesTickJuggernog()); the
+	// game's own pickup only when its file is not there
+	if (!quiet && zmSfxSound(ZMSFX_PERK_BELCH) <= 0) {
 		zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
 	}
 }
@@ -6885,6 +9072,11 @@ static f32 zombiesGunMoveScale(void)
 f32 zombiesMoveScale(void)
 {
 	s32 playernum = g_Vars.currentplayernum;
+
+	// the game's end: on the floor, not going anywhere
+	if (zombiesIsActive() && g_ZombieGameOver) {
+		return 0;
+	}
 
 	// down, a crawl: the squat alone was still nearly a walk
 	if (zombiesIsActive() && playernum >= 0 && playernum < MAX_PLAYERS && g_ZombieDowned[playernum]) {
@@ -7024,9 +9216,11 @@ s32 zombiesCrosshair(f32 *spread)
 	k = dt * ZOMBIE_XHAIR_EASE;
 	g_ZombieXhairMove[playernum] += (move - g_ZombieXhairMove[playernum]) * (k > 1 ? 1 : k);
 
-	// at the sights, the sight's own (the count kept all the same)
+	// at the sights, the sight's own (the count kept all the same); the Ray
+	// Gun's sight is the ring on its model, and the Phoenix's reticle it
+	// would borrow is not drawn over it
 	if (player->insightaimmode || player->codaimfrac > 0.5f) {
-		return 0;
+		return weaponnum == WEAPON_ZM_RAYGUN ? 1 : 0;
 	}
 
 	if (g_ZombieGameOver || (zombiesGunLowerFrac() > 0 && !holding) || zombiesSprintGunFrac() > 0.05f) {
@@ -7043,6 +9237,11 @@ s32 zombiesCrosshair(f32 *spread)
 
 	if (!holding && weaponHost(weaponnum) == WEAPON_SHOTGUN) {
 		*spread += 1.5f;
+	}
+
+	// Deadshot Daiquiri tightens the hip's spread, as Black Ops II's does
+	if (!holding && zombiesPlayerHasPerk(playernum, ZOMBIEPERK_DEADSHOT)) {
+		*spread *= 0.5f;
 	}
 
 	*spread = *spread > ZOMBIE_XHAIR_MAX ? ZOMBIE_XHAIR_MAX : *spread;
@@ -7211,6 +9410,8 @@ static f32 zombiesCodDamage(f32 cod)
  * and kills. A shock (Electric Cherry) leaves sparks on each one it reaches.
  * The host deals it (chrDamage() is the host's online).
  */
+static bool g_ZombieHurtNoThrow = false; // zombiesShellBlast()'s: no explosion's death throw
+
 static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 coddamage, bool shock)
 {
 	struct prop *aprop = playernum >= 0 && playernum < MAX_PLAYERS && g_Vars.players[playernum]
@@ -7250,7 +9451,14 @@ static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 c
 			sparksCreate(zchr->prop->rooms[0], zchr->prop, &at, &up, &dir, SPARKTYPE_ELECTRICAL);
 		}
 
-		chrDamageByExplosion(zchr, zombiesCodDamage(coddamage) * (1.0f - 0.5f * dist / radius), &dir, aprop, pos);
+		// the Ray Gun's bolt kills where they stand, as Black Ops II's does;
+		// an explosion's damage throws the dead across the room
+		if (g_ZombieHurtNoThrow) {
+			chrDamageByMisc(zchr, zombiesCodDamage(coddamage) * (1.0f - 0.5f * dist / radius), &dir, NULL, aprop);
+		} else {
+			chrDamageByExplosion(zchr, zombiesCodDamage(coddamage) * (1.0f - 0.5f * dist / radius), &dir, aprop, pos);
+		}
+
 		hit++;
 	}
 
@@ -7266,8 +9474,9 @@ static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 c
  */
 #define ZOMBIE_RAYGUN_RADIUS 163.0f
 #define ZOMBIE_RAYGUN_DAMAGE 1500.0f
+#define ZOMBIE_RAYGUN_SELF   0.6f    // the shooter's own, of their full health, at the blast's middle
 
-bool zombiesShellBlast(struct gset *gset, struct coord *pos)
+bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms)
 {
 	if (!zombiesIsActive() || !gset || gset->weaponnum != WEAPON_ZM_RAYGUN) {
 		return false;
@@ -7275,7 +9484,45 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos)
 
 	// its look is the bolt's landing (zombiesRenderRayFx()), on every machine
 	if (!NET_CLIENT) {
-		zombiesHurtAround(g_Vars.currentplayernum, pos, ZOMBIE_RAYGUN_RADIUS, ZOMBIE_RAYGUN_DAMAGE, false);
+		struct prop *me = g_Vars.currentplayer->prop;
+		const s32 exp = zmSfxSound(ZMSFX_RAYGUN_EXP);
+
+		// Black Ops II's own burst, where it lands; online, heard by the
+		// others from the ring
+		if (exp > 0 && rooms) {
+			psCreate(NULL, NULL, exp, -1, -1, 0, 0, PSTYPE_NONE, pos, -1.0f, rooms, -1, -1.0f, -1.0f, -1.0f);
+			zombiesNetKeepSound(ZMSFX_NET(ZMSFX_RAYGUN_EXP), 1.0f, -1);
+		}
+
+		g_ZombieHurtNoThrow = true;
+		zombiesHurtAround(g_Vars.currentplayernum, pos, ZOMBIE_RAYGUN_RADIUS, ZOMBIE_RAYGUN_DAMAGE
+				* (gset->weaponfunc == FUNC_SECONDARY ? gset->unk063a / 30.0f + 1.0f : 1.0f), false);
+		g_ZombieHurtNoThrow = false;
+
+		// too close, or at the feet: the shooter's own blast, as Black Ops
+		// II's splash hurts its own (PhD Flopper shrugs it, chrDamage())
+		if (me && me->chr && !g_Vars.currentplayer->isdead) {
+			struct coord dir;
+			f32 dist;
+
+			dir.x = me->pos.x - pos->x;
+			dir.y = me->pos.y - pos->y;
+			dir.z = me->pos.z - pos->z;
+			dist = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+			if (dist < ZOMBIE_RAYGUN_RADIUS) {
+				if (dist > 0) {
+					dir.x /= dist;
+					dir.y /= dist;
+					dir.z /= dist;
+				}
+
+				// chrDamage() takes a player's at an eighth, over its health scale
+				chrDamageByExplosion(me->chr, ZOMBIE_RAYGUN_SELF * (1.0f - dist / ZOMBIE_RAYGUN_RADIUS)
+						* g_ZombieMaxHealth[g_Vars.currentplayernum] * 8.0f * g_Vars.currentplayer->healthscale,
+						&dir, me, pos);
+			}
+		}
 	}
 
 	return true;
@@ -7318,6 +9565,72 @@ static void zombiesPhdBlast(s32 playernum)
 
 static s32 g_ZombieCherryLast60[MAX_PLAYERS];
 
+/**
+ * The shock seen (zombiesRenderCherryFx()): the burst at the player's middle,
+ * its ring as wide as the shock reaches, its bolts to the zombies it will
+ * reach (as zombiesHurtAround() finds them: before they fall), or four out
+ * across the floor when there are none
+ */
+static void zombiesCherryBurst(s32 playernum, f32 reach)
+{
+	struct prop *prop = g_Vars.players[playernum]->prop;
+	s32 n = 0;
+	s32 i;
+
+	if (!prop) {
+		return;
+	}
+
+	// the bursts' clock stands still while none is drawn: from now, or the
+	// time since the last went would age this one out at its first frame
+	if (!zombiesCherryFxAny()) {
+		g_ZombieCherryFxFrame = g_Vars.lvframe60;
+	}
+
+	g_ZombieCherryFx[playernum].on = true;
+	g_ZombieCherryFx[playernum].age60 = 0;
+	g_ZombieCherryFx[playernum].reach = reach;
+	g_ZombieCherryFx[playernum].at = prop->pos;
+	g_ZombieCherryFx[playernum].at.y = (prop->chr ? prop->chr->ground : prop->pos.y - 100) + 80;
+
+	for (i = 0; i < g_BotCount && n < ZOMBIE_CHERRY_BOLTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		f32 dx;
+		f32 dy;
+		f32 dz;
+
+		if (!zchr || !zchr->prop || chrIsDead(zchr)) {
+			continue;
+		}
+
+		dx = zchr->prop->pos.x - prop->pos.x;
+		dy = zchr->prop->pos.y - prop->pos.y;
+		dz = zchr->prop->pos.z - prop->pos.z;
+
+		if (dx * dx + dy * dy + dz * dz > reach * reach || dy > 200 || dy < -200) {
+			continue;
+		}
+
+		g_ZombieCherryFx[playernum].to[n] = zchr->prop->pos;
+		g_ZombieCherryFx[playernum].to[n].y = zchr->ground + 70;
+		g_ZombieCherryFx[playernum].bot[n] = i;
+		n++;
+	}
+
+	// none in reach: across the floor, the way the player faces and round
+	for (i = 0; n == 0 && i < 4; i++) {
+		const f32 a = i * (M_PI / 2) + 0.4f;
+
+		g_ZombieCherryFx[playernum].bot[i] = -1;
+		g_ZombieCherryFx[playernum].to[i] = g_ZombieCherryFx[playernum].at;
+		g_ZombieCherryFx[playernum].to[i].x += sinf(a) * reach * 0.6f;
+		g_ZombieCherryFx[playernum].to[i].y -= 60;
+		g_ZombieCherryFx[playernum].to[i].z += cosf(a) * reach * 0.6f;
+	}
+
+	g_ZombieCherryFx[playernum].numbolts = n > 0 ? n : 4;
+}
+
 void zombiesReloadStarted(s32 handnum)
 {
 	const s32 playernum = g_Vars.currentplayernum;
@@ -7355,13 +9668,26 @@ void zombiesReloadStarted(s32 handnum)
 
 	pos = g_Vars.currentplayer->prop->pos;
 
+	zombiesCherryBurst(playernum, ZOMBIE_CHERRY_RADIUS_MIN + (ZOMBIE_CHERRY_RADIUS_MAX - ZOMBIE_CHERRY_RADIUS_MIN) * spent);
+
 	zombiesHurtAround(playernum,
 			&pos,
 			ZOMBIE_CHERRY_RADIUS_MIN + (ZOMBIE_CHERRY_RADIUS_MAX - ZOMBIE_CHERRY_RADIUS_MIN) * spent,
 			ZOMBIE_CHERRY_DAMAGE * spent * strength,
 			true);
 
-	zombiesPlaySound(SFX_MAULER_CHARGE, 1.8f);
+	// Black Ops II's own (zmb_cherry_explode, the taser mine's blast); the
+	// Mauler's charge, sped up, when its file is not there
+	{
+		const s32 boom = zmSfxSound(ZMSFX_CHERRY_EXPLODE);
+
+		if (boom > 0) {
+			zombiesNetKeepSound(ZMSFX_NET(ZMSFX_CHERRY_EXPLODE), 1.0f, -1);
+			zombiesPlaySoundHere(boom, 1.0f);
+		} else {
+			zombiesPlaySound(SFX_MAULER_CHARGE, 1.8f);
+		}
+	}
 }
 
 /**
@@ -7400,6 +9726,11 @@ bool zombiesTryDive(void)
 
 	g_ZombieDive60[playernum] = 1;
 
+	// where it left from: PhD's blast is for a dive off something high
+	if (player->prop && player->prop->chr) {
+		g_ZombieFallTop[playernum] = player->prop->chr->ground;
+	}
+
 	// the dive is the sprint's end; the breath it used stays used
 	player->speedmaxtime60 = -(player->speedmaxtime60 - 1);
 
@@ -7425,24 +9756,59 @@ void zombiesTickDive(void)
 			g_ZombieDive60[playernum] = 0;
 			player->crouchpos = CROUCHPOS_SQUAT;
 
-			if (!NET_CLIENT) {
+			// only a dive that came down from somewhere high: a dive on the
+			// flat, or a plain jump or drop off a ledge, blasts nothing
+			if (!NET_CLIENT && g_ZombieFallTop[playernum] - player->prop->chr->ground > ZOMBIE_PHD_DROP) {
 				zombiesPhdBlast(playernum);
 			}
 		}
 	}
 
-	// a drop: the ground it left from, against the ground it lands on
-	if (player->isfalling) {
-		if (!g_ZombieWasFalling[playernum]) {
-			g_ZombieFallTop[playernum] = player->prop->chr->ground;
-		}
-	} else if (g_ZombieWasFalling[playernum] && g_ZombieDive60[playernum] == 0) {
-		if (g_ZombieFallTop[playernum] - player->prop->chr->ground > ZOMBIE_PHD_DROP && !NET_CLIENT) {
-			zombiesPhdBlast(playernum);
-		}
+	g_ZombieWasFalling[playernum] = player->isfalling;
+}
+
+/**
+ * The stance button (BUTTON_STANCE, a controller's B in Zombies' layout), as
+ * Call of Duty's controller has it: a tap crouches, or stands up from a
+ * crouch, or comes up from prone to a crouch; held, it lies prone the moment
+ * the hold is long enough. From bondmove.c, after the crouch keys, for the
+ * current player.
+ */
+#define ZOMBIE_STANCE_HOLD60 24
+
+static s32 g_ZombieStanceHeld60[MAX_PLAYERS]; // 60ths the button has been down, -1 once the hold went prone
+
+void zombiesStanceTick(s32 contpad)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	bool held;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS) {
+		return;
 	}
 
-	g_ZombieWasFalling[playernum] = player->isfalling;
+	held = joyGetButtons(contpad, BUTTON_STANCE) != 0 && zombiesPlayerIsUp(playernum);
+
+	if (held) {
+		if (g_ZombieStanceHeld60[playernum] >= 0) {
+			g_ZombieStanceHeld60[playernum] += g_Vars.lvupdate60;
+
+			if (g_ZombieStanceHeld60[playernum] >= ZOMBIE_STANCE_HOLD60) {
+				player->crouchpos = CROUCHPOS_SQUAT;
+				g_ZombieStanceHeld60[playernum] = -1;
+			}
+		}
+
+		return;
+	}
+
+	// let go before the hold was long enough: a tap
+	if (g_ZombieStanceHeld60[playernum] > 0) {
+		player->crouchpos = player->crouchpos == CROUCHPOS_DUCK ? CROUCHPOS_STAND : CROUCHPOS_DUCK;
+	}
+
+	g_ZombieStanceHeld60[playernum] = 0;
 }
 
 static Gfx *zombiesRadarDrops(Gfx *gdl);
@@ -7645,12 +10011,9 @@ f32 zombiesGunLowerFrac(void)
 		return zombiesPapLowerFrac(playernum);
 	}
 
-	// GAME OVER: the gun goes down and stays down
+	// the game's end: the hands reach out, then the view leaves them
 	if (g_ZombieGameOver) {
-		extern s32 g_ZombieGameOver60;
-		f32 f = g_ZombieGameOver60 / 30.0f;
-
-		return f >= 1 ? 1 : f * f * (3 - 2 * f);
+		return zombiesGameOverGunLower();
 	}
 
 	t = g_ZombieDrink60[playernum];
@@ -7755,7 +10118,8 @@ void zombiesQuickMelee(void)
 		return;
 	}
 
-	if (!zombiesPlayerIsUp(playernum) || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
+	// down (a crawl) knifes as well, as Black Ops II has it; dead does not
+	if (!zombiesPlayerAlive(playernum) || g_ZombieGameOver || g_ZombieDrink60[playernum] >= 0 || g_ZombieKnifeStage[playernum] != ZKNIFE_NONE
 			|| g_ZombieKnifeCooldown60[playernum] > 0 || zombiesPapLowerFrac(playernum) > 0
 			|| g_ZombieThrowStage[playernum] != ZTHROW_NONE) {
 		return;
@@ -8076,7 +10440,7 @@ static void zombiesTickKnife(s32 playernum)
 	g_ZombieKnife60[playernum] += g_Vars.lvupdate60;
 	late = g_ZombieKnife60[playernum] > ZOMBIE_KNIFE_STAGE60;
 
-	if (!zombiesPlayerIsUp(playernum)) {
+	if (!zombiesPlayerAlive(playernum)) {
 		// downed: what is in hand is the downed state's business now
 		zombiesKnifeCancel(playernum);
 		return;
@@ -8209,21 +10573,25 @@ static void zombiesTickJuggernog(s32 playernum)
 		s32 now = prev + g_Vars.lvupdate60;
 
 		// on the drink's notes (Black Ops II's frames 16, 29 and 57, two
-		// 60ths each, from the bottle coming up): the cap off, gulps, and the
-		// bottle thrown away
-		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 32)
-				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 58)
-				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 76)
-				|| zombiesCrossed(prev, now, DRINK_GUNDOWN + 94)) {
+		// 60ths each, from the bottle coming up), its own sounds
+		// (evt_perk_bottle_open, evt_perk_swallow, evt_bottle_break: the
+		// common bank, zmb_common.all.sabs), Perfect Dark's when they are not
+		// there; and its belch as the perk takes
+		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 32) && !zombiesPlayCodSound(ZMSFX_PERK_OPEN, NULL)) {
 			zombiesPlaySound(SFX_PICKUP_AMMO, 0.45f);
 		}
 
-		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 114)) {
+		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 58) && !zombiesPlayCodSound(ZMSFX_PERK_SWALLOW, NULL)) {
+			zombiesPlaySound(SFX_PICKUP_AMMO, 0.45f);
+		}
+
+		if (zombiesCrossed(prev, now, DRINK_GUNDOWN + 114) && !zombiesPlayCodSound(ZMSFX_PERK_BREAK, NULL)) {
 			zombiesPlaySound(SFX_BOTTLE_BREAK, 0.5f);
 		}
 
 		// the perk takes as the last of it goes down
 		if (zombiesCrossed(prev, now, DRINK_GULPEND)) {
+			zombiesPlayCodSound(ZMSFX_PERK_BELCH, NULL);
 			zombiesGivePerk(playernum, g_ZombieDrinkPerk[playernum]);
 		}
 
@@ -8231,7 +10599,7 @@ static void zombiesTickJuggernog(s32 playernum)
 		return;
 	}
 
-	if (machine == NULL || g_ZombieHasJugg[playernum]) {
+	if (machine == NULL || g_ZombieHasJugg[playernum] || zombiesPerksFull(playernum)) {
 		return;
 	}
 
@@ -8280,13 +10648,16 @@ static void zombiesTickJuggernog(s32 playernum)
 	g_ZombieUseNeedsRelease[playernum] = true;
 
 	if (g_ZombiePoints[playernum] < ZOMBIE_JUGG_COST) {
-		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		if (!zombiesPlayCodSound(ZMSFX_PERK_DENY, NULL)) {
+			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		}
+
 		return;
 	}
 
 	g_ZombiePoints[playernum] -= ZOMBIE_JUGG_COST;
 	zombiesAddPopup(playernum, -ZOMBIE_JUGG_COST);
-	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+	zombiesPerkBought(ZOMBIEPERK_JUGGERNOG, machine);
 	g_ZombieDrinkPerk[playernum] = ZOMBIEPERK_JUGGERNOG;
 	g_ZombieDrink60[playernum] = 0;
 }
@@ -8396,6 +10767,147 @@ static void zombiesClearDowned(s32 playernum)
  * death is not to happen: they go down instead, or are down already and a
  * hit is not what ends that. force is a death nothing survives (a fall).
  */
+/**
+ * The last stand, as Black Ops II's: down, the player's best pistol is in
+ * their hand - the Ray Gun first, it being a pistol and the strongest, then
+ * the magnums, the Phoenix, the Mauler, the MagSec and the Falcons - or, with
+ * none, a Falcon 2 lent for the while. It has a full magazine and
+ * ZOMBIE_LASTSTAND_CLIPS more of its own: what that ammunition held before
+ * comes back as they get up, as does the gun they had in hand, and a lent
+ * Falcon goes again. Bled out, it does not matter (a death's inventory is
+ * the respawn's). The host's, whose inventory a client's is.
+ */
+#define ZOMBIE_LASTSTAND_CLIPS 3
+
+static const s32 g_ZombieLastStandGuns[] = {
+	WEAPON_ZM_RAYGUN, WEAPON_DY357LX, WEAPON_DY357MAGNUM, WEAPON_PHOENIX, WEAPON_MAULER,
+	WEAPON_MAGSEC4, WEAPON_FALCON2_SCOPE, WEAPON_FALCON2_SILENCER, WEAPON_FALCON2,
+};
+
+static struct {
+	bool on;
+	s32 before;    // the gun in hand as they went down
+	s32 gun;       // the last stand's
+	bool lent;     // given for the down, and taken back
+	s32 ammotype;
+	s32 ammo;      // its ammunition as it was, to be put back
+} g_ZombieLastStand[MAX_PLAYERS];
+
+static void zombiesDropReload(void);
+static void zombiesSyncGuns(s32 playernum);
+static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip);
+static void zombiesKnifeCancel(s32 playernum);
+
+static void zombiesLastStandBegin(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.players[playernum];
+	s32 gun = WEAPON_NONE;
+	s32 type;
+	s32 i;
+
+	g_ZombieLastStand[playernum].on = false;
+
+	if (NET_CLIENT || !player || !player->prop) {
+		return;
+	}
+
+	setCurrentPlayerNum(playernum);
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieLastStandGuns); i++) {
+		if (invHasSingleWeaponIncAllGuns(g_ZombieLastStandGuns[i])) {
+			gun = g_ZombieLastStandGuns[i];
+			break;
+		}
+	}
+
+	g_ZombieLastStand[playernum].before = player->gunctrl.switchtoweaponnum >= 0
+		? player->gunctrl.switchtoweaponnum : player->gunctrl.weaponnum;
+	g_ZombieLastStand[playernum].lent = gun == WEAPON_NONE;
+
+	if (gun == WEAPON_NONE) {
+		gun = WEAPON_FALCON2;
+		invGiveSingleWeapon(gun);
+	}
+
+	type = bgunGetAmmoTypeForWeapon(gun, FUNC_PRIMARY);
+
+	g_ZombieLastStand[playernum].gun = gun;
+	g_ZombieLastStand[playernum].ammotype = type;
+	g_ZombieLastStand[playernum].ammo = type > 0 ? player->ammoheldarr[type] : 0;
+
+	// what is in the hand already counts as held, if it is this gun's
+	if (type > 0 && player->gunctrl.weaponnum == gun) {
+		g_ZombieLastStand[playernum].ammo += player->hands[HAND_RIGHT].loadedammo[0];
+		player->hands[HAND_RIGHT].loadedammo[0] = 0;
+	}
+
+	if (type > 0) {
+		bgunSetAmmoQuantity(type, 0);
+	}
+
+	zombiesFillGun(gun, ZOMBIE_LASTSTAND_CLIPS, true);
+
+	zombiesKnifeCancel(playernum);
+	zombiesDropReload();
+	player->gunctrl.dualwielding = false;
+	player->gunctrl.leftwant = WEAPON_NONE;
+	bgunEquipWeapon(gun);
+
+	g_ZombieLastStand[playernum].on = true;
+
+	setCurrentPlayerNum(prevplayernum);
+}
+
+static void zombiesLastStandEnd(s32 playernum)
+{
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.players[playernum];
+	s32 gun = g_ZombieLastStand[playernum].gun;
+	s32 type = g_ZombieLastStand[playernum].ammotype;
+
+	if (!g_ZombieLastStand[playernum].on || NET_CLIENT || !player || !player->prop) {
+		g_ZombieLastStand[playernum].on = false;
+		return;
+	}
+
+	g_ZombieLastStand[playernum].on = false;
+
+	setCurrentPlayerNum(playernum);
+
+	// the last stand's own rounds gone with it, in the hand as well
+	if (player->gunctrl.weaponnum == gun) {
+		player->hands[HAND_RIGHT].loadedammo[0] = 0;
+		player->hands[HAND_LEFT].loadedammo[0] = 0;
+	}
+
+	if (type > 0) {
+		bgunSetAmmoQuantity(type, g_ZombieLastStand[playernum].ammo);
+	}
+
+	zombiesDropReload();
+
+	if (g_ZombieLastStand[playernum].before > WEAPON_NONE
+			&& invHasSingleWeaponIncAllGuns(g_ZombieLastStand[playernum].before)) {
+		bgunEquipWeapon(g_ZombieLastStand[playernum].before);
+	}
+
+	if (g_ZombieLastStand[playernum].lent) {
+		invRemoveItemByNum(gun);
+		zombiesSyncGuns(playernum);
+	}
+
+	setCurrentPlayerNum(prevplayernum);
+}
+
+// Bondgun.c: no change of gun while down, as Black Ops II has it
+bool zombiesLastStandHoldsGun(void)
+{
+	s32 me = g_Vars.currentplayernum;
+
+	return zombiesIsActive() && me >= 0 && me < MAX_PLAYERS && g_ZombieDowned[me] && !g_ZombieGameOver;
+}
+
 bool zombiesPlayerGoesDown(s32 playernum, bool force)
 {
 	struct player *player;
@@ -8426,20 +10938,23 @@ bool zombiesPlayerGoesDown(s32 playernum, bool force)
 		return true;
 	}
 
-	// alone, only Quick Revive lets a player go down rather than die
 	solo = zombiesPlayersInPlay() < 2;
 
-	if (force || (solo && !g_ZombieHasPerk[playernum][ZOMBIEPERK_QUICKREVIVE])
-			|| g_ZombieRound < 1 || player->invincible) {
+	if (force || g_ZombieRound < 1 || player->invincible) {
 		return false;
 	}
 
+	// Alone, Quick Revive gets the player up again by themselves. Without it
+	// the down is the last: they go down all the same rather than die as
+	// Perfect Dark has it, and the game is over at once
+	// (zombiesEveryoneIsDown()), the view falling to the floor
 	g_ZombieDowned[playernum] = true;
+	g_ZombieStats[playernum].downs++;
 	g_ZombieBleed60[playernum] = ZOMBIE_BLEEDOUT60;
 	g_ZombieRevive60[playernum] = 0;
 	g_ZombieReviver[playernum] = -1;
 	g_ZombieSavedInvincible[playernum] = player->invincible;
-	g_ZombieSelfRevive60[playernum] = solo ? ZOMBIE_QR_SELF60 : 0;
+	g_ZombieSelfRevive60[playernum] = solo && g_ZombieHasPerk[playernum][ZOMBIEPERK_QUICKREVIVE] ? ZOMBIE_QR_SELF60 : 0;
 
 	player->invincible = true;
 	player->bondhealth = g_ZombieMaxHealth[playernum] * 0.01f;
@@ -8451,6 +10966,9 @@ bool zombiesPlayerGoesDown(s32 playernum, bool force)
 	g_ZombieDrink60[playernum] = -1;
 	zombiesLoseMuleGun(playernum);
 	zombiesLosePerks(playernum);
+
+	// the last stand's pistol in hand
+	zombiesLastStandBegin(playernum);
 
 	zombiesPlaySound(SFX_MENU_ERROR, 0.6f);
 
@@ -8750,10 +11268,19 @@ bool zombiesIsWatchedFirstPerson(s32 playernum)
 
 // For chrRender(): a spectator in first person does not see the body they
 // are looking out of, nor the gun in its hands
+static bool zombiesGameOverHidesHud(void);
+
 bool zombiesSpectatorHidesProp(struct prop *prop)
 {
 	s32 me = g_Vars.currentplayernum;
 	s32 target;
+
+	// the game's end, over the arena: the zombies have gone, and the
+	// scoreboard has it to itself
+	if (zombiesIsActive() && g_ZombieGameOver && zombiesGameOverHidesHud()
+			&& prop->type == PROPTYPE_CHR && prop->chr && prop->chr->aibot) {
+		return true;
+	}
 
 	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS
 			|| !g_ZombieSpectating[me] || !g_ZombieSpecFirst[me]) {
@@ -8861,13 +11388,14 @@ static void zombiesStandUp(s32 playernum, char *msg)
 {
 	struct player *player = g_Vars.players[playernum];
 
+	zombiesLastStandEnd(playernum);
 	zombiesClearDowned(playernum);
 	player->bondhealth = g_ZombieMaxHealth[playernum] * 0.5f;
 	player->crouchpos = CROUCHPOS_STAND;
 	g_ZombieLastHealth[playernum] = player->bondhealth;
 	g_ZombieRegenDelay60[playernum] = 0;
 
-	zombiesPlaySound(SFX_PICKUP_SHIELD, 1.2f);
+	// no sound: Black Ops II has none for getting up (its characters' lines are it)
 	scenarioCreateHudmsg(playernum, msg);
 }
 
@@ -8980,6 +11508,7 @@ static void zombiesTickDowned(void)
 
 				sprintf(msg, "REVIVED BY PLAYER %d\n", reviver + 1);
 				zombiesStandUp(i, msg);
+				g_ZombieStats[reviver].revives++;
 			}
 
 			continue;
@@ -9140,6 +11669,11 @@ static bool zombiesEveryoneIsDown(void)
 	}
 
 	if (!anydowned) {
+		return true;
+	}
+
+	// alone and down with no Quick Revive: that was the last (zombiesPlayerGoesDown())
+	if (zombiesPlayersInPlay() < 2) {
 		return true;
 	}
 
@@ -9389,8 +11923,10 @@ static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaul
 	mtx = gfxAllocateMatrix();
 	mtx4MultMtx4(&obj->model->matrices[0], &local, mtx);
 
+	// as bright as the one in the hands (zombiesVmGunTick()): at half the
+	// room's light Black Ops II's dark metal read as a black pistol
 	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx,
-			0x80 + (obj->shadecol[0] >> 1), 0x80 + (obj->shadecol[1] >> 1), 0x80 + (obj->shadecol[2] >> 1));
+			0xb0 + obj->shadecol[0] * 0x4f / 0xff, 0xb0 + obj->shadecol[1] * 0x4f / 0xff, 0xb0 + obj->shadecol[2] * 0x4f / 0xff);
 
 	return true;
 }
@@ -9411,6 +11947,11 @@ static void zombiesNameOwnGuns(void)
 
 	named = true;
 	raygun->name = raygun->shortname = langAddPortText("Ray Gun\n");
+
+	// its second function, the charged burst (invitems.c)
+	if (raygun->functions[1]) {
+		((struct weaponfunc *)raygun->functions[1])->name = langAddPortText("Charged Burst\n");
+	}
 }
 
 static void zombiesResetBox(void)
@@ -9823,12 +12364,41 @@ static void zombiesBoxShowGun(s32 index)
 
 // A gun for the box to land on: not the one showing, and if it can be helped
 // not one the player already has
+#define ZOMBIE_BOX_RAYGUN_ODDS 8
+
 static s32 zombiesBoxPick(s32 playernum, bool final)
 {
 	s32 tries;
 
 	if (g_ZombieBoxNumGuns <= 0) {
 		return -1;
+	}
+
+	// The Ray Gun lands one time in ZOMBIE_BOX_RAYGUN_ODDS, not one in the
+	// box's thirty-odd guns (a tester spent near 90,000 points for one)
+	if (final && rngRandom() % ZOMBIE_BOX_RAYGUN_ODDS == 0) {
+		s32 i;
+
+		for (i = 0; i < g_ZombieBoxNumGuns; i++) {
+			s32 index = g_ZombieBoxGuns[i];
+
+			if (g_MpWeapons[index].weaponnum == WEAPON_ZM_RAYGUN) {
+				const s32 prevplayernum = g_Vars.currentplayernum;
+				bool has = false;
+
+				if (playernum >= 0) {
+					setCurrentPlayerNum(playernum);
+					has = invHasSingleWeaponIncAllGuns(WEAPON_ZM_RAYGUN);
+					setCurrentPlayerNum(prevplayernum);
+				}
+
+				if (!has) {
+					return index;
+				}
+
+				break;
+			}
+		}
 	}
 
 	for (tries = 0; tries < 24; tries++) {
@@ -10704,18 +13274,22 @@ static void zombiesTickPap(s32 playernum)
 
 		if (prev < ZOMBIE_PAP_DOWN60 && now >= ZOMBIE_PAP_DOWN60) {
 			zombiesPapTakeGun(playernum);
+
+			// in: the machine at work (zmb_perks_packa_upgrade, its crunch)
+			zombiesPlayCodSound(ZMSFX_PAP_UPGRADE, machine);
+			zombiesPlayCodSound(ZMSFX_PAP_CRUNCH, machine);
 		}
 
 		// out of the machine, upgraded, to be taken
 		if (prev < ZOMBIE_PAP_OFFERAT && now >= ZOMBIE_PAP_OFFERAT) {
-			zombiesPlaySound(SFX_PICKUP_SHIELD, 0.8f);
+			zombiesCodOr(ZMSFX_PAP_READY, machine, SFX_PICKUP_SHIELD, 0.8f);
 		}
 
 		// not taken in time: gone, as Call of Duty's is
 		if (now >= ZOMBIE_PAP_TOTAL60) {
 			g_ZombiePap60[playernum] = -1;
+			// back in without a sound, as Black Ops II's
 			zombiesPapHideGun();
-			zombiesPlaySound(SFX_MENU_ERROR, 0.6f);
 			sysLogPrintf(LOG_NOTE, "zombies: player %d left weapon %d in Pack-a-Punch", playernum + 1, g_ZombiePapGun[playernum]);
 			return;
 		}
@@ -10761,7 +13335,7 @@ static void zombiesTickPap(s32 playernum)
 			g_ZombiePapHeld60[playernum] = 0;
 			g_ZombiePap60[playernum] = -1;
 			zombiesPapGiveGun(playernum);
-			zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+			zombiesCodOr(ZMSFX_PAP_KNUCKLE, NULL, SFX_MENU_SELECT, 1.0f);
 		}
 
 		return;
@@ -10808,14 +13382,17 @@ static void zombiesTickPap(s32 playernum)
 
 	if (!zombiesIsSlotGun(held) || zombiesGunIsPapped(playernum, held) || g_ZombiePoints[playernum] < ZOMBIE_PAP_COST
 			|| zombiesPapInUse()) {
-		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		zombiesCodOr(ZMSFX_PAP_DENY, machine, SFX_MENU_ERROR, 0.4f);
 		return;
 	}
 
 	g_ZombiePoints[playernum] -= ZOMBIE_PAP_COST;
 	zombiesAddPopup(playernum, -ZOMBIE_PAP_COST);
-	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
-	zombiesPlaySound(SFX_MAULER_CHARGE, 0.6f);
+	zombiesCodOr(ZMSFX_PERK_BUY, NULL, SFX_MENU_SELECT, 1.0f);
+
+	if (zmSfxSound(ZMSFX_PAP_UPGRADE) <= 0) {
+		zombiesPlaySound(SFX_MAULER_CHARGE, 0.6f);
+	}
 
 	g_ZombiePapGun[playernum] = held;
 	g_ZombiePap60[playernum] = 0;
@@ -10894,12 +13471,27 @@ static bool zombiesPapPrompt(s32 playernum, char *text)
 }
 
 // The gun from the box into the player's hands, full
+// A gun handed over mid-reload comes up at once, as Call of Duty's does: the
+// reload is dropped (bondgun.c holds a switch until the hands are idle). For
+// the current player.
+static void zombiesDropReload(void)
+{
+	s32 h;
+
+	for (h = 0; h < 2; h++) {
+		if (g_Vars.currentplayer->hands[h].state == HANDSTATE_RELOAD) {
+			bgunSetState(h, HANDSTATE_IDLE);
+		}
+	}
+}
+
 static void zombiesBoxGive(s32 playernum, s32 index)
 {
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	struct mpweapon *mpweapon = &g_MpWeapons[index];
 
 	setCurrentPlayerNum(playernum);
+	zombiesDropReload();
 
 	// the hands full: the gun in them gives way, as Call of Duty's
 	if (!invHasSingleWeaponIncAllGuns(mpweapon->weaponnum)) {
@@ -10970,15 +13562,21 @@ static void zombiesTickBox(void)
 			g_ZombieSoundFor = i;
 
 			if (g_ZombiePoints[i] < zombiesBoxCost() || g_ZombieBoxNumGuns <= 0) {
-				zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+				zombiesCodOr(ZMSFX_BUY_DENY, NULL, SFX_MENU_ERROR, 0.4f);
 				g_ZombieSoundFor = -1;
 				continue;
 			}
 
 			g_ZombiePoints[i] -= zombiesBoxCost();
 			zombiesAddPopup(i, -zombiesBoxCost());
-			zombiesPlaySound(SFX_MENU_SELECT, 0.8f);
+			zombiesCodOr(ZMSFX_PERK_BUY, NULL, SFX_MENU_SELECT, 0.8f);
 			g_ZombieSoundFor = -1;
+
+			// Black Ops II's: the lid up, the music box and the guns going round,
+			// from the box
+			zombiesPlayCodSound(ZMSFX_BOX_OPEN, box);
+			zombiesPlayCodSound(ZMSFX_BOX_MUSIC, box);
+			zombiesPlayCodSound(ZMSFX_BOX_SPIN, box);
 
 			g_ZombieBoxState = ZOMBIEBOX_SPIN;
 			g_ZombieBoxUser = i;
@@ -10998,7 +13596,11 @@ static void zombiesTickBox(void)
 				zombiesBoxShowGun(index);
 			}
 
-			zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
+			// landed: Black Ops II's music box has its own end
+			if (zmSfxSound(ZMSFX_BOX_MUSIC) <= 0) {
+				zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
+			}
+
 			g_ZombieBoxState = ZOMBIEBOX_OFFER;
 			g_ZombieBoxTime60 = 0;
 		} else if (g_ZombieBoxTime60 >= g_ZombieBoxNextSwap60) {
@@ -11009,7 +13611,11 @@ static void zombiesTickBox(void)
 				zombiesBoxShowGun(index);
 			}
 
-			zombiesPlaySound(SFX_PICKUP_AMMO, 1.6f);
+			// a tick each gun, the game's own, when Black Ops II's spin is not there
+			if (zmSfxSound(ZMSFX_BOX_SPIN) <= 0) {
+				zombiesPlaySound(SFX_PICKUP_AMMO, 1.6f);
+			}
+
 			g_ZombieBoxNextSwap60 = g_ZombieBoxTime60 + 4 + 16 * g_ZombieBoxTime60 / ZOMBIE_BOX_SPIN60;
 		}
 		break;
@@ -11022,13 +13628,14 @@ static void zombiesTickBox(void)
 			g_ZombieBoxHeld60[g_ZombieBoxUser] = 0;
 
 			zombiesBoxGive(g_ZombieBoxUser, g_ZombieBoxShown);
-			zombiesPlaySound(SFX_PICKUP_AMMO, 1.0f);
+			zombiesCodOr(ZMSFX_BOX_CLOSE, box, SFX_PICKUP_AMMO, 1.0f);
 
 			zombiesBoxHideGun();
 			g_ZombieBoxState = ZOMBIEBOX_IDLE;
 			g_ZombieBoxUser = -1;
 		} else if (g_ZombieBoxTime60 >= ZOMBIE_BOX_OFFER60) {
-			// not taken: back into the box
+			// not taken: back into the box, the lid down
+			zombiesPlayCodSound(ZMSFX_BOX_CLOSE, box);
 			zombiesBoxHideGun();
 			g_ZombieBoxState = ZOMBIEBOX_IDLE;
 			g_ZombieBoxUser = -1;
@@ -11294,7 +13901,7 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 				victim->ground > -30000 ? victim->ground : victim->prop->pos.y - 60, victim->prop->rooms)) {
 		g_ZombieDropSerial[drop - g_ZombieDrops]++; // a new one in the slot, for the clients
 		g_ZombieDropsThisRound++;
-		zombiesPlaySound(SFX_PICKUP_SHIELD, 1.5f);
+		zombiesCodOr(ZMSFX_PU_SPAWN, NULL, SFX_PICKUP_SHIELD, 1.5f);
 	}
 }
 
@@ -11482,27 +14089,35 @@ static void zombiesPowerupTaken(s32 kind)
 	switch (kind) {
 	case ZOMBIEPOWERUP_MAXAMMO:
 		zombiesMaxAmmo();
-		zombiesPlaySound(SFX_PICKUP_AMMO, 0.8f);
+		zombiesCodOr(ZMSFX_PU_MAXAMMO, NULL, SFX_PICKUP_AMMO, 0.8f);
 		break;
 	case ZOMBIEPOWERUP_INSTAKILL:
 		g_ZombieInstaKill60 = ZOMBIE_POWERUP_TIME60;
+		zombiesPlayCodSound(ZMSFX_PU_INSTAKILL, NULL);
 		break;
 	case ZOMBIEPOWERUP_DOUBLEPOINTS:
 		g_ZombieDoublePoints60 = ZOMBIE_POWERUP_TIME60;
 		break;
 	case ZOMBIEPOWERUP_NUKE:
 		zombiesNuke();
-		zombiesPlaySound(SFX_EXPLOSION_8098, 1.0f);
+		zombiesCodOr(ZMSFX_PU_NUKE, NULL, SFX_EXPLOSION_8098, 1.0f);
 		break;
 	case ZOMBIEPOWERUP_CARPENTER:
 		zombiesCarpenter();
+		zombiesPlayCodSound(ZMSFX_PU_CARPENTER, NULL);
 		break;
 	case ZOMBIEPOWERUP_FIRESALE:
 		g_ZombieFireSale60 = ZOMBIE_POWERUP_TIME60;
 		break;
 	}
 
-	zombiesPlaySound(SFX_PICKUP_SHIELD, 1.0f);
+	// Black Ops II's grab, under the power-up's own, and the announcer calling
+	// it: Richtofen, as Tranzit, Die Rise and Buried have him
+	zombiesCodOr(ZMSFX_PU_GRAB, NULL, SFX_PICKUP_SHIELD, 1.0f);
+
+	if (kind >= 0 && kind < ZOMBIEPOWERUP_COUNT) {
+		zombiesPlayCodSound(ZMSFX_ANNOUNCER + kind, NULL);
+	}
 	g_ZombieBannerKind = kind;
 	g_ZombieMaxAmmoBanner60 = 0;
 }
@@ -11637,6 +14252,11 @@ static void zombiesTickDrops(void)
 
 	// the power-ups that last, running down
 	g_ZombieInstaKill60 = g_ZombieInstaKill60 > g_Vars.lvupdate60 ? g_ZombieInstaKill60 - g_Vars.lvupdate60 : 0;
+	// Double Points running out: Black Ops II's sound for it
+	if (g_ZombieDoublePoints60 > 0 && g_ZombieDoublePoints60 <= g_Vars.lvupdate60 && !NET_CLIENT) {
+		zombiesPlayCodSound(ZMSFX_PU_DBLPOINTS_OFF, NULL);
+	}
+
 	g_ZombieDoublePoints60 = g_ZombieDoublePoints60 > g_Vars.lvupdate60 ? g_ZombieDoublePoints60 - g_Vars.lvupdate60 : 0;
 	g_ZombieFireSale60 = g_ZombieFireSale60 > g_Vars.lvupdate60 ? g_ZombieFireSale60 - g_Vars.lvupdate60 : 0;
 
@@ -12142,13 +14762,13 @@ static void zombiesWallBuyPurchase(s32 playernum, s32 w)
 	}
 
 	if (full || g_ZombiePoints[playernum] < cost) {
-		zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+		zombiesCodOr(ZMSFX_BUY_DENY, NULL, SFX_MENU_ERROR, 0.4f);
 		return;
 	}
 
 	g_ZombiePoints[playernum] -= cost;
 	zombiesAddPopup(playernum, -cost);
-	zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+	zombiesCodOr(ZMSFX_PERK_BUY, NULL, SFX_MENU_SELECT, 1.0f);
 
 	// the first buy puts the gun up in its outline, for everyone, for good
 	zombiesWallBuyShowGun(buy);
@@ -12157,10 +14777,10 @@ static void zombiesWallBuyPurchase(s32 playernum, s32 w)
 		setCurrentPlayerNum(playernum);
 		zombiesFillGun(weaponnum, ZOMBIE_AMMO_CLIPS, false);
 		setCurrentPlayerNum(prevplayernum);
-		zombiesPlaySound(SFX_PICKUP_AMMO, 1.0f);
+		zombiesCodOr(ZMSFX_WALL_BUY, NULL, SFX_PICKUP_AMMO, 1.0f);
 	} else {
 		zombiesBoxGive(playernum, buy->mpweaponnum);
-		zombiesPlaySound(SFX_PICKUP_GUN, 1.0f);
+		zombiesCodOr(ZMSFX_WALL_BUY, NULL, SFX_PICKUP_GUN, 1.0f);
 	}
 }
 
@@ -12273,8 +14893,22 @@ static void zombiesTickWallBuys(void)
 #define ZOMBIE_BARRIER_BOARDS 6
 #define ZOMBIE_BARRIER_REACH  400.0f  // how far from its pad the barrier's wall may be
 #define ZOMBIE_BARRIER_APART  350.0f  // from every machine, wall buy, doorway and other barrier
-#define ZOMBIE_BARRIER_STAND  50.0f   // a zombie tearing at it stands this far out from the wall
-#define ZOMBIE_BARRIER_RANGE  130.0f  // how near (of the stand) rebuilding works
+#define ZOMBIE_BARRIER_STAND  30.0f   // a zombie tearing at it stands this far out from the wall
+#define ZOMBIE_BARRIER_RANGE  130.0f  // how near (of the front, ZOMBIE_BARRIER_FRONT) rebuilding works
+
+// Call of Duty's barrier at its own size (zmcore_basicwoodbarrier, its board
+// tears aligned to it): its origin is the window's sill, 31 inches over the
+// floor, a zombie waiting 23 inches behind it and the boards nailed 28 to 34
+// in front of it, on the room's side of a wall that thick. Perfect Dark's
+// walls have nothing behind them, so the window stands out from the wall: a
+// pen between, where the zombie waits
+#define ZOMBIE_COD_INCH       2.54f   // our units an inch
+#define ZOMBIE_BARRIER_ORIGIN (ZOMBIE_BARRIER_STAND + 23 * ZOMBIE_COD_INCH) // the origin out from the wall
+#define ZOMBIE_BARRIER_SILL   (31 * ZOMBIE_COD_INCH)
+#define ZOMBIE_BARRIER_INSIDE (ZOMBIE_BARRIER_ORIGIN + 28 * ZOMBIE_COD_INCH) // the boards' face of the wall
+#define ZOMBIE_BARRIER_FRONT  (ZOMBIE_BARRIER_ORIGIN + 52 * ZOMBIE_COD_INCH) // where a player rebuilds it
+#define ZOMBIE_BARRIER_OPEN   (32 * ZOMBIE_COD_INCH) // the opening, half its width
+#define ZOMBIE_BARRIER_TOP    (ZOMBIE_BARRIER_SILL + 60 * ZOMBIE_COD_INCH) // its top over the floor
 #define ZOMBIE_BARRIER_TEAR60 54      // a board torn off this often
 #define ZOMBIE_BARRIER_FIX60  33      // and put back this often, Interact held
 #define ZOMBIE_BARRIER_POINTS 10
@@ -12305,7 +14939,13 @@ struct zombiebarrier {
 	s32 comp;
 	s32 boards;
 	s32 zombie;            // the bot tearing it, -1 none
-	s32 tear60;
+	s32 tear60;            // its zombie through a board's grab, hold and pull
+	s32 pulling;           // the board being pulled off, -1 none
+	s32 enter60;           // its zombie climbing in over the sill, -1 not
+	s32 reach60;           // its zombie swiping through the boards at a player, -1 not
+	s32 reachplayer;       // ... at whom
+	bool reachleft;        // ... with which arm, each in turn
+	bool reachhit;         // ... and whether the blow has landed
 	s16 anim60[ZOMBIE_BARRIER_BOARDS]; // since each board last went or came
 	bool torn[ZOMBIE_BARRIER_BOARDS];  // ... and which
 	bool placed;
@@ -13217,11 +15857,11 @@ static void zombiesTickDoors(void)
 		d = g_ZombieNearDoor[i];
 
 		if (g_ZombiePoints[i] < g_ZombieDoors[d].cost) {
-			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
+			zombiesCodOr(ZMSFX_BUY_DENY, NULL, SFX_MENU_ERROR, 0.4f);
 		} else {
 			g_ZombiePoints[i] -= g_ZombieDoors[d].cost;
 			zombiesAddPopup(i, -g_ZombieDoors[d].cost);
-			zombiesPlaySound(SFX_MENU_SELECT, 1.0f);
+			zombiesCodOr(ZMSFX_PERK_BUY, NULL, SFX_MENU_SELECT, 1.0f);
 			zombiesDoorOpen(d);
 			zombiesDoorKeepOpen(&g_ZombieDoors[d]);
 			g_ZombieNearDoor[i] = -1;
@@ -13376,6 +16016,54 @@ static bool zombiesBarrierMakeObj(struct zombiebarrier *bar)
  * walls and the machines are the arena's alone, so a client puts them where
  * the host does.
  */
+/**
+ * Whether Call of Duty's window, at its own size, fits on the wall walldist
+ * from pad along wall: from the wall the room must run on at least
+ * ZOMBIE_BARRIER_FRONT and a player's room beyond, and at the pen's back and
+ * at the boards the wall must run ZOMBIE_BARRIER_OPEN and the jambs' width
+ * either side. Complex's corridors had it standing across the way.
+ */
+#define ZOMBIE_BARRIER_CLEAR 80.0f // beyond where a player rebuilds it
+
+static bool zombiesBarrierFits(struct coord *pad, RoomNum *padrooms, struct coord *wall, f32 walldist)
+{
+	static const f32 outs[2] = { 40.0f, ZOMBIE_BARRIER_INSIDE };
+	const f32 need = ZOMBIE_BARRIER_FRONT + ZOMBIE_BARRIER_CLEAR;
+	const f32 side = ZOMBIE_BARRIER_OPEN + 28;
+	f32 back = zombiesRayToWall(pad, padrooms, -wall->x, -wall->z, need);
+	s32 k;
+
+	// away from the wall: the pad is walldist out, and the room on past it
+	if (back >= 0 && walldist + back < need) {
+		return false;
+	}
+
+	for (k = 0; k < 2; k++) {
+		struct coord at;
+		RoomNum atrooms[8];
+		f32 left;
+		f32 right;
+
+		at.x = pad->x + wall->x * (walldist - outs[k]);
+		at.y = pad->y;
+		at.z = pad->z + wall->z * (walldist - outs[k]);
+		func0f065e74(pad, padrooms, &at, atrooms);
+
+		if (atrooms[0] <= 0) {
+			return false;
+		}
+
+		left = zombiesRayToWall(&at, atrooms, wall->z, -wall->x, side);
+		right = zombiesRayToWall(&at, atrooms, -wall->z, wall->x, side);
+
+		if ((left >= 0 && left < side) || (right >= 0 && right < side)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static void zombiesPlaceBarriers(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -13490,9 +16178,21 @@ static void zombiesPlaceBarriers(void)
 			}
 
 			bar->wall = walldir[best];
+
+			// Room for it: Call of Duty's window at its own size stands
+			// ZOMBIE_BARRIER_INSIDE out from the wall, and a player rebuilds
+			// it from in front. A corridor too narrow for that, or a wall
+			// too short for its width, is passed over for the next pad
+			if (!zombiesBarrierFits(&pad.pos, padrooms, &bar->wall, walldist[best])) {
+				continue;
+			}
+
 			bar->comp = zombiesPadComp(g_SpawnPoints[best]);
 			bar->boards = ZOMBIE_BARRIER_BOARDS;
 			bar->zombie = -1;
+			bar->pulling = -1;
+			bar->enter60 = -1;
+			bar->reach60 = -1;
 
 			// the boards against the wall, on the floor under it
 			bar->pos.x = pad.pos.x + bar->wall.x * (walldist[best] - 2);
@@ -13654,7 +16354,8 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 
 	bar = &g_ZombieBarriers[b];
 
-	if (bar->zombie != botnum || bar->boards <= 0) {
+	// held while it pulls the last board off and climbs in, too
+	if (bar->zombie != botnum || (bar->boards <= 0 && bar->pulling < 0 && bar->enter60 < 0)) {
 		if (bar->zombie == botnum) {
 			bar->zombie = -1;
 		}
@@ -13664,7 +16365,7 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 	}
 
 	if (zchr->aibot->command != AIBOTCMD_HOLD) {
-		botApplyHold(zchr, &bar->stand, bar->standrooms, atan2f(bar->wall.x, bar->wall.z));
+		botApplyHold(zchr, &bar->stand, bar->standrooms, atan2f(-bar->wall.x, -bar->wall.z));
 	}
 
 	if (target) {
@@ -13672,6 +16373,131 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 	}
 
 	return true;
+}
+
+/**
+ * How long, in 60ths, a zombie takes over board k's grab, hold or pull
+ * (ZMCHAR_TEAR_*: Call of Duty's own clips, 2.5 to 3 seconds a board in
+ * all), or over its climb in when k is -1. Without Black Ops II's zombie, the
+ * old ZOMBIE_BARRIER_TEAR60 a board and no climb.
+ */
+#define ZOMBIE_BARRIER_CLIMB (57.8f * ZOMBIE_COD_INCH) // how far the climb carries it from the origin
+
+// Whether a barrier's zombie is a crawler: its tear and climb are a crawler's
+static bool zombiesBarrierCrawler(const struct zombiebarrier *bar)
+{
+	return bar->zombie >= 0 && bar->zombie < MAX_BOTS && g_ZombieCrawler[bar->zombie];
+}
+
+static s32 zombiesBarrierAnim(const struct zombiebarrier *bar, s32 k, s32 part)
+{
+	const bool crawler = zombiesBarrierCrawler(bar);
+
+	return k < 0 ? (crawler ? ZMCHAR_CRAWL_ENTER : ZMCHAR_ENTER) : (crawler ? ZMCHAR_CRAWL_TEAR : ZMCHAR_TEAR) + k * 3 + part;
+}
+
+static s32 zombiesBarrierPhase60(const struct zombiebarrier *bar, s32 k, s32 part)
+{
+	const s32 anim = zombiesBarrierAnim(bar, k, part);
+	const f32 frames = zmcharAnimFrames(anim);
+
+	if (frames <= 0) {
+		return k < 0 ? 0 : ZOMBIE_BARRIER_TEAR60 / 3;
+	}
+
+	return (s32)(frames * 60 / zmcharAnimRate(anim));
+}
+
+/**
+ * A swipe through a barrier's boards (ZMCHAR_WINDOW_L/R): a player is in its
+ * reach standing up close to the boards on the room's side, across the
+ * opening; the blow lands ZOMBIE_REACH_HITAT through the clip, a zombie's
+ * blow's half a player's health (chrPunchInflictDamage()'s Zombies 8.5)
+ */
+#define ZOMBIE_REACH_HITAT 0.45f
+#define ZOMBIE_REACH_DEPTH 75.0f   // how far out from the boards' face a player is in reach
+#define ZOMBIE_REACH_BLOW  0.51f   // of a player's health
+#define ZOMBIE_REACH_REST60 120    // between one swipe through the boards and the next, tearing at them meanwhile
+
+static s32 g_ZombieReachRest60[ZOMBIE_BARRIER_MAX];
+
+static bool zombiesBarrierReaches(const struct zombiebarrier *bar, s32 playernum)
+{
+	struct prop *pp;
+	f32 rx;
+	f32 rz;
+	f32 out;
+	f32 along;
+
+	// --zombies-test-reach 1: player 1 counts as at every barrier's boards
+	{
+		static s32 testreach = -1;
+
+		if (testreach < 0) {
+			testreach = sysArgGetInt("--zombies-test-reach", 0);
+		}
+
+		if (testreach && playernum == 0) {
+			return true;
+		}
+	}
+
+	if (playernum < 0 || playernum >= PLAYERCOUNT() || !zombiesPlayerIsUp(playernum)) {
+		return false;
+	}
+
+	pp = g_Vars.players[playernum]->prop;
+	rx = pp->pos.x - bar->pos.x;
+	rz = pp->pos.z - bar->pos.z;
+	out = -(rx * bar->wall.x + rz * bar->wall.z);
+	along = rx * bar->wall.z - rz * bar->wall.x;
+
+	return out > ZOMBIE_BARRIER_INSIDE && out < ZOMBIE_BARRIER_INSIDE + ZOMBIE_REACH_DEPTH
+		&& along > -ZOMBIE_BARRIER_OPEN - 30 && along < ZOMBIE_BARRIER_OPEN + 30
+		&& pp->pos.y - bar->pos.y < 250 && pp->pos.y - bar->pos.y > -100;
+}
+
+static void zombiesReachHit(struct chrdata *zchr, s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+	struct gset gset = { WEAPON_UNARMED, 0, 0, FUNC_PRIMARY };
+	struct coord dir;
+
+	if (!player || !player->prop || !player->prop->chr) {
+		return;
+	}
+
+	dir.x = player->prop->pos.x - zchr->prop->pos.x;
+	dir.y = 0;
+	dir.z = player->prop->pos.z - zchr->prop->pos.z;
+	guNormalize(&dir.x, &dir.y, &dir.z);
+
+	// chrDamage() takes a player's at an eighth, over its health scale, which
+	// is Juggernog's (2.5): a blow is half of a player's health without it
+	// and a fifth with it, two hits down or five, as Black Ops II's. It was
+	// sent times the health scale, which chrDamage() took back off, and
+	// Juggernog did nothing against a blow. And on its way chrDamage() turned
+	// a fist's hit by its side (0.4 from the front, 0.7 the side), the torso
+	// (twice), the player's handicap and the simulant's damage slider: a
+	// blow came out at up to twice itself, the whole of a player's health,
+	// one hit down. Call of Duty's zombie hits the same however it lands, so
+	// chrDamage() is handed the blow as it is to take (zombiesBlowDamage()).
+	g_ZombieReachThrough = true;
+	g_ZombieBlowDamage = ZOMBIE_REACH_BLOW * 8.0f;
+	chrDamageByImpact(player->prop->chr, ZOMBIE_REACH_BLOW * 8.0f, &dir, &gset,
+			zchr->prop, HITPART_TORSO);
+	g_ZombieBlowDamage = -1;
+
+	// Black Ops II's swipe taken, for the one hit alone; the blow that downs
+	// them has its own (zombiesTickLastStandSound())
+	if (!g_ZombieDowned[playernum]) {
+		const s32 prevfor = g_ZombieSoundFor;
+
+		g_ZombieSoundFor = playernum;
+		zombiesPlayCodSound(ZMSFX_SWIPED + rngRandom() % 3, NULL);
+		g_ZombieSoundFor = prevfor;
+	}
+	g_ZombieReachThrough = false;
 }
 
 static void zombiesTickBarriers(void)
@@ -13719,16 +16545,99 @@ static void zombiesTickBarriers(void)
 			continue;
 		}
 
-		bar->tear60 += g_Vars.lvupdate60;
+		// over the sill: where Call of Duty's climb ends, then after the players
+		if (bar->enter60 >= 0) {
+			bar->enter60 += g_Vars.lvupdate60;
 
-		if (bar->tear60 >= ZOMBIE_BARRIER_TEAR60) {
-			bar->tear60 = 0;
-			zombiesBarrierSet(b, bar->boards - 1);
+			if (bar->enter60 >= zombiesBarrierPhase60(bar, -1, 0)) {
+				struct coord to;
+				RoomNum torooms[8];
+				const s32 anim = zombiesBarrierAnim(bar, -1, 0);
+				f32 out = ZOMBIE_BARRIER_ORIGIN + ZOMBIE_BARRIER_CLIMB;
+				f32 root[3];
+				f32 q[4];
 
-			// through: after the players
-			if (bar->boards <= 0) {
+				// where the climb's own root motion ends, a crawler's or not
+				if (zmcharAnimRoot(anim, zmcharAnimFrames(anim) - 1, root, q)) {
+					out = ZOMBIE_BARRIER_ORIGIN + root[0] * ZOMBIE_COD_INCH;
+				}
+
+				to.x = bar->pos.x - bar->wall.x * out;
+				to.y = zchr->prop->pos.y;
+				to.z = bar->pos.z - bar->wall.z * out;
+				func0f065e74(&zchr->prop->pos, zchr->prop->rooms, &to, torooms);
+				chrMoveToPos(zchr, &to, torooms, atan2f(-bar->wall.x, -bar->wall.z), false);
+
+				bar->enter60 = -1;
 				g_ZombieAtBarrier[bar->zombie] = -1;
 				bar->zombie = -1;
+			}
+
+			continue;
+		}
+
+		// a player at the boards: a swipe through them (Call of Duty's
+		// reachThroughAttacks), the boards left alone meanwhile
+		if (bar->reach60 >= 0) {
+			const s32 anim = bar->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
+			const s32 len = zmcharAnimFrames(anim) > 0 ? (s32)(zmcharAnimFrames(anim) * 60 / zmcharAnimRate(anim)) : 90;
+
+			bar->reach60 += g_Vars.lvupdate60;
+
+			if (!bar->reachhit && bar->reach60 >= len * ZOMBIE_REACH_HITAT) {
+				bar->reachhit = true;
+
+				if (zombiesBarrierReaches(bar, bar->reachplayer)) {
+					zombiesReachHit(zchr, bar->reachplayer);
+				}
+			}
+
+			if (bar->reach60 >= len) {
+				bar->reach60 = -1;
+				g_ZombieReachRest60[b] = ZOMBIE_REACH_REST60;
+			}
+
+			continue;
+		}
+
+		if (g_ZombieReachRest60[b] > 0) {
+			g_ZombieReachRest60[b] -= g_Vars.lvupdate60;
+		}
+
+		if (bar->pulling < 0 && bar->boards > 0 && g_ZombieReachRest60[b] <= 0) {
+			for (i = 0; i < PLAYERCOUNT(); i++) {
+				if (zombiesBarrierReaches(bar, i)) {
+					bar->reach60 = 0;
+					bar->reachplayer = i;
+					bar->reachleft = !bar->reachleft;
+					bar->reachhit = false;
+					break;
+				}
+			}
+
+			if (bar->reach60 >= 0) {
+				continue;
+			}
+		}
+
+		bar->tear60 += g_Vars.lvupdate60;
+
+		// a board's grab and hold, then its pull: the board goes as it begins
+		if (bar->pulling < 0 && bar->boards > 0) {
+			const s32 k = bar->boards - 1;
+
+			if (bar->tear60 >= zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_GRAB) + zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_HOLD)) {
+				bar->pulling = k;
+				bar->tear60 = 0;
+				zombiesBarrierSet(b, k);
+			}
+		} else if (bar->pulling >= 0 && bar->tear60 >= zombiesBarrierPhase60(bar, bar->pulling, ZMCHAR_TEAR_PULL)) {
+			bar->pulling = -1;
+			bar->tear60 = 0;
+
+			// through: in over the sill
+			if (bar->boards <= 0) {
+				bar->enter60 = 0;
 			}
 		}
 	}
@@ -13749,9 +16658,10 @@ static void zombiesTickBarriers(void)
 
 		for (b = 0; b < g_ZombieNumBarriers; b++) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[b];
-			f32 dx = player->prop->pos.x - bar->stand.x;
+			// before the boards, on the room's side
+			f32 dx = player->prop->pos.x - (bar->pos.x - bar->wall.x * ZOMBIE_BARRIER_FRONT);
 			f32 dy = player->prop->pos.y - bar->stand.y;
-			f32 dz = player->prop->pos.z - bar->stand.z;
+			f32 dz = player->prop->pos.z - (bar->pos.z - bar->wall.z * ZOMBIE_BARRIER_FRONT);
 
 			if (bar->placed && bar->boards < ZOMBIE_BARRIER_BOARDS
 					&& dx * dx + dz * dz < bestdist && dy < 200 && dy > -200) {
@@ -13765,8 +16675,9 @@ static void zombiesTickBarriers(void)
 			continue;
 		}
 
-		// a board at a time while it is held
-		g_ZombieFix60[i] += g_Vars.lvupdate60;
+		// a board at a time while it is held; with Speed Cola twice as fast,
+		// as Call of Duty's rebuilds
+		g_ZombieFix60[i] += g_Vars.lvupdate60 * (zombiesPlayerHasPerk(i, ZOMBIEPERK_SPEEDCOLA) ? 2 : 1);
 
 		if (g_ZombieFix60[i] >= ZOMBIE_BARRIER_FIX60) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNearBarrier[i]];
@@ -13897,6 +16808,127 @@ static Gfx *zombiesBoardBox(Gfx *gdl, const struct zombiebarrier *bar, f32 x, f3
 	return gdl;
 }
 
+/**
+ * Black Ops II's own boards (p6_anim_zm_barricade_board_01 and 02, Origins'
+ * zone, tools/zombies/glb2obj.py into zombies/models/board01 and board02): a
+ * plank each, long along x, up y and thick z, every board one of the two in
+ * turn. Call of Duty places its six by animation; here each takes the place
+ * and tilt of the board it stands for, fitted to its length, 14 high and 4
+ * thick. Without them the boards are boxes (zombiesBoardBox()).
+ */
+static struct zombiemesh g_ZombieBoardMeshes[2];
+
+static struct zombiemesh *zombiesBoardMesh(s32 k)
+{
+	struct zombiemesh *zm = &g_ZombieBoardMeshes[k & 1];
+
+	if (!zm->tried) {
+		zombiesMeshBuildFrom(zm, k & 1 ? "$E/zombies/models/board02/board02.obj" : "$E/zombies/models/board01/board01.obj",
+				k & 1 ? "a barrier's board (02)" : "a barrier's board (01)");
+	}
+
+	return zm->gdl && zm->width > 0 && zm->height > 0 && zm->depth > 0 ? zm : NULL;
+}
+
+/**
+ * Call of Duty's own layout: where zmcore_basicwoodbarrier's board N comes
+ * to rest, the last frame of o_zombie_board_N_repair (Origins' zone): its
+ * place the animation's root motion, in inches (x into the room from the
+ * barrier's origin, y across, z up), and its turn tag_animate's, as the
+ * board's length, width and thickness in the barrier's axes. Four boards
+ * across and two upright; the uprights are the longer plank (_02, _03).
+ */
+struct zombiecodboard {
+	f32 pos[3];
+	f32 len[3];
+	f32 wid[3];
+	f32 thk[3];
+	u8 mesh;
+};
+
+static const struct zombiecodboard g_ZombieCodBoards[ZOMBIE_BARRIER_BOARDS] = {
+	{ { 27.9f,   0.0f, 50.4f }, { 0, 0.95f, -0.31f }, { 0, 0.31f, 0.95f },  { -1, 0, 0 }, 0 },
+	{ { 29.8f,   9.1f, 30.4f }, { 0, -0.13f, 0.99f }, { 0, -0.99f, -0.13f }, { -1, 0, 0 }, 1 },
+	{ { 29.9f, -17.3f, 18.1f }, { 0, 0.06f, 1.00f },  { 0, -1.00f, 0.06f },  { -1, 0, 0 }, 1 },
+	{ { 33.8f,   1.4f, 49.5f }, { 0, 1.00f, 0.04f },  { 0, -0.04f, 1.00f },  { -1, 0, 0 }, 0 },
+	{ { 31.7f,   0.0f, 37.8f }, { 0, 1.00f, -0.05f }, { 0, 0.05f, 1.00f },  { -1, 0, 0 }, 0 },
+	{ { 33.8f,   0.0f, 10.2f }, { 0, 0.98f, 0.19f },  { 0, -0.19f, 0.98f },  { -1, 0, 0 }, 0 },
+};
+
+/**
+ * A direction (point false) or a place (point true) in Call of Duty's barrier
+ * space - inches from its origin, the sill: x into the room, y the left of a
+ * zombie looking in, z up - into the world
+ */
+static void zombiesBarrierToWorld(const struct zombiebarrier *bar, const f32 v[3], bool point, f32 out[3])
+{
+	// into the room is away from the wall; a zombie looking in has its left
+	// along (-wall.z, wall.x)
+	out[0] = (-bar->wall.x * v[0] - bar->wall.z * v[1]) * ZOMBIE_COD_INCH;
+	out[1] = v[2] * ZOMBIE_COD_INCH;
+	out[2] = (-bar->wall.z * v[0] + bar->wall.x * v[1]) * ZOMBIE_COD_INCH;
+
+	if (point) {
+		out[0] += bar->pos.x - bar->wall.x * ZOMBIE_BARRIER_ORIGIN;
+		out[1] += bar->pos.y + ZOMBIE_BARRIER_SILL;
+		out[2] += bar->pos.z - bar->wall.z * ZOMBIE_BARRIER_ORIGIN;
+	}
+}
+
+// A quaternion's turn of an axis (x y z w, Call of Duty's)
+static void zombiesQuatAxis(const f32 q[4], const f32 v[3], f32 out[3])
+{
+	const f32 tx = 2 * (q[1] * v[2] - q[2] * v[1]);
+	const f32 ty = 2 * (q[2] * v[0] - q[0] * v[2]);
+	const f32 tz = 2 * (q[0] * v[1] - q[1] * v[0]);
+
+	out[0] = v[0] + q[3] * tx + (q[1] * tz - q[2] * ty);
+	out[1] = v[1] + q[3] * ty + (q[2] * tx - q[0] * tz);
+	out[2] = v[2] + q[3] * tz + (q[0] * ty - q[1] * tx);
+}
+
+/**
+ * One of Black Ops II's boards at its own size, where Call of Duty has it:
+ * its place (inches) and its length, width and thickness in the barrier's
+ * space. The plank's mesh is long along x, up y and thick z, in centimetres.
+ */
+static Gfx *zombiesBoardMeshDraw(Gfx *gdl, const struct zombiebarrier *bar, s32 k,
+		const f32 pos[3], const f32 len[3], const f32 wid[3], const f32 thk[3], f32 light)
+{
+	struct zombiemesh *zm = zombiesBoardMesh(g_ZombieCodBoards[k].mesh);
+	const f32 s = 1.0f / ZOMBIE_COD_INCH / ZOMBIE_MESH_FIXED;
+	const f32 *axes[3] = { len, wid, thk };
+	f32 w[3];
+	Mtxf local;
+	Mtxf *mtx = gfxAllocateMatrix();
+	s32 shade = (s32)(0xff * light) - (k % 3) * 10;
+	s32 i;
+
+	mtx4LoadIdentity(&local);
+
+	for (i = 0; i < 3; i++) {
+		zombiesBarrierToWorld(bar, axes[i], false, w);
+		local.m[i][0] = w[0] * s;
+		local.m[i][1] = w[1] * s;
+		local.m[i][2] = w[2] * s;
+	}
+
+	zombiesBarrierToWorld(bar, pos, true, w);
+	local.m[3][0] = w[0];
+	local.m[3][1] = w[1];
+	local.m[3][2] = w[2];
+
+	if (zm == NULL) {
+		return gdl;
+	}
+
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &local, mtx);
+
+	shade = shade < 0x40 ? 0x40 : shade > 0xff ? 0xff : shade;
+
+	return zombiesBottleDraw(gdl, zm, mtx, shade, shade, shade);
+}
+
 static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj)
 {
 	static const u8 wood[3] = { 0x8c, 0x5e, 0x34 };
@@ -13953,9 +16985,34 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
 
 	// the window: dark, a hair off the wall, and its posts
-	gdl = zombiesBoardBox(gdl, bar, 0, 108, 0.8f, 52, 70, 0.6f, 0, hole, 1.0f);
-	gdl = zombiesBoardBox(gdl, bar, -58, 108, 3, 5, 78, 3, 0, post, light);
-	gdl = zombiesBoardBox(gdl, bar, 58, 108, 3, 5, 78, 3, 0, post, light);
+	if (zombiesBoardMesh(0)) {
+		// Call of Duty's window at its own size, standing out from the wall:
+		// the pen behind it dark at the back and walled at the sides, then
+		// the wall's thickness about the opening - the sill under it, a jamb
+		// either side, the lintel over it - and the boards on its room side
+		static const u8 wall[3] = { 0x5c, 0x56, 0x4e };
+		const f32 hw = ZOMBIE_BARRIER_OPEN;
+		const f32 jamb = 14;
+		const f32 depth = (ZOMBIE_BARRIER_INSIDE - ZOMBIE_BARRIER_ORIGIN) / 2;
+		const f32 thick = ZOMBIE_BARRIER_ORIGIN + depth;
+		const f32 top = ZOMBIE_BARRIER_TOP + 18;
+
+		gdl = zombiesBoardBox(gdl, bar, 0, top / 2, 0.8f, hw + jamb * 2, top / 2, 0.6f, 0, hole, 1.0f);
+		gdl = zombiesBoardBox(gdl, bar, -hw - jamb, top / 2, ZOMBIE_BARRIER_ORIGIN / 2,
+				jamb, top / 2, ZOMBIE_BARRIER_ORIGIN / 2, 0, wall, light * 0.8f);
+		gdl = zombiesBoardBox(gdl, bar, hw + jamb, top / 2, ZOMBIE_BARRIER_ORIGIN / 2,
+				jamb, top / 2, ZOMBIE_BARRIER_ORIGIN / 2, 0, wall, light * 0.8f);
+		gdl = zombiesBoardBox(gdl, bar, 0, ZOMBIE_BARRIER_SILL / 2, thick,
+				hw, ZOMBIE_BARRIER_SILL / 2, depth, 0, wall, light);
+		gdl = zombiesBoardBox(gdl, bar, -hw - jamb, top / 2, thick, jamb, top / 2, depth, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, hw + jamb, top / 2, thick, jamb, top / 2, depth, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, 0, (ZOMBIE_BARRIER_TOP + top) / 2, thick,
+				hw, (top - ZOMBIE_BARRIER_TOP) / 2, depth, 0, post, light);
+	} else {
+		gdl = zombiesBoardBox(gdl, bar, 0, 108, 0.8f, 52, 70, 0.6f, 0, hole, 1.0f);
+		gdl = zombiesBoardBox(gdl, bar, -58, 108, 3, 5, 78, 3, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, 58, 108, 3, 5, 78, 3, 0, post, light);
+	}
 
 	for (k = 0; k < ZOMBIE_BARRIER_BOARDS; k++) {
 		const struct zombieboard *board = &g_ZombieBoards[k];
@@ -13964,6 +17021,53 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 		f32 tilt = board->tilt * (M_BADPI / 180.0f);
 		u8 rgb[3];
 		s32 t = bar->anim60[k];
+
+		if (zombiesBoardMesh(g_ZombieCodBoards[k].mesh)) {
+			const struct zombiecodboard *cb = &g_ZombieCodBoards[k];
+			static const f32 xaxis[3] = { 1, 0, 0 };
+			static const f32 yaxis[3] = { 0, 1, 0 };
+			static const f32 zaxis[3] = { 0, 0, 1 };
+			const s32 anim = k >= bar->boards ? ZMCHAR_BOARD_PULL + k : ZMCHAR_BOARD_REPAIR + k;
+			const f32 frame = bar->anim60[k] * zmcharAnimRate(anim) / 60.0f;
+			f32 pos[3];
+			f32 q[4];
+			f32 len[3];
+			f32 wid[3];
+			f32 thk[3];
+
+			// torn, or coming back: Call of Duty's own flight for the board,
+			// its pull off to the zombie or its repair back on; at rest where
+			// the repair leaves it (g_ZombieCodBoards)
+			if (((k >= bar->boards && bar->torn[k]) || (k < bar->boards && frame < zmcharAnimFrames(anim)))
+					&& zmcharAnimRoot(anim, frame, pos, q)) {
+				if (k >= bar->boards && frame >= zmcharAnimFrames(anim) - 1) {
+					continue;
+				}
+
+				zombiesQuatAxis(q, xaxis, len);
+				zombiesQuatAxis(q, zaxis, wid);
+				zombiesQuatAxis(q, yaxis, thk);
+			} else if (k >= bar->boards) {
+				continue;
+			} else {
+				memcpy(pos, cb->pos, sizeof(pos));
+				memcpy(len, cb->len, sizeof(len));
+				memcpy(wid, cb->wid, sizeof(wid));
+				memcpy(thk, cb->thk, sizeof(thk));
+			}
+
+			gdl = zombiesBoardMeshDraw(gdl, bar, k, pos, len, wid, thk, light);
+
+			// the boxes' state again for the next
+			gDPPipeSync(gdl++);
+			gDPSetRenderMode(gdl++, renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF : G_RM_AA_OPA_SURF,
+					renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF2 : G_RM_AA_OPA_SURF2);
+			gDPSetCombineMode(gdl++, G_CC_SHADE, G_CC_SHADE);
+			gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
+			gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+
+			continue;
+		}
 
 		if (k >= bar->boards) {
 			// torn: falling out and down into the room, turning
@@ -13998,6 +17102,104 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 	renderdata->gdl = gdl;
 
 	return true;
+}
+
+/**
+ * zombiesRenderCodZombie()'s, for a zombie held at a barrier and come to its
+ * place there: the clip it plays and how far through, from the barrier's own
+ * clock (zombiesTickBarriers()) - a board's grab, hold and pull, Call of
+ * Duty's for that board, or the climb in. False when it is not at one, or
+ * the clips are not there.
+ */
+static bool zombiesCodBarrier(s32 i, struct chrdata *chr, s32 *anim, f32 *frame)
+{
+	const s32 b = i >= 0 && i < MAX_BOTS ? g_ZombieAtBarrier[i] : -1;
+	struct zombiebarrier *bar;
+	f32 dx;
+	f32 dz;
+	s32 t;
+
+	if (b < 0 || b >= g_ZombieNumBarriers || zmcharAnimFrames(ZMCHAR_TEAR) <= 0) {
+		return false;
+	}
+
+	bar = &g_ZombieBarriers[b];
+
+	if (bar->zombie != i) {
+		return false;
+	}
+
+	dx = chr->prop->pos.x - bar->stand.x;
+	dz = chr->prop->pos.z - bar->stand.z;
+
+	if (dx * dx + dz * dz > 80 * 80) {
+		return false;
+	}
+
+	if (bar->reach60 >= 0) {
+		*anim = bar->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
+		t = bar->reach60;
+	} else if (bar->enter60 >= 0) {
+		*anim = zombiesBarrierAnim(bar, -1, 0);
+		t = bar->enter60;
+	} else if (bar->pulling >= 0) {
+		*anim = zombiesBarrierAnim(bar, bar->pulling, ZMCHAR_TEAR_PULL);
+		t = bar->tear60;
+	} else if (bar->boards > 0) {
+		const s32 k = bar->boards - 1;
+		const s32 grab = zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_GRAB);
+
+		if (bar->tear60 < grab) {
+			*anim = zombiesBarrierAnim(bar, k, ZMCHAR_TEAR_GRAB);
+			t = bar->tear60;
+		} else {
+			*anim = zombiesBarrierAnim(bar, k, ZMCHAR_TEAR_HOLD);
+			t = bar->tear60 - grab;
+		}
+	} else {
+		*anim = zombiesBarrierAnim(bar, -1, 0);
+		t = 0;
+	}
+
+	*frame = t * zmcharAnimRate(*anim) / 60.0f;
+
+	if (*frame > zmcharAnimFrames(*anim) - 1) {
+		*frame = zmcharAnimFrames(*anim) - 1;
+	}
+
+	return true;
+}
+
+// The zombie's place and facing in its barrier's frame: its clip's root
+// motion from the barrier's origin, the sill
+static void zombiesCodBarrierPlace(s32 i, Mtxf *world)
+{
+	static const f32 axes[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	const struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieAtBarrier[i]];
+	f32 pos[3];
+	f32 q[4];
+	f32 w[3];
+	s32 a;
+
+	for (a = 0; a < 3; a++) {
+		zombiesBarrierToWorld(bar, axes[a], false, w);
+		world->m[a][0] = w[0] / 4.0f;
+		world->m[a][1] = w[1] / 4.0f;
+		world->m[a][2] = w[2] / 4.0f;
+	}
+
+	// a swipe through the boards carries no root motion: its lunge is its
+	// hips' own (11 to 35 inches), from where a zombie waits at the window
+	if (!zmcharAnimRoot(g_ZombieCod[i].anim, g_ZombieCod[i].frame, pos, q)) {
+		pos[0] = -23;
+		pos[1] = 0;
+		pos[2] = -31;
+	}
+
+	zombiesBarrierToWorld(bar, pos, true, w);
+	world->m[3][0] = w[0];
+	world->m[3][1] = w[1];
+	world->m[3][2] = w[2];
 }
 
 #ifndef PLATFORM_N64
@@ -14358,16 +17560,31 @@ static bool zombiesBoxPrompt(s32 playernum, char *text)
  * the rounds survived, the points and the arena's best - before the match's
  * own end screens.
  *
- * Perfect Dark has no music of its own for these, so they are borrowed: the
+ * The round's end and start are Black Ops II's own (zombiesRoundMusic()). Without
+ * their files Perfect Dark's are borrowed: the
  * opening of Skedar Mystery for the end of a round (the death stings tried
  * there and at a round's start sounded like a death), and the failed
  * mission's end screen music for the game over (the solo mission's death
  * music was too much a death, and not the end of a game). The groans are
- * its pained men, its death gurgles and the Skedar's roars, pitched down.
+ * its pained men and its death gurgles, pitched down (no Skedar).
  */
 #define ZOMBIE_STING240        TICKS(1200) // a sting's length: the round break's five seconds
-#define ZOMBIE_GAMEOVER60      480         // how long GAME OVER holds before the end screens
-#define ZOMBIE_GAMEOVER_FADE60 60          // its fade in
+/**
+ * The game's end, as Black Ops II's: the view falls to the floor and the
+ * hands reach out (zombiesGameOverCameraTick(), zombiesReachViewShift()),
+ * GAME OVER and the rounds survived over the HUD as it was; then the picture
+ * goes black and comes back on a camera rising and turning over the arena,
+ * the scoreboard over it (zombiesRenderGameOver()); then the end screens.
+ * Alone, fire or accept ends the scoreboard early.
+ */
+#define ZOMBIE_GO_FALL60       75          // the fall to the floor
+#define ZOMBIE_GO_TEXT60       40          // GAME OVER fades in from here
+#define ZOMBIE_GO_TEXTIN60     45          // ... over this long
+#define ZOMBIE_GO_PAN60        330         // black, and the camera over the arena
+#define ZOMBIE_GO_BLACK60      30          // the fade to black and the fade back each
+#define ZOMBIE_GO_SKIP60       (ZOMBIE_GO_PAN60 + 150) // alone, fire or accept ends it from here
+#define ZOMBIE_GAMEOVER60      (ZOMBIE_GO_PAN60 + 720) // how long until the end screens
+#define ZOMBIE_GAMEOVER_FADE60 60          // the old GAME OVER's fade in
 #define ZOMBIE_GROAN_MIN60     70          // a groan from somewhere this often at the most,
 #define ZOMBIE_GROAN_MAX60     200         // and at the least, while any zombie is near
 #define ZOMBIE_GROAN_REACH     2500.0f     // how near a zombie is to be heard
@@ -14377,6 +17594,8 @@ s32 g_ZombieGameOver60;            // since the game ended (zombiesGunLowerFrac(
 static bool g_ZombieGameOverEnded; // mainEndStage() asked for
 static s32 g_ZombieBestRound;      // the arena's best before this match, 0 for none
 static bool g_ZombieNewBest;
+static bool g_ZombieGameOverTest;  // --zombies-gameover-at's: no record written
+static bool g_ZombieGameOverQuit;  // ended from the pause's End Game: nobody falls, the view stays as it is
 static s32 g_ZombieNextGroan60;
 
 /**
@@ -14460,23 +17679,669 @@ static void zombiesWriteBest(s32 stagenum, s32 round)
 	fsFileFree(f);
 }
 
+/**
+ * A player's Zombies over every match, kept under the agent's name (the
+ * player's name is the agent's, mainmenu.c) rather than in a player file,
+ * which nothing makes any more (no Save Player, no prompt at a match's end):
+ * one line a name in the save folder, "<name>\t<kills> <downs> <headshots>
+ * <shots> <hits>". Added to at each match's end (mpCalculateAwards()) for
+ * this machine's players; read by Player Setup's Statistics.
+ */
+#define ZOMBIE_STATS_FILE "$S/zombies-stats.txt"
+
+struct zombiecareer {
+	u32 kills;
+	u32 downs;
+	u32 headshots;
+	u32 shots;
+	u32 hits;
+};
+
+static char g_ZombieCareerName[32];        // whose zombiesCareerOf() has read
+static struct zombiecareer g_ZombieCareer; // ... and theirs
+static bool g_ZombieCareerHave = false;
+
+static void zombiesCareerKey(char *out, s32 size, const char *name)
+{
+	s32 i;
+
+	for (i = 0; i < size - 1 && name[i] != '\0' && name[i] != '\n' && name[i] != '\t'; i++) {
+		out[i] = name[i];
+	}
+
+	out[i] = '\0';
+}
+
+// The career of name, or nothing, out of the file
+static void zombiesCareerRead(const char *name, struct zombiecareer *out)
+{
+	u32 size = 0;
+	char *data = fsFileLoad(ZOMBIE_STATS_FILE, &size);
+	char *p;
+	s32 len = strlen(name);
+
+	memset(out, 0, sizeof(*out));
+
+	if (data == NULL) {
+		return;
+	}
+
+	for (p = data; p < data + size; ) {
+		char *end = p;
+
+		while (end < data + size && *end != '\n') {
+			end++;
+		}
+
+		if (end - p > len && strncmp(p, name, len) == 0 && p[len] == '\t') {
+			sscanf(p + len + 1, "%u %u %u %u %u", &out->kills, &out->downs, &out->headshots, &out->shots, &out->hits);
+		}
+
+		p = end + 1;
+	}
+
+	sysMemFree(data);
+}
+
+// The Statistics page's: the career of the player whose menu it is
+static struct zombiecareer *zombiesCareerOf(s32 mpindex)
+{
+	char key[32];
+
+	zombiesCareerKey(key, sizeof(key), g_PlayerConfigsArray[mpindex].base.name);
+
+	if (!g_ZombieCareerHave || strcmp(key, g_ZombieCareerName) != 0) {
+		strcpy(g_ZombieCareerName, key);
+		zombiesCareerRead(key, &g_ZombieCareer);
+		g_ZombieCareerHave = true;
+	}
+
+	return &g_ZombieCareer;
+}
+
+/**
+ * mpCalculateAwards(), each player of this machine as the match ends: its
+ * kills, downs and headshots this match (g_ZombieStats), and its shots and
+ * hits (mpstats), added to the agent's line.
+ */
+void zombiesCareerRecord(s32 playernum, s32 shots, s32 hits)
+{
+	u32 size = 0;
+	char *data;
+	char key[32];
+	struct zombiecareer c;
+	FILE *f;
+	char *p;
+	s32 len;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || !netIsLocalSlot(playernum) || g_ZombieGameOverTest) {
+		return;
+	}
+
+	zombiesCareerKey(key, sizeof(key), g_PlayerConfigsArray[g_Vars.playerstats[playernum].mpindex].base.name);
+
+	if (key[0] == '\0') {
+		return;
+	}
+
+	zombiesCareerRead(key, &c);
+	c.kills += g_ZombieStats[playernum].kills;
+	c.downs += g_ZombieStats[playernum].downs;
+	c.headshots += g_ZombieStats[playernum].headshots;
+	c.shots += shots > 0 ? shots : 0;
+	c.hits += hits > 0 ? hits : 0;
+
+	data = fsFileLoad(ZOMBIE_STATS_FILE, &size);
+	f = fsFileOpenWrite(ZOMBIE_STATS_FILE);
+
+	if (f == NULL) {
+		if (data) {
+			sysMemFree(data);
+		}
+
+		return;
+	}
+
+	// everyone else's line kept
+	len = strlen(key);
+
+	if (data) {
+		for (p = data; p < data + size; ) {
+			char *end = p;
+
+			while (end < data + size && *end != '\n') {
+				end++;
+			}
+
+			if (end > p && !(end - p > len && strncmp(p, key, len) == 0 && p[len] == '\t')) {
+				fprintf(f, "%.*s\n", (s32)(end - p), p);
+			}
+
+			p = end + 1;
+		}
+
+		sysMemFree(data);
+	}
+
+	fprintf(f, "%s\t%u %u %u %u %u\n", key, c.kills, c.downs, c.headshots, c.shots, c.hits);
+	fsFileFree(f);
+
+	g_ZombieCareerHave = false;
+}
+
+// Statistics' values (setup.c), item->param which: 0 kills, 1 downs, 2
+// accuracy, 3 headshots
+char *zombiesMenuTextCareer(struct menuitem *item)
+{
+	static char text[24];
+	struct zombiecareer *c = zombiesCareerOf(g_MpPlayerNum);
+
+	switch (item->param) {
+	case 0:
+		sprintf(text, "%u\n", c->kills);
+		break;
+	case 1:
+		sprintf(text, "%u\n", c->downs);
+		break;
+	case 2:
+		sprintf(text, "%.1f%%\n", c->shots > 0 ? c->hits * 100.0f / c->shots : 0.0f);
+		break;
+	default:
+		sprintf(text, "%u\n", c->headshots);
+		break;
+	}
+
+	return text;
+}
+
 // The music under a round being cleared, while the counter blinks. Not
 // MUSIC_DEATH_BETA: that is the solo game over's tune. A round's start has
 // none (MUSIC_DEATH_MP was there, and was not liked): the level's own comes
 // back.
+// Black Ops II's own (Tranzit's mus_zombie_round_over and _round_start,
+// zmsfx.c), each machine's own, with the level's music paused for as long
+#define ZOMBIE_ROUND_OVER240  TICKS(240 * 93 / 10)  // the round's end, 9.2 seconds
+#define ZOMBIE_ROUND_START240 TICKS(240 * 141 / 10) // and the next's start, 14 seconds
+
+static bool zombiesRoundMusic(s32 slot, s32 duration240)
+{
+	const s32 id = zmSfxSound(slot);
+
+	if (id <= 0) {
+		return false;
+	}
+
+	musicPauseFor(duration240);
+	zombiesPlaySoundHere(id, 1.0f);
+
+	return true;
+}
+
 static void zombiesRoundSting(void)
 {
 	if (!g_ZombieCfgRoundMusic) {
 		return;
 	}
 
-	musicStartSting(MUSIC_SKEDAR_MYSTERY, ZOMBIE_STING240);
+	if (!zombiesRoundMusic(ZMSFX_ROUND_OVER, ZOMBIE_ROUND_OVER240)) {
+		musicStartSting(MUSIC_SKEDAR_MYSTERY, ZOMBIE_STING240);
+	}
 }
 
-// bondgun.c and radar.c: GAME OVER has the screen to itself, no ammo or radar
+// The game over's: Black Ops II's (Buried's Dead or Undead, Tranzit having
+// none), or Perfect Dark's failed mission's when its file is not there
+#define ZOMBIE_GAME_OVER240 TICKS(240 * 26)
+
+static void zombiesGameOverMusic(void)
+{
+	if (!zombiesRoundMusic(ZMSFX_GAME_OVER, ZOMBIE_GAME_OVER240)) {
+		musicStartSting(MUSIC_MISSION_FAILED, TICKS(240 * 20));
+	}
+}
+
+// A round begun: its music, Black Ops II's (Perfect Dark had none for it)
+static void zombiesRoundStartSting(void)
+{
+	if (g_ZombieCfgRoundMusic) {
+		zombiesRoundMusic(ZMSFX_ROUND_START, ZOMBIE_ROUND_START240);
+	}
+}
+
+static bool zombiesScoreboardHeld(void);
+
+// The game's end, once the camera has left the player: the scoreboard alone
+static bool zombiesGameOverHidesHud(void)
+{
+	return g_ZombieGameOver && g_ZombieGameOver60 >= ZOMBIE_GO_PAN60;
+}
+
+// bondgun.c and radar.c: the game's end over the arena and the scoreboard
+// have the screen to themselves, no ammo or radar. Falling, the HUD stays.
 bool zombiesHidesHud(void)
 {
-	return zombiesIsActive() && g_ZombieGameOver;
+	return zombiesIsActive() && (zombiesGameOverHidesHud() || zombiesScoreboardHeld());
+}
+
+static f32 zombiesSmooth(f32 f)
+{
+	f = f < 0 ? 0 : f > 1 ? 1 : f;
+
+	return f * f * (3 - 2 * f);
+}
+
+// How far into the fall to the floor, 0 to 1, eased
+static f32 zombiesGameOverFall(void)
+{
+	return zombiesSmooth((f32)g_ZombieGameOver60 / ZOMBIE_GO_FALL60);
+}
+
+/**
+ * zombiesGunLowerFrac() at the game's end. Falling, the hands stay in view,
+ * reaching (zombiesReachViewShift()); a lowering of nothing, which stops the
+ * trigger all the same (bondgun.c). Over the arena they are gone.
+ */
+static f32 zombiesGameOverGunLower(void)
+{
+	if (g_ZombieGameOver60 < ZOMBIE_GO_PAN60 - ZOMBIE_GO_BLACK60) {
+		return 0.0001f;
+	}
+
+	return 1;
+}
+
+/**
+ * bondgun.c, each hand's place in the view at the game's end: as the view
+ * falls the hands go out in front and in toward the middle, reaching along
+ * the floor, the way Black Ops II's last fall has them. True when it moved.
+ */
+bool zombiesReachViewShift(s32 handnum, struct coord *shift)
+{
+	s32 me = g_Vars.currentplayernum;
+	f32 e;
+
+	if (!zombiesIsActive() || !g_ZombieGameOver || me < 0 || me >= MAX_PLAYERS
+			|| g_ZombieGameOver60 >= ZOMBIE_GO_PAN60 || g_ZombieGameOverQuit) {
+		return false;
+	}
+
+	e = zombiesGameOverFall();
+
+	shift->x = (handnum == HAND_LEFT ? 3.0f : -3.0f) * e;
+	shift->y = 3.5f * e;
+	shift->z = -9.0f * e;
+
+	return true;
+}
+
+/**
+ * player.c, each view at the game's end; 1 when it placed the camera.
+ *
+ * Falling (still on their feet, or down): the eye drops to the floor and the
+ * view rolls onto its side, looking where it looked when the game ended. The
+ * dead keep Perfect Dark's death view until the arena's camera. Over the
+ * arena, after the black: a camera out along whichever of sixteen ways from
+ * where the player lies has the longest clear sight (a corridor's length,
+ * not its wall), backing away up it and rising as far as it is clear,
+ * looking back across the arena past them and panning slowly from side to
+ * side. Clients' own (the arena's walls are the same everywhere).
+ */
+#define ZOMBIE_GO_ROLL      0.5f   // the fall's roll, radians
+#define ZOMBIE_GO_FLOOR     20.0f  // the eye above the floor, fallen
+#define ZOMBIE_GO_ORBIT_R1  640.0f // the arena camera's distance out at the most,
+#define ZOMBIE_GO_ORBIT_H1  360.0f // and its height over the player there,
+#define ZOMBIE_GO_ORBIT_T   12.0f  // the seconds it takes to back away,
+#define ZOMBIE_GO_ORBIT_W   0.10f  // its pan's pace,
+#define ZOMBIE_GO_ORBIT_DIP 0.34f  // and how far down it looks at the most (the sine)
+
+static bool g_ZombieGoHave[MAX_PLAYERS];        // the look at the end is kept
+static struct coord g_ZombieGoLook[MAX_PLAYERS];
+static f32 g_ZombieGoAngle[MAX_PLAYERS];        // the way out the arena camera goes (behind them, first)
+static bool g_ZombieGoVantage[MAX_PLAYERS];     // ... found
+static f32 g_ZombieGoReach[MAX_PLAYERS];        // ... and the share of it clear
+
+s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord *look)
+{
+	s32 me = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	struct prop *prop = player->prop;
+
+	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS || prop == NULL) {
+		return 0;
+	}
+
+	// --zombies-test-barrier N: the camera on barrier N, for a run nobody is
+	// playing (its pictures: --screenshot-frame)
+	{
+		static s32 testbar = -2;
+
+		if (testbar == -2) {
+			testbar = sysArgGetInt("--zombies-test-barrier", -1);
+		}
+
+		// --zombies-test-zombie D: the camera D in front of the first
+		// zombie walking (one at a barrier with --zombies-test-reach), the
+		// player not to be killed meanwhile
+		// --zombies-cherry-cam D: with --zombies-test-cherry, the camera D
+		// behind and above player 1, looking past them, to see their burst
+		// from outside
+		if (sysArgCheck("--zombies-cherry-cam") && g_Vars.players[0] && g_Vars.players[0]->prop) {
+			struct player *pl = g_Vars.players[0];
+			const f32 d = sysArgGetInt("--zombies-cherry-cam", 250);
+
+			pos->x = pl->prop->pos.x - pl->cam_look.x * d;
+			pos->y = pl->prop->pos.y + 120;
+			pos->z = pl->prop->pos.z - pl->cam_look.z * d;
+			look->x = pl->prop->pos.x + pl->cam_look.x * 150 - pos->x;
+			look->y = pl->prop->pos.y - 60 - pos->y;
+			look->z = pl->prop->pos.z + pl->cam_look.z * 150 - pos->z;
+			guNormalize(&look->x, &look->y, &look->z);
+			up->x = 0;
+			up->y = 1;
+			up->z = 0;
+			player0f0c1840(pos, up, look, &pl->prop->pos, pl->prop->rooms);
+
+			return 1;
+		}
+
+		// --zombies-test-perk N: the camera round machine N (a perk's id,
+		// Pack-a-Punch's after them), an eighth of the way round every 40
+		// frames, --zombies-perk-dist away (200); --zombies-shot-step as above
+		if (sysArgCheck("--zombies-test-perk")) {
+			extern s32 g_ShotFrame;
+			struct defaultobj *mobj = zombiesMachineObjAt(sysArgGetInt("--zombies-test-perk", 0));
+
+			g_PlayerInvincible = true;
+
+			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+				g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+			}
+
+			if (mobj && mobj->prop) {
+				const f32 a = (g_Vars.lvframenum / 40) * 0.785398f;
+				const f32 r = sysArgGetInt("--zombies-perk-dist", 200);
+
+				pos->x = mobj->prop->pos.x + sinf(a) * r;
+				pos->y = mobj->prop->pos.y + 60;
+				pos->z = mobj->prop->pos.z + cosf(a) * r;
+				look->x = mobj->prop->pos.x - pos->x;
+				look->y = mobj->prop->pos.y + 60 - pos->y;
+				look->z = mobj->prop->pos.z - pos->z;
+				guNormalize(&look->x, &look->y, &look->z);
+				up->x = 0;
+				up->y = 1;
+				up->z = 0;
+				player0f0c1840(pos, up, look, &mobj->prop->pos, mobj->prop->rooms);
+
+				return 1;
+			}
+		}
+
+		// --zombies-test-follow N: the camera beside zombie N at its feet'
+		// height, wherever it goes (down a ledge), the player not to be killed;
+		// --zombies-shot-step S takes --screenshot-frame's picture every S
+		// frames from there on
+		if (sysArgCheck("--zombies-test-follow")) {
+			extern s32 g_ShotFrame;
+			const s32 b = sysArgGetInt("--zombies-test-follow", 0);
+			struct chrdata *zchr = b < g_BotCount ? g_MpBotChrPtrs[b] : NULL;
+
+			g_PlayerInvincible = true;
+
+			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+				g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+			}
+
+			if (zchr && zchr->prop) {
+				const f32 th = chrGetInverseTheta(zchr) + 1.5708f;
+
+				pos->x = zchr->prop->pos.x + sinf(th) * 320;
+				pos->y = zchr->manground + 120;
+				pos->z = zchr->prop->pos.z + cosf(th) * 320;
+				look->x = zchr->prop->pos.x - pos->x;
+				look->y = zchr->manground + 60 - pos->y;
+				look->z = zchr->prop->pos.z - pos->z;
+				guNormalize(&look->x, &look->y, &look->z);
+				up->x = 0;
+				up->y = 1;
+				up->z = 0;
+				player0f0c1840(pos, up, look, &zchr->prop->pos, zchr->prop->rooms);
+
+				return 1;
+			}
+		}
+
+		{
+			static s32 testzombie = -2;
+
+			if (testzombie == -2) {
+				testzombie = sysArgGetInt("--zombies-test-zombie", 0);
+			}
+
+			if (testzombie > 0) {
+				s32 b;
+
+				g_PlayerInvincible = true;
+
+				for (b = 0; b < g_BotCount; b++) {
+					struct chrdata *zchr = g_MpBotChrPtrs[b];
+
+					if (zchr && zchr->prop && zchr->actiontype != ACT_DIE && zchr->actiontype != ACT_DEAD
+							&& !chrIsDead(zchr) && zchr->prop->type == PROPTYPE_CHR
+							&& (g_ZombieAtBarrier[b] >= 0) == (sysArgGetInt("--zombies-test-reach", 0) != 0 || sysArgGetInt("--zombies-test-atbarrier", 0) != 0)) {
+						const f32 th = chrGetInverseTheta(zchr);
+
+						pos->x = zchr->prop->pos.x + sinf(th) * testzombie;
+						pos->y = zchr->ground + (g_ZombieCrawler[b] ? 55 : 110);
+						pos->z = zchr->prop->pos.z + cosf(th) * testzombie;
+						look->x = zchr->prop->pos.x - pos->x;
+						look->y = zchr->ground + (g_ZombieCrawler[b] ? 20 : 90) - pos->y;
+						look->z = zchr->prop->pos.z - pos->z;
+						guNormalize(&look->x, &look->y, &look->z);
+						up->x = 0;
+						up->y = 1;
+						up->z = 0;
+						player0f0c1840(pos, up, look, &zchr->prop->pos, zchr->prop->rooms);
+
+						return 1;
+					}
+				}
+			}
+		}
+
+		if (testbar >= 0 && testbar < g_ZombieNumBarriers && g_ZombieBarriers[testbar].placed) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[testbar];
+
+			pos->x = bar->pos.x - bar->wall.x * 560 + bar->wall.z * 120;
+			pos->y = bar->pos.y + 170;
+			pos->z = bar->pos.z - bar->wall.z * 560 - bar->wall.x * 120;
+			look->x = bar->pos.x - bar->wall.x * 120 - pos->x;
+			look->y = bar->pos.y + 120 - pos->y;
+			look->z = bar->pos.z - bar->wall.z * 120 - pos->z;
+			guNormalize(&look->x, &look->y, &look->z);
+			up->x = 0;
+			up->y = 1;
+			up->z = 0;
+			player0f0c1840(pos, up, look, &bar->stand, bar->standrooms);
+
+			return 1;
+		}
+	}
+
+	if (!g_ZombieGameOver) {
+		g_ZombieGoHave[me] = false;
+		g_ZombieGoVantage[me] = false;
+		return 0;
+	}
+
+	if (!g_ZombieGoHave[me]) {
+		f32 len;
+
+		g_ZombieGoLook[me] = *look;
+		g_ZombieGoLook[me].y = 0;
+		len = sqrtf(g_ZombieGoLook[me].x * g_ZombieGoLook[me].x + g_ZombieGoLook[me].z * g_ZombieGoLook[me].z);
+
+		if (len < 0.0001f) {
+			f32 inv = prop->chr ? chrGetInverseTheta(prop->chr) : 0;
+
+			g_ZombieGoLook[me].x = sinf(inv);
+			g_ZombieGoLook[me].z = cosf(inv);
+		} else {
+			g_ZombieGoLook[me].x /= len;
+			g_ZombieGoLook[me].z /= len;
+		}
+
+		// the arena camera starts behind them
+		g_ZombieGoAngle[me] = atan2f(-g_ZombieGoLook[me].x, -g_ZombieGoLook[me].z);
+		g_ZombieGoHave[me] = true;
+	}
+
+	if (g_ZombieGameOver60 < ZOMBIE_GO_PAN60) {
+		const struct coord *fwd = &g_ZombieGoLook[me];
+		f32 e = zombiesGameOverFall();
+		f32 floor;
+		struct coord side;
+		struct coord lup;
+		f32 c;
+		f32 s;
+
+		// the dead keep the death view; End Game keeps everyone's own, on
+		// their feet, under GAME OVER
+		if (player->isdead || g_ZombieGameOverQuit) {
+			return 0;
+		}
+
+		floor = (prop->chr ? prop->chr->ground : prop->pos.y - 30) + ZOMBIE_GO_FLOOR;
+
+		if (pos->y > floor) {
+			pos->y += (floor - pos->y) * e;
+		}
+
+		// level ahead, rolled onto the right side
+		look->x = fwd->x;
+		look->y = -0.08f * e;
+		look->z = fwd->z;
+
+		side.x = -fwd->z;
+		side.y = 0;
+		side.z = fwd->x;
+		c = cosf(ZOMBIE_GO_ROLL * e);
+		s = sinf(ZOMBIE_GO_ROLL * e);
+		lup.x = side.x * s;
+		lup.y = c;
+		lup.z = side.z * s;
+		*up = lup;
+
+		player0f0c1840(pos, up, look, &prop->pos, prop->rooms);
+
+		return 1;
+	}
+
+	{
+		f32 secs = (g_ZombieGameOver60 - ZOMBIE_GO_PAN60) / 60.0f;
+		f32 f = zombiesSmooth(secs / ZOMBIE_GO_ORBIT_T);
+		struct coord centre = prop->pos;
+		struct coord cam;
+		struct coord dir;
+		f32 dist;
+		f32 yaw;
+		f32 len;
+
+		centre.y = (prop->chr ? prop->chr->ground : prop->pos.y) + 40;
+
+		// Once: the way out from them with the longest clear sight, a little
+		// up, of sixteen; a corridor's length rather than its wall
+		if (!g_ZombieGoVantage[me]) {
+			f32 best = -1;
+			s32 i;
+			s32 k;
+
+			for (i = 0; i < 16; i++) {
+				f32 a = g_ZombieGoAngle[me] + i * (M_PI / 8);
+				f32 frac = 1;
+				struct coord t;
+
+				for (k = 0; k < 8; k++) {
+					t.x = centre.x + sinf(a) * ZOMBIE_GO_ORBIT_R1 * frac;
+					t.y = centre.y + ZOMBIE_GO_ORBIT_H1 * frac;
+					t.z = centre.z + cosf(a) * ZOMBIE_GO_ORBIT_R1 * frac;
+
+					// clear to them, and inside a room: a sight line can
+					// pass out of the level through a gap no wall closes
+					if (cdTestLos04(&centre, prop->rooms, &t, CDTYPE_BG)) {
+						RoomNum inrooms[9];
+						RoomNum aboverooms[9];
+
+						bgFindRoomsByPos(&t, inrooms, aboverooms, 8, NULL);
+
+						if (inrooms[0] != -1) {
+							break;
+						}
+					}
+
+					frac *= 0.75f;
+				}
+
+				if (k == 8) {
+					frac = 0;
+				}
+
+				// behind them first, all else being equal
+				if (frac > best + 0.05f) {
+					best = frac;
+					g_ZombieGoAngle[me] = a;
+					g_ZombieGoReach[me] = frac * 0.8f; // short of whatever stopped it
+				}
+			}
+
+			g_ZombieGoVantage[me] = true;
+		}
+
+		// backing away up that line and rising, as far as it is clear,
+		// looking back past them and turning slowly one way and the other
+		dist = g_ZombieGoReach[me] * (0.55f + 0.45f * f);
+		cam.x = centre.x + sinf(g_ZombieGoAngle[me]) * ZOMBIE_GO_ORBIT_R1 * dist;
+		cam.y = centre.y + ZOMBIE_GO_ORBIT_H1 * dist;
+		cam.z = centre.z + cosf(g_ZombieGoAngle[me]) * ZOMBIE_GO_ORBIT_R1 * dist;
+
+		yaw = sinf(secs * ZOMBIE_GO_ORBIT_W * 2.5f) * 0.35f;
+		dir.x = centre.x - cam.x;
+		dir.y = centre.y - cam.y;
+		dir.z = centre.z - cam.z;
+		len = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+		if (len < 1) {
+			dir = g_ZombieGoLook[me];
+		} else {
+			f32 c = cosf(yaw);
+			f32 s = sinf(yaw);
+			f32 x = dir.x / len;
+			f32 z = dir.z / len;
+
+			dir.x = x * c + z * s;
+			dir.y /= len;
+			dir.z = z * c - x * s;
+		}
+
+		// across the arena past them, not down at the floor
+		if (dir.y < -ZOMBIE_GO_ORBIT_DIP) {
+			f32 flat = sqrtf(dir.x * dir.x + dir.z * dir.z);
+			f32 keep = sqrtf(1 - ZOMBIE_GO_ORBIT_DIP * ZOMBIE_GO_ORBIT_DIP);
+
+			if (flat > 0.0001f) {
+				dir.x = dir.x / flat * keep;
+				dir.z = dir.z / flat * keep;
+				dir.y = -ZOMBIE_GO_ORBIT_DIP;
+			}
+		}
+
+		*pos = cam;
+		*look = dir;
+		zombiesUpFromLook(look, up);
+
+		player0f0c1840(pos, up, look, &prop->pos, prop->rooms);
+	}
+
+	return 1;
 }
 
 static void zombiesStartGameOver(void)
@@ -14495,20 +18360,33 @@ static void zombiesStartGameOver(void)
 	g_ZombieBestRound = zombiesReadBest(g_Vars.stagenum);
 	g_ZombieNewBest = g_ZombieRound > g_ZombieBestRound;
 
-	if (g_ZombieNewBest) {
+	if (g_ZombieNewBest && !g_ZombieGameOverTest) {
 		zombiesWriteBest(g_Vars.stagenum, g_ZombieRound);
 	}
 
 	sysLogPrintf(LOG_NOTE, "zombies: game over on stage 0x%02x at round %d (best before %d)",
 			g_Vars.stagenum, g_ZombieRound, g_ZombieBestRound);
 
-	musicStartSting(MUSIC_MISSION_FAILED, TICKS(240 * 20));
+	zombiesGameOverMusic();
 }
 
 // The game over held, then the match's end screens
 static void zombiesTickGameOver(void)
 {
 	g_ZombieGameOver60 += g_Vars.lvupdate60;
+
+	// alone (offline), fire or accept is done with the scoreboard
+	if (g_NetMode == NETMODE_NONE && g_ZombieGameOver60 >= ZOMBIE_GO_SKIP60) {
+		s32 i;
+
+		for (i = 0; i < PLAYERCOUNT(); i++) {
+			s32 pad = optionsGetContpadNum1(g_Vars.playerstats[i].mpindex);
+
+			if (joyGetButtonsPressedThisFrame(pad, Z_TRIG | A_BUTTON | BUTTON_UI_ACCEPT)) {
+				g_ZombieGameOver60 = ZOMBIE_GAMEOVER60;
+			}
+		}
+	}
 
 	if (g_ZombieGameOver60 >= ZOMBIE_GAMEOVER60 && !g_ZombieGameOverEnded) {
 		g_ZombieGameOverEnded = true;
@@ -14521,13 +18399,270 @@ static void zombiesTickGameOver(void)
  * Now and then a groan from a zombie near enough a player to be heard, from
  * where it is: more of them, the more zombies there are about.
  */
+/**
+ * A perk machine's jingle now and then, as Black Ops II's machines play
+ * theirs (mus_perks_*_jingle): one near a player, at random, from the
+ * machine, every one and a half to four minutes. The host's, heard online
+ * from the same machine everywhere.
+ */
+#define ZOMBIE_JINGLE_MIN60 (60 * 90)
+#define ZOMBIE_JINGLE_MAX60 (60 * 240)
+#define ZOMBIE_JINGLE_REACH 1500.0f
+
+static s32 g_ZombieJingle60 = -1;
+
+static void zombiesTickJingles(void)
+{
+	s32 near[ZOMBIEPERK_COUNT];
+	s32 numnear = 0;
+	s32 perk;
+
+	if (NET_CLIENT) {
+		return;
+	}
+
+	if (g_ZombieJingle60 < 0) {
+		g_ZombieJingle60 = ZOMBIE_JINGLE_MIN60 + rngRandom() % (ZOMBIE_JINGLE_MAX60 - ZOMBIE_JINGLE_MIN60);
+	}
+
+	g_ZombieJingle60 -= g_Vars.lvupdate60;
+
+	if (g_ZombieJingle60 > 0) {
+		return;
+	}
+
+	g_ZombieJingle60 = -1;
+
+	for (perk = 0; perk < ZOMBIEPERK_COUNT; perk++) {
+		struct defaultobj *obj = zombiesMachineObjAt(perk);
+		s32 p;
+
+		if (!obj || !obj->prop) {
+			continue;
+		}
+
+		for (p = 0; p < PLAYERCOUNT(); p++) {
+			struct prop *pp = g_Vars.players[p]->prop;
+
+			if (pp) {
+				const f32 dx = pp->pos.x - obj->prop->pos.x;
+				const f32 dz = pp->pos.z - obj->prop->pos.z;
+
+				if (dx * dx + dz * dz < ZOMBIE_JINGLE_REACH * ZOMBIE_JINGLE_REACH) {
+					near[numnear++] = perk;
+					break;
+				}
+			}
+		}
+	}
+
+	if (numnear > 0) {
+		perk = near[rngRandom() % numnear];
+		zombiesPlayCodSound(ZMSFX_PERK_JINGLE + perk, zombiesMachineObjAt(perk)->prop);
+	}
+}
+
+/**
+ * Each machine's hum, Black Ops II's (zmb_perks_machine_loop, Pack-a-Punch's
+ * zmb_perks_packa_loop), looped from the machine and heard only close by.
+ * Each machine's own (no word online): started as a player comes near and
+ * stopped once they are well away, so the hums hold no channels across the
+ * arena.
+ */
+#define ZOMBIE_HUM_START 650.0f
+#define ZOMBIE_HUM_STOP  850.0f
+
+static s16 g_ZombieHumChannel[ZOMBIE_PAP_ID + 1];
+static struct prop *g_ZombieHumProp[ZOMBIE_PAP_ID + 1];
+static bool g_ZombieHumInit = false;
+
+static void zombiesTickHums(void)
+{
+	s32 id;
+
+	if (!g_ZombieHumInit) {
+		for (id = 0; id <= ZOMBIE_PAP_ID; id++) {
+			g_ZombieHumChannel[id] = -1;
+			g_ZombieHumProp[id] = NULL;
+		}
+
+		g_ZombieHumInit = true;
+	}
+
+	for (id = 0; id <= ZOMBIE_PAP_ID; id++) {
+		struct defaultobj *obj = zombiesMachineObjAt(id);
+		struct prop *prop = obj ? obj->prop : NULL;
+		f32 nearest = 1e10f;
+		s32 p;
+
+		// a machine gone or moved (a new match), or its channel taken back
+		// (a level's sounds stopped): its hum with it. The table is read
+		// itself: psIsChannelFree() knows only the AI's channels.
+		if (g_ZombieHumChannel[id] >= 0) {
+			struct pschannel *ch = &g_PsChannels[g_ZombieHumChannel[id]];
+			const bool ours = (ch->flags & PSFLAG_FREE) == 0 && ch->prop == g_ZombieHumProp[id];
+
+			if (!ours || prop != g_ZombieHumProp[id]) {
+				if (ours) {
+					psStopChannel(g_ZombieHumChannel[id]);
+				}
+
+				g_ZombieHumChannel[id] = -1;
+			}
+		}
+
+		if (!prop) {
+			continue;
+		}
+
+		for (p = 0; p < PLAYERCOUNT(); p++) {
+			struct prop *pp = g_Vars.players[p]->prop;
+
+			if (pp) {
+				const f32 dx = pp->pos.x - prop->pos.x;
+				const f32 dz = pp->pos.z - prop->pos.z;
+
+				nearest = MIN(nearest, dx * dx + dz * dz);
+			}
+		}
+
+		if (g_ZombieHumChannel[id] < 0 && nearest < ZOMBIE_HUM_START * ZOMBIE_HUM_START) {
+			const s32 sound = zmSfxSound(id == ZOMBIE_PAP_ID ? ZMSFX_PAP_HUM : ZMSFX_PERK_HUM);
+
+			if (sound > 0) {
+				g_ZombieHumChannel[id] = psCreate(NULL, prop, sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, 1.0f,
+						NULL, -1, 60, 300, 600);
+				g_ZombieHumProp[id] = prop;
+			}
+		} else if (g_ZombieHumChannel[id] >= 0 && nearest > ZOMBIE_HUM_STOP * ZOMBIE_HUM_STOP) {
+			psStopChannel(g_ZombieHumChannel[id]);
+			g_ZombieHumChannel[id] = -1;
+		}
+	}
+}
+
+/**
+ * Going down, as Black Ops II sounds it, for this machine's own players: the
+ * final blow (evt_player_final_hit) as they drop, then the last stand's loop
+ * (evt_laststand_loop) under everything until they are up again, bled out or
+ * the game is over. Every machine's own (zombiesTick() and
+ * zombiesClientTick()), heard by the one down alone.
+ */
+static struct sndstate *g_ZombieLastStandSnd[MAX_PLAYERS];
+static bool g_ZombieWasDownSnd[MAX_PLAYERS];
+
+static void zombiesTickLastStandSound(void)
+{
+	s32 p;
+
+	for (p = 0; p < MAX_PLAYERS; p++) {
+		const bool mine = p < PLAYERCOUNT() && (g_NetMode == NETMODE_NONE || netIsLocalSlot(p));
+		const bool down = mine && g_ZombieDowned[p];
+		// the loop not over the game's end (alone without Quick Revive, the
+		// first down is it)
+		const bool bleeding = down && !g_ZombieGameOver;
+
+		// the blow that downs, whatever comes of it
+		if (down && !g_ZombieWasDownSnd[p]) {
+			const s32 hit = zmSfxSound(ZMSFX_FINAL_HIT);
+
+			if (hit > 0) {
+				zombiesPlaySoundHere(hit, 1.0f);
+			}
+		}
+
+		if (bleeding && g_ZombieLastStandSnd[p] == NULL) {
+			const s32 loop = zmSfxSound(ZMSFX_LASTSTAND);
+
+			if (loop > 0) {
+				sndStart(var80095200, loop, &g_ZombieLastStandSnd[p], -1, -1, -1, -1, -1);
+			}
+		} else if (!bleeding && g_ZombieLastStandSnd[p]) {
+			audioStop(g_ZombieLastStandSnd[p]);
+			g_ZombieLastStandSnd[p] = NULL;
+		}
+
+		g_ZombieWasDownSnd[p] = down;
+	}
+}
+
+/**
+ * A power-up lying there hums, Black Ops II's zmb_spawn_powerup_loop, looped
+ * from it until it is taken or goes. Every machine's own, as the hums of the
+ * machines (zombiesTickHums()).
+ */
+static s16 g_ZombieDropHumChannel[4] = { -1, -1, -1, -1 };
+static struct prop *g_ZombieDropHumProp[4];
+
+static void zombiesTickDropHums(void)
+{
+	s32 i;
+
+	for (i = 0; i < 4; i++) {
+		struct prop *prop = g_ZombieDrops[i].active ? g_ZombieDrops[i].obj.prop : NULL;
+
+		if (g_ZombieDropHumChannel[i] >= 0) {
+			struct pschannel *ch = &g_PsChannels[g_ZombieDropHumChannel[i]];
+			const bool ours = (ch->flags & PSFLAG_FREE) == 0 && ch->prop == g_ZombieDropHumProp[i];
+
+			if (!ours || prop != g_ZombieDropHumProp[i]) {
+				if (ours) {
+					psStopChannel(g_ZombieDropHumChannel[i]);
+				}
+
+				g_ZombieDropHumChannel[i] = -1;
+			}
+		}
+
+		if (prop && g_ZombieDropHumChannel[i] < 0) {
+			const s32 sound = zmSfxSound(ZMSFX_PU_LOOP);
+
+			if (sound > 0) {
+				g_ZombieDropHumChannel[i] = psCreate(NULL, prop, sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, 1.0f,
+						NULL, -1, 100, 500, 900);
+				g_ZombieDropHumProp[i] = prop;
+			}
+		}
+	}
+}
+
+/**
+ * Quick Revive alone, as Black Ops II's: once its last bottle (the third) is
+ * bought and spent - nobody has the perk or is drinking it - the machine goes,
+ * out of the world, its prompt, hum and jingle with it (a machine no longer
+ * placed, to everything that looks for one). Machines are made anew with the
+ * next stage.
+ */
+static void zombiesTickQrMachine(void)
+{
+	struct defaultobj *obj = &g_ZombiePerkObjs[ZOMBIEPERK_QUICKREVIVE];
+	s32 p;
+
+	if (!g_ZombiePerkPlaced[ZOMBIEPERK_QUICKREVIVE] || !obj->prop
+			|| zombiesPlayersInPlay() >= 2 || g_ZombieQrSoloBuys < ZOMBIE_QR_SOLO_BUYS) {
+		return;
+	}
+
+	for (p = 0; p < PLAYERCOUNT(); p++) {
+		if (zombiesPlayerHasPerk(p, ZOMBIEPERK_QUICKREVIVE)
+				|| (g_ZombieDrink60[p] >= 0 && g_ZombieDrinkPerk[p] == ZOMBIEPERK_QUICKREVIVE)) {
+			return;
+		}
+	}
+
+	propDeregisterRooms(obj->prop);
+	propDisable(obj->prop);
+	g_ZombiePerkPlaced[ZOMBIEPERK_QUICKREVIVE] = false;
+
+	sysLogPrintf(LOG_NOTE, "zombies: Quick Revive's machine is gone, its %d bottles spent", ZOMBIE_QR_SOLO_BUYS);
+}
+
 static void zombiesTickGroans(void)
 {
 	static const s16 groans[] = {
 		SFX_ARGH_MALE_0086, SFX_ARGH_MALE_0088, SFX_ARGH_MALE_008B, SFX_ARGH_MALE_008E,
 		SFX_ARGH_MALE_0091, SFX_ARGH_MALE_0094, SFX_ARGH_MALE_0097, SFX_ARGH_MALE_009A,
 		SFX_GURGLE_05B1, SFX_GURGLE_05B2,
-		SFX_SKEDAR_ROAR_0529, SFX_SKEDAR_ROAR_052D, SFX_SKEDAR_ROAR_0531,
 	};
 	struct chrdata *near[MAX_BOTS];
 	s32 numnear = 0;
@@ -14578,13 +18713,20 @@ static void zombiesTickGroans(void)
 		struct chrdata *zchr = near[rngRandom() % numnear];
 		s32 sound = groans[rngRandom() % ARRAYCOUNT(groans)];
 		f32 pitch = 0.6f + RANDOMFRAC() * 0.2f;
+		s32 vox;
 
-		// the Skedar's roar is deep already
-		if (sound >= SFX_SKEDAR_ROAR_0529 && sound <= SFX_SKEDAR_ROAR_053A) {
-			pitch += 0.15f;
+		// Black Ops II's own voices where they are there (zmsfx.c): a
+		// running zombie's sprint, now and then a taunt, else its groan; at
+		// their own pitch, give or take a little
+		vox = zmSfxPickVox(zombiesChrIsCrawler(zchr) ? ZMVOX_CRAWL : rngRandom() % 6 == 0 ? ZMVOX_TAUNT
+				: zombiesChrSpeedScale(zchr) > 0.8f ? ZMVOX_SPRINT : ZMVOX_AMB, rngRandom());
+
+		if (vox >= 0) {
+			sound = ZMSFX_NET(vox);
+			pitch = 0.94f + RANDOMFRAC() * 0.12f;
 		}
 
-		psCreate(NULL, zchr->prop, sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+		psCreate(NULL, zchr->prop, zmSfxResolve(sound), -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
 
 		// online, from the same zombie on every machine (its config slot)
 		zombiesNetKeepSound(sound, pitch, func0f18d074(mpPlayerGetIndex(zchr)));
@@ -14592,6 +18734,30 @@ static void zombiesTickGroans(void)
 }
 
 static void zombiesNetResumeTake(void);
+
+/**
+ * The Ray Gun's shot is Black Ops II's (zmsfx.c) once its file is there: the
+ * weapon's own shoot sound, the Phoenix's until then, so every machine's gun
+ * plays it as Perfect Dark plays any shot. Its burst and reload are played
+ * by Zombies itself (zombiesShellBlast(), zombiesVmGunTick()).
+ */
+static void zombiesRayGunSounds(void)
+{
+	extern struct weaponfunc_shootauto invfunc_zm_raygun_shot;
+	extern struct weaponfunc_shootsingle invfunc_zm_raygun_burst;
+	static bool done = false;
+
+	if (!done) {
+		const s32 fire = zmSfxSound(ZMSFX_RAYGUN_FIRE);
+
+		done = true;
+
+		if (fire > 0) {
+			invfunc_zm_raygun_shot.base.shootsound = fire;
+			invfunc_zm_raygun_burst.base.shootsound = fire;
+		}
+	}
+}
 
 void zombiesTick(void)
 {
@@ -14612,6 +18778,42 @@ void zombiesTick(void)
 	}
 
 	zombiesTickPopups();
+
+	// --zombies-test-cherry: Electric Cherry's burst round player 1 every 90
+	// frames (from frame 30), the player not to be killed; --zombies-shot-step
+	// S takes --screenshot-frame's picture every S frames from there on
+	// --zombies-test-drink P: player 1 buys perk P at level frame 200 (its
+	// sounds and its drink), the player not to be killed; --zombies-shot-step
+	// S takes --screenshot-frame's picture every S frames from there on
+	if (sysArgCheck("--zombies-test-drink") && g_Vars.lvframenum == 200) {
+		g_ZombieDrinkPerk[0] = sysArgGetInt("--zombies-test-drink", 0);
+		g_ZombieDrink60[0] = 0;
+		zombiesPerkBought(g_ZombieDrinkPerk[0], NULL);
+	}
+
+	if (sysArgCheck("--zombies-test-drink")) {
+		extern s32 g_ShotFrame;
+
+		g_PlayerInvincible = true;
+
+		if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+			g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+		}
+	}
+
+	if (sysArgCheck("--zombies-test-cherry")) {
+		extern s32 g_ShotFrame;
+
+		g_PlayerInvincible = true;
+
+		if (g_Vars.lvframenum % 90 == 30) {
+			zombiesCherryBurst(0, sysArgGetInt("--zombies-cherry-reach", 300));
+		}
+
+		if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+			g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+		}
+	}
 
 	// a new match: the frame count has gone back (the block below runs for
 	// a second of frames, so it is no good for a once-only reset)
@@ -14657,6 +18859,8 @@ void zombiesTick(void)
 		zombiesPlaceBarriers();
 	}
 
+	zombiesRayGunSounds();
+
 	if (g_Vars.lvframenum < 60) {
 		zombiesResetPoints();
 
@@ -14667,6 +18871,7 @@ void zombiesTick(void)
 		g_ZombieGameOver = false;
 		g_ZombieGameOver60 = 0;
 		g_ZombieGameOverEnded = false;
+		g_ZombieGameOverQuit = false;
 		g_ZombieNextGroan60 = ZOMBIE_GROAN_MAX60;
 		g_ZombieDeathMsgShown = false;
 		g_ZombieRoundTotal = 0;
@@ -14719,7 +18924,94 @@ void zombiesTick(void)
 		return;
 	}
 
-	zombiesTickDowned();
+	// --zombies-gameover-at N: the game's end at level frame N, for a run
+	// nobody is playing (its pictures: --screenshot-frame)
+	{
+		static s32 gameoverat = -2;
+
+		if (gameoverat == -2) {
+			gameoverat = sysArgGetInt("--zombies-gameover-at", 0);
+		}
+
+		if (gameoverat > 0 && g_Vars.lvframenum >= gameoverat && !g_ZombieGameOver && !NET_CLIENT) {
+			gameoverat = 0;
+
+			if (g_ZombieRound < 1) {
+				g_ZombieRound = 1;
+			}
+
+			g_ZombieGameOverTest = true; // its records are not written
+			sysLogPrintf(LOG_NOTE, "zombies: --zombies-gameover-at: the game's end at frame %d", g_Vars.lvframenum);
+			zombiesStartGameOver();
+		}
+	}
+
+	zombiesTestShoot();
+	zombiesTickSwings();
+
+	// --zombies-test-gibs 1: every zombie's left arm off at level frame 600,
+	// for a run nobody is playing
+	if (g_Vars.lvframenum == 600 && sysArgGetInt("--zombies-test-gibs", 0)) {
+		for (i = 0; i < MAX_BOTS; i++) {
+			g_ZombieGib[i] |= ZGIB_LARM;
+		}
+	}
+
+	// --zombies-test-crawlers 1: every zombie a crawler, for a run nobody is playing
+	{
+		static s32 testcrawlers = -1;
+
+		if (testcrawlers < 0) {
+			testcrawlers = sysArgGetInt("--zombies-test-crawlers", 0);
+		}
+
+		if (testcrawlers) {
+			for (i = 0; i < MAX_BOTS; i++) {
+				g_ZombieCrawler[i] = 1;
+			}
+		}
+	}
+
+	// --zombies-test-hold W: player 1 given weapon W at level frame 60 and
+	// seen in third person (--zombies-test-third 0: first), for a run nobody
+	// is playing
+	{
+		static s32 testhold = -2;
+
+		if (testhold == -2) {
+			testhold = sysArgGetInt("--zombies-test-hold", 0);
+		}
+
+		if (testhold > 0 && g_Vars.lvframenum >= 30 && !NET_CLIENT && g_Vars.players[0]) {
+			const s32 prevplayernum = g_Vars.currentplayernum;
+
+			setCurrentPlayerNum(0);
+			invGiveSingleWeapon(testhold);
+			zombiesSyncGuns(0);
+			zombiesFillGun(testhold, ZOMBIE_AMMO_CLIPS, true);
+			bgunEquipWeapon(testhold);
+			g_Vars.currentplayer->thirdperson = sysArgGetInt("--zombies-test-third", 1) != 0;
+			g_Vars.currentplayer->vv_theta += sysArgGetInt("--zombies-test-turn", 0);
+			g_ModOptions.camside = sysArgGetInt("--zombies-test-side", (s32)g_ModOptions.camside);
+
+			// --zombies-test-func 1: its second function chosen
+			if (sysArgGetInt("--zombies-test-func", 0) == 1 && weaponHost(testhold) >= WEAPON_UNARMED) {
+				const s32 host = weaponHost(testhold) - 1;
+
+				g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].gunfuncs[host >> 3] |= 1 << (host & 7);
+			}
+			setCurrentPlayerNum(prevplayernum);
+
+			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-hold: weapon %d", testhold);
+			testhold = 0;
+		}
+	}
+
+	// nobody bleeds out or gets up once the game is over: they lie where
+	// they fell for its camera
+	if (!g_ZombieGameOver) {
+		zombiesTickDowned();
+	}
 
 	// nobody is left standing: GAME OVER holds the screen a while, then the
 	// match's end screens (zombiesTickGameOver())
@@ -14757,7 +19049,13 @@ void zombiesTick(void)
 
 	if (g_ZombieRound > 0) {
 		zombiesTickGroans();
+		zombiesTickJingles();
+		zombiesTickQrMachine();
+		zombiesTickHums();
 	}
+
+	zombiesTickLastStandSound();
+	zombiesTickDropHums();
 
 
 
@@ -14765,6 +19063,7 @@ void zombiesTick(void)
 		if (g_Vars.lvframenum >= 120) {
 			// the Zombies Options page's Starting Round
 			g_ZombieRound = g_ZombieCfgStartRound > 1 ? g_ZombieCfgStartRound : 1;
+			zombiesRoundStartSting();
 
 			// round 1's grenades
 			for (i = 0; i < MAX_PLAYERS; i++) {
@@ -14846,6 +19145,7 @@ void zombiesTick(void)
 		zombiesRoundSting();
 	} else if (g_Vars.lvframenum >= g_ZombieNextWaveFrame) {
 		g_ZombieRound++;
+		zombiesRoundStartSting();
 		zombiesRespawnTheDead();
 
 		for (i = 0; i < MAX_PLAYERS; i++) {
@@ -14993,11 +19293,86 @@ static Gfx *zombiesDrawTextBR(Gfx *gdl, char *text, s32 rightx, s32 bottomy, u32
 }
 
 static Gfx *zombiesFillRect(Gfx *gdl, f32 x1, f32 y1, f32 x2, f32 y2, u32 colour);
+static u32 zombiesAlphaOf(u32 colour, f32 alpha);
+
+/**
+ * The gun's corner of the HUD goes quiet, as Black Ops II's does: a while
+ * with no shot fired, no grenade thrown, no reload and no change of gun or
+ * function, and the function's square, the ammo and the grenades fade away
+ * (the gun's and the function's names fade by themselves already). The
+ * round and the points stay. Any of those brings it all back at once, the
+ * gun's name with it (zombiesHudWoke()).
+ */
+#define ZOMBIE_HUD_IDLE60 480 // eight seconds
+#define ZOMBIE_HUD_FADE60 30
+
+static s32 g_ZombieHudIdle60[MAX_PLAYERS];
+static bool g_ZombieHudWoke[MAX_PLAYERS];
+static f32 g_ZombieHudAlphaNow = 1;
+
+// bondgun.c, as it draws the current player's corner of the HUD: its alpha, 0 to 1
+f32 zombiesHudIdleAlpha(void)
+{
+	s32 me = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	bool busy;
+	f32 t;
+
+	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS) {
+		return 1;
+	}
+
+	busy = player->hands[HAND_RIGHT].firing || player->hands[HAND_LEFT].firing
+		|| player->hands[HAND_RIGHT].state == HANDSTATE_RELOAD
+		|| player->hands[HAND_RIGHT].state == HANDSTATE_CHANGEGUN
+		|| player->hands[HAND_RIGHT].state == HANDSTATE_CHANGEFUNC
+		|| player->gunctrl.switchtoweaponnum >= 0
+		|| g_ZombieThrowStage[me] != ZTHROW_NONE
+		|| g_ZombieGameOver;
+
+	if (busy) {
+		if (g_ZombieHudIdle60[me] >= ZOMBIE_HUD_IDLE60) {
+			g_ZombieHudWoke[me] = true;
+		}
+
+		g_ZombieHudIdle60[me] = 0;
+	} else if (g_ZombieHudIdle60[me] < ZOMBIE_HUD_IDLE60 + ZOMBIE_HUD_FADE60) {
+		g_ZombieHudIdle60[me] += g_Vars.lvupdate60;
+	}
+
+	t = (f32)(g_ZombieHudIdle60[me] - ZOMBIE_HUD_IDLE60) / ZOMBIE_HUD_FADE60;
+	g_ZombieHudAlphaNow = t <= 0 ? 1 : t >= 1 ? 0 : 1 - t;
+
+	return g_ZombieHudAlphaNow;
+}
+
+// zombiesHudIdleAlpha()'s, as it was worked out for the view being drawn
+static f32 zombiesHudIdleAlphaNow(void)
+{
+	return zombiesIsActive() ? g_ZombieHudAlphaNow : 1;
+}
+
+// bondgun.c: the corner has just come back, and the gun's name with it
+bool zombiesHudWoke(void)
+{
+	s32 me = g_Vars.currentplayernum;
+	bool woke;
+
+	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS) {
+		return false;
+	}
+
+	woke = g_ZombieHudWoke[me];
+	g_ZombieHudWoke[me] = false;
+
+	return woke;
+}
 
 // Compact ammo readout, e.g. "35/200", or "8|8/80" when dual wielding.
 // Called from the game's own ammo HUD code in bondgun.c.
 Gfx *zombiesDrawAmmo(Gfx *gdl, s32 clipl, s32 clipr, s32 reserve, s32 bottom, s32 scalex)
 {
+	const f32 idle = zombiesHudIdleAlphaNow();
 	char text[48];
 	s32 rightx = (viGetViewLeft() + viGetViewWidth()) / scalex - ZOMBIE_HUD_RIGHT;
 	s32 ammobottom;
@@ -15020,32 +19395,24 @@ Gfx *zombiesDrawAmmo(Gfx *gdl, s32 clipl, s32 clipr, s32 reserve, s32 bottom, s3
 	ammobottom = zombiesHudAmmoBottom(bottom);
 	zombiesHudNameBottom(bottom);
 
-	// the grenades left, to the ammo's left as Black Ops has them: one
-	// upright pip each
+	// the grenades left, in a row under the function's square (bondgun.c's,
+	// whose right edge is the stack's): one upright pip each, right to left
 	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
-		s32 textwidth = 0;
-		s32 textheight;
-		s32 x;
+		s32 x = rightx;
 		s32 k;
 
-		if (text[0]) {
-			textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-		}
-
-		x = rightx - textwidth - 10;
-
 		for (k = 0; k < g_ZombieGrenades[g_Vars.currentplayernum] && k < ZOMBIE_GRENADES_MAX; k++) {
-			gdl = zombiesFillRect(gdl, x - 5, ammobottom - 11, x, ammobottom - 2, 0xd0d8c0d0);
-			gdl = zombiesFillRect(gdl, x - 4, ammobottom - 13, x - 1, ammobottom - 11, 0xd0d8c0d0);
-			x -= 8;
+			gdl = zombiesFillRect(gdl, x - 4, bottom + 4, x, bottom + 11, zombiesAlphaOf(0xd0d8c0d0, idle));
+			gdl = zombiesFillRect(gdl, x - 3, bottom + 2, x - 1, bottom + 4, zombiesAlphaOf(0xd0d8c0d0, idle));
+			x -= 7;
 		}
 	}
 
-	if (!text[0]) {
+	if (!text[0] || idle <= 0) {
 		return gdl;
 	}
 
-	return zombiesDrawTextBR(gdl, text, rightx, ammobottom, 0xffffffc0, g_CharsHandelGothicSm, g_FontHandelGothicSm);
+	return zombiesDrawTextBR(gdl, text, rightx, ammobottom, zombiesAlphaOf(0xffffffc0, idle), g_CharsHandelGothicSm, g_FontHandelGothicSm);
 }
 
 // Draws a line of words (letters, not just digits) centred at the given spot.
@@ -15300,7 +19667,8 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 	s32 playernum = g_Vars.currentplayernum;
 	char text[64];
 
-	if (playernum < 0 || playernum >= MAX_PLAYERS) {
+	// nothing to buy at the game's end
+	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieGameOver) {
 		return gdl;
 	}
 
@@ -15480,10 +19848,19 @@ static f32 zombiesHudAlignedX(f32 x, u32 mode)
 	return (ndc + 1.0f) * 0.5f * width;
 }
 
+// The alignment a portrait is drawn under: the points' (the right edge's),
+// or the scoreboard's, which is centred (zombiesRenderScoreboard())
+static u32 g_ZombiePortraitCentred = false;
+
+static u32 zombiesPortraitAlign(void)
+{
+	return g_ZombiePortraitCentred ? G_ASPECT_CENTER_EXT : g_HudAlignModeR;
+}
+
 /**
  * A player's head in a box boxh tall whose right edge is at right and bottom
  * at bottom, in the HUD's coordinates as the points are drawn (aligned to the
- * right edge), backed in backing. Returns the box's left edge, or right when
+ * right edge, or centred for the scoreboard), backed in backing. Returns the box's left edge, or right when
  * nothing was drawn.
  */
 static s32 zombiesRenderPortrait(Gfx **gdlptr, s32 playernum, s32 right, s32 bottom, s32 boxh, u32 backing)
@@ -15643,7 +20020,7 @@ static s32 zombiesRenderPortrait(Gfx **gdlptr, s32 playernum, s32 right, s32 bot
 	vp->vp.vtrans[2] = 511;
 	vp->vp.vtrans[3] = 0;
 
-	gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+	gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, zombiesPortraitAlign());
 
 	// a dark backing, as the head is drawn over whatever is behind the HUD
 	gdl = text0f153628(gdl);
@@ -15657,9 +20034,9 @@ static s32 zombiesRenderPortrait(Gfx **gdlptr, s32 playernum, s32 right, s32 bot
 	gDPPipeSync(gdl++);
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
 	gDPSetScissor(gdl++, G_SC_NON_INTERLACE,
-			(s32)zombiesHudAlignedX(left, g_HudAlignModeR), top,
-			(s32)(zombiesHudAlignedX(right, g_HudAlignModeR) + 0.999f), bottom);
-	gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+			(s32)zombiesHudAlignedX(left, zombiesPortraitAlign()), top,
+			(s32)(zombiesHudAlignedX(right, zombiesPortraitAlign()) + 0.999f), bottom);
+	gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, zombiesPortraitAlign());
 
 	gSPDisplayList(gdl++, var80061380);
 	gSPDisplayList(gdl++, var800613a0);
@@ -16082,75 +20459,310 @@ static Gfx *zombiesDrawCentred(Gfx *gdl, char *text, s32 centrex, s32 y, u32 col
 	return textRenderScaled(gdl, centrex - textwidth * scale / 2, y, text, chars, font, colour, scale);
 }
 
+static Gfx *zombiesRenderScoreboard(Gfx *gdl, f32 alpha, s32 top);
+
 /**
- * GAME OVER over the darkened view, as Call of Duty holds it before its
- * scoreboard: the rounds survived, the player's points, and the arena's best
- * or that this was it (zombiesStartGameOver()). Fading in; everything else
- * the HUD draws is left off.
+ * The game's end on the HUD (the timing is ZOMBIE_GO_*'s, above).
+ *
+ * Falling: GAME OVER and the rounds survived fade in over the middle of the
+ * view, the HUD as it was around them (zombiesRenderHud()), and the view
+ * goes to black. Over the arena: back from black with the scoreboard, and
+ * under it the arena's best or that this was it (zombiesStartGameOver()).
  */
 static Gfx *zombiesRenderGameOver(Gfx *gdl)
 {
-	s32 me = g_Vars.currentplayernum;
+	s32 left = viGetViewLeft();
 	s32 top = viGetViewTop();
+	s32 width = viGetViewWidth();
 	s32 height = viGetViewHeight();
-	s32 centrex = viGetViewLeft() + viGetViewWidth() / 2;
-	f32 f = (f32)g_ZombieGameOver60 / ZOMBIE_GAMEOVER_FADE60;
-	u32 alpha;
+	s32 centrex = left + width / 2;
+	s32 t = g_ZombieGameOver60;
 	struct fontchar *bigchars = g_CharsHandelGothicLg;
 	struct font *bigfont = g_FontHandelGothicLg;
+	f32 black = 0;
 	s32 y;
 	char text[64];
-
-	if (f > 1) {
-		f = 1;
-	}
-
-	alpha = (u32)(0xff * f);
 
 	if (bigfont == NULL) {
 		bigchars = g_CharsHandelGothicMd;
 		bigfont = g_FontHandelGothicMd;
 	}
 
-	gdl = text0f153628(gdl);
-	gdl = zombiesFillRect(gdl, viGetViewLeft(), top, viGetViewLeft() + viGetViewWidth(), top + height, (u32)(0xb0 * f));
-	gdl = text0f153780(gdl);
+	if (t < ZOMBIE_GO_PAN60) {
+		f32 f = (f32)(t - ZOMBIE_GO_TEXT60) / ZOMBIE_GO_TEXTIN60;
+		u32 alpha;
 
+		f = f < 0 ? 0 : f > 1 ? 1 : f;
+		alpha = (u32)(0xff * f);
+
+		if (alpha > 0) {
 #ifndef PLATFORM_N64
-	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+			gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
 #endif
 
-	gdl = text0f153628(gdl);
+			gdl = text0f153628(gdl);
 
-	y = top + height * 30 / 100;
-	gdl = zombiesDrawCentred(gdl, "GAME OVER", centrex, y, 0xc8141400 | alpha, bigchars, bigfont, 2);
-	y += zombiesLineHeight(bigchars, bigfont) * 2 + 8;
+			y = top + height * 34 / 100;
+			gdl = zombiesDrawCentred(gdl, "GAME OVER", centrex, y, 0xc8141400 | alpha, bigchars, bigfont, 2);
+			y += zombiesLineHeight(bigchars, bigfont) * 2 + 6;
 
-	sprintf(text, "You Survived %d Round%s", g_ZombieRound, g_ZombieRound == 1 ? "" : "s");
-	gdl = zombiesDrawCentred(gdl, text, centrex, y, 0xffffff00 | alpha, g_CharsHandelGothicMd, g_FontHandelGothicMd, 1);
-	y += zombiesLineHeight(g_CharsHandelGothicMd, g_FontHandelGothicMd) + 6;
+			sprintf(text, "You Survived %d Round%s", g_ZombieRound, g_ZombieRound == 1 ? "" : "s");
+			gdl = zombiesDrawCentred(gdl, text, centrex, y, 0xffffff00 | alpha, g_CharsHandelGothicMd, g_FontHandelGothicMd, 1);
 
-	if (me >= 0 && me < MAX_PLAYERS) {
-		sprintf(text, "Points: %d", g_ZombiePoints[me]);
-		gdl = zombiesDrawCentred(gdl, text, centrex, y, 0xf0d02000 | alpha, g_CharsHandelGothicSm, g_FontHandelGothicSm, 1);
-		y += zombiesLineHeight(g_CharsHandelGothicSm, g_FontHandelGothicSm) + 4;
-	}
+			gdl = text0f153780(gdl);
 
-	if (g_ZombieNewBest) {
-		strcpy(text, g_ZombieBestRound > 0 ? "NEW BEST ON THIS ARENA!" : "FIRST RECORD ON THIS ARENA");
-		gdl = zombiesDrawCentred(gdl, text, centrex, y, 0x60ff6000 | alpha, g_CharsHandelGothicSm, g_FontHandelGothicSm, 1);
+#ifndef PLATFORM_N64
+			gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
+		}
+
+		if (t >= ZOMBIE_GO_PAN60 - ZOMBIE_GO_BLACK60) {
+			black = (f32)(t - (ZOMBIE_GO_PAN60 - ZOMBIE_GO_BLACK60)) / ZOMBIE_GO_BLACK60;
+		}
 	} else {
-		sprintf(text, "Best on this arena: Round %d", g_ZombieBestRound);
-		gdl = zombiesDrawCentred(gdl, text, centrex, y, 0xc0c0c000 | alpha, g_CharsHandelGothicSm, g_FontHandelGothicSm, 1);
-	}
+		f32 f = (f32)(t - ZOMBIE_GO_PAN60) / ZOMBIE_GO_BLACK60;
+		s32 boardtop = top + height * 22 / 100;
 
-	gdl = text0f153780(gdl);
+		f = f > 1 ? 1 : f;
+		black = 1 - f;
+
+		// the arena's darkened a little under the board, as Black Ops II's
+		gdl = text0f153628(gdl);
+		gdl = zombiesFillRect(gdl, left, top, left + width, top + height, 0x00000050);
+		gdl = text0f153780(gdl);
+
+		gdl = zombiesRenderScoreboard(gdl, f, boardtop);
 
 #ifndef PLATFORM_N64
-	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+		gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
 #endif
+
+		gdl = text0f153628(gdl);
+
+		y = top + height * 84 / 100;
+
+		if (g_ZombieNewBest) {
+			strcpy(text, g_ZombieBestRound > 0 ? "NEW BEST ON THIS ARENA!" : "FIRST RECORD ON THIS ARENA");
+			gdl = zombiesDrawCentred(gdl, text, centrex, y, 0x60ff6000 | (u32)(0xff * f), g_CharsHandelGothicSm, g_FontHandelGothicSm, 1);
+		} else if (g_ZombieBestRound > 0) {
+			sprintf(text, "Best on this arena: Round %d", g_ZombieBestRound);
+			gdl = zombiesDrawCentred(gdl, text, centrex, y, 0xc0c0c000 | (u32)(0xff * f), g_CharsHandelGothicSm, g_FontHandelGothicSm, 1);
+		}
+
+		gdl = text0f153780(gdl);
+
+#ifndef PLATFORM_N64
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
+	}
+
+	if (black > 0) {
+		gdl = text0f153628(gdl);
+		gdl = zombiesFillRect(gdl, left, top, left + width, top + height, (u32)(0xff * (black > 1 ? 1 : black)));
+		gdl = text0f153780(gdl);
+	}
 
 	return gdl;
+}
+
+/**
+ * The scoreboard, as Black Ops II's has it: a bar with the arena's name and
+ * the columns' names, then a row a player, best score first: their head,
+ * their name on a bar (gold for the player looking at it), and their score,
+ * kills, downs, revives and headshots over the columns' blue. Centred on the
+ * view, alpha from 0 to 1. Held up by the scoreboard button in play
+ * (zombiesScoreboardHeld()), and over the arena at the game's end
+ * (zombiesRenderGameOver()).
+ */
+#define ZOMBIE_SB_COLUMNS 5
+
+static void zombiesTextOf(char *out, s32 size, const char *in)
+{
+	s32 i;
+
+	for (i = 0; i < size - 1 && in[i] != '\0' && in[i] != '\n'; i++) {
+		out[i] = in[i];
+	}
+
+	out[i] = '\0';
+}
+
+static u32 zombiesAlphaOf(u32 colour, f32 alpha)
+{
+	return (colour & 0xffffff00) | (u32)((colour & 0xff) * alpha);
+}
+
+static Gfx *zombiesRenderScoreboard(Gfx *gdl, f32 alpha, s32 top)
+{
+	static const char *headings[ZOMBIE_SB_COLUMNS] = { "Score", "Kills", "Downs", "Revives", "Headshots" };
+	// each column's share of the columns' width, by its heading's and its
+	// number's width
+	static const u8 weights[ZOMBIE_SB_COLUMNS] = { 24, 18, 20, 23, 29 };
+	struct fontchar *chars = g_CharsHandelGothicSm;
+	struct font *font = g_FontHandelGothicSm;
+	struct fontchar *xschars = g_CharsHandelGothicXs;
+	struct font *xsfont = g_FontHandelGothicXs;
+	f32 s = viGetViewHeight() / 240.0f;
+	s32 width = viGetViewWidth() * 94 / 100;
+	s32 left = viGetViewLeft() + (viGetViewWidth() - width) / 2;
+	s32 right = left + width;
+	s32 line = zombiesLineHeight(chars, font);
+	s32 headh = line + 6 * s;
+	s32 rowh = line * 3 / 2 + 6 * s;
+	s32 colleft = right - width * 64 / 100;
+	s32 colx[ZOMBIE_SB_COLUMNS + 1];
+	s32 order[MAX_PLAYERS];
+	s32 count = 0;
+	s32 i;
+	s32 j;
+	s32 y;
+	char text[32];
+
+	if (alpha <= 0) {
+		return gdl;
+	}
+
+	if (alpha > 1) {
+		alpha = 1;
+	}
+
+	colx[0] = colleft;
+
+	for (i = 0; i < ZOMBIE_SB_COLUMNS; i++) {
+		colx[i + 1] = colx[i] + (right - colleft) * weights[i] / 114;
+	}
+
+	colx[ZOMBIE_SB_COLUMNS] = right;
+
+	// the players in play, best score first
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		if (!g_ZombieOutOfPlay[i]) {
+			order[count++] = i;
+		}
+	}
+
+	for (i = 1; i < count; i++) {
+		for (j = i; j > 0 && zombiesGetPoints(NULL, order[j]) > zombiesGetPoints(NULL, order[j - 1]); j--) {
+			s32 tmp = order[j];
+			order[j] = order[j - 1];
+			order[j - 1] = tmp;
+		}
+	}
+
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+
+	gdl = text0f153628(gdl);
+
+	// the heading bar: the arena's name, and each column's
+	gdl = zombiesFillRect(gdl, left, top, colleft - 2 * s, top + headh, zombiesAlphaOf(0x202428d0, alpha));
+	gdl = zombiesFillRect(gdl, colleft, top, right, top + headh, zombiesAlphaOf(0x202428d0, alpha));
+	gdl = zombiesFillRect(gdl, left, top + headh - s, right, top + headh, zombiesAlphaOf(0x8090a0c0, alpha));
+
+	zombiesTextOf(text, sizeof(text), mpMenuTextArenaName(NULL));
+	gdl = zombiesDrawTextBL(gdl, text, left + 6 * s, top + headh - 2 * s, zombiesAlphaOf(0xffffffff, alpha), chars, font);
+
+	for (i = 0; i < ZOMBIE_SB_COLUMNS; i++) {
+		s32 textwidth;
+		s32 textheight;
+
+		textMeasure(&textheight, &textwidth, (char *)headings[i], xschars, xsfont, 0);
+		gdl = zombiesDrawTextBL(gdl, (char *)headings[i], colx[i] + (colx[i + 1] - colx[i] - textwidth) / 2,
+				top + headh - 3 * s, zombiesAlphaOf(0xd0d8e0ff, alpha), xschars, xsfont);
+	}
+
+	y = top + headh + 3 * s;
+
+	for (i = 0; i < count; i++) {
+		s32 p = order[i];
+		bool me = p == g_Vars.currentplayernum;
+		s32 namebottom = y + rowh - (rowh - line) / 2 - s;
+		s32 nameleft = left + rowh + 4 * s;
+		s32 values[ZOMBIE_SB_COLUMNS];
+
+		values[0] = zombiesGetPoints(NULL, p);
+		values[1] = g_ZombieStats[p].kills;
+		values[2] = g_ZombieStats[p].downs;
+		values[3] = g_ZombieStats[p].revives;
+		values[4] = g_ZombieStats[p].headshots;
+
+		// the name's bar, gold edged for your own
+		if (me) {
+			gdl = zombiesFillRect(gdl, nameleft - s, y - s, colleft - 2 * s + s, y + rowh + s, zombiesAlphaOf(0xe0a020ff, alpha));
+			gdl = zombiesFillRect(gdl, nameleft, y, colleft - 2 * s, y + rowh, zombiesAlphaOf(0x60380ce0, alpha));
+		} else {
+			gdl = zombiesFillRect(gdl, nameleft, y, colleft - 2 * s, y + rowh, zombiesAlphaOf(0x181c20c0, alpha));
+		}
+
+		zombiesTextOf(text, sizeof(text), g_PlayerConfigsArray[g_Vars.playerstats[p].mpindex].base.name);
+		gdl = zombiesDrawTextBL(gdl, text, nameleft + 6 * s, namebottom,
+				zombiesAlphaOf(me ? 0xffe080ff : 0xffffffff, alpha), chars, font);
+
+		// the columns, in Black Ops' blue, a shade apart each
+		for (j = 0; j < ZOMBIE_SB_COLUMNS; j++) {
+			s32 textwidth;
+			s32 textheight;
+			s32 cl = colx[j];
+			s32 colw = colx[j + 1] - colx[j];
+
+			gdl = zombiesFillRect(gdl, cl + s, y, cl + colw - s, y + rowh,
+					zombiesAlphaOf((j & 1) ? 0x1c4c8cc0 : 0x245aa0c0, alpha));
+
+			sprintf(text, "%d", values[j]);
+			textMeasure(&textheight, &textwidth, text, chars, font, 0);
+			gdl = zombiesDrawTextBL(gdl, text, cl + (colw - textwidth) / 2, namebottom,
+					zombiesAlphaOf(0xffffffff, alpha), chars, font);
+		}
+
+		y += rowh + 3 * s;
+	}
+
+	gdl = text0f153780(gdl);
+
+	// each row's head, left of its name (zombiesRenderPortrait(), centred)
+#ifndef PLATFORM_N64
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+
+	if (alpha >= 1) {
+		y = top + headh + 3 * s;
+		g_ZombiePortraitCentred = true;
+
+		for (i = 0; i < count; i++) {
+			s32 p = order[i];
+
+			if (!g_Vars.players[p]->isdead) {
+				zombiesRenderPortrait(&gdl, p, left + rowh, y + rowh, rowh,
+						g_ZombieDowned[p] ? 0xa00000b0 : 0x00000080);
+			}
+
+			y += rowh + 3 * s;
+		}
+
+		g_ZombiePortraitCentred = false;
+	}
+#endif
+
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+
+	return gdl;
+}
+
+// The scoreboard button held, by the current player, in play: the scoreboard
+// over the view and nothing else of the HUD; the game goes on, alone or not
+static bool zombiesScoreboardHeld(void)
+{
+	static s32 always = -1; // --zombies-scoreboard: held all the time, for its pictures
+	s32 me = g_Vars.currentplayernum;
+
+	if (always < 0) {
+		always = sysArgGetInt("--zombies-scoreboard", 0) ? 1 : 0;
+	}
+
+	if (!zombiesIsActive() || me < 0 || me >= MAX_PLAYERS || g_ZombieGameOver
+			|| g_Menus[g_Vars.currentplayerstats->mpindex].curdialog) {
+		return false;
+	}
+
+	return always || joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), BUTTON_SCOREBOARD) != 0;
 }
 
 // Round number (red, bottom-left) and points (yellow, bottom-right, above the ammo).
@@ -16164,8 +20776,15 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 	s32 centrex;
 	char text[64];
 
-	if (g_ZombieGameOver) {
+	// over the arena, the board alone; falling, GAME OVER goes over the HUD
+	// at the end of this
+	if (zombiesGameOverHidesHud()) {
 		return zombiesRenderGameOver(gdl);
+	}
+
+	// the scoreboard button: the board, and none of the rest
+	if (zombiesScoreboardHeld()) {
+		return zombiesRenderScoreboard(gdl, 1, viGetViewTop() + viGetViewHeight() * 26 / 100);
 	}
 
 	gdl = zombiesRenderChalk(gdl);
@@ -16346,6 +20965,10 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
 #endif
 	}
+	if (g_ZombieGameOver) {
+		return zombiesRenderGameOver(gdl);
+	}
+
 	gdl = zombiesRenderReviveMarkers(gdl);
 	gdl = zombiesRenderDownedHud(gdl, centrex);
 	gdl = zombiesRenderMaxAmmoBanner(gdl);
@@ -16382,7 +21005,7 @@ Gfx *zombiesRenderHud(Gfx *gdl)
  *   (zombiesQuickMelee() from bondmove.c, zombiesTickKnife() here); its blow
  *   is the host's.
  */
-#define ZOMBIE_NET_VERSION 4 // 4 (protocol 36): Fire Sale's time, each player's grenades and throw; 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
+#define ZOMBIE_NET_VERSION 7 // 7 (protocol 40): each zombie's gibs (an arm, the head); 6 (protocol 39): the crawlers, and each barrier's zombie at work (its tear, pull, climb and reach); 5 (protocol 38): each player's scoreboard (kills, downs, revives, headshots); 4 (protocol 36): Fire Sale's time, each player's grenades and throw; 3 (protocol 35): nine perks (a two-byte mask), three more machines; 2 (34): the doors, the barriers' boards
 
 struct zombienetbuf {
 	u8 *w;
@@ -16865,6 +21488,44 @@ void zombiesNetCapture(u8 *out, s32 size)
 		znPut(&b, znClamp(g_ZombieThrow60[i], 0, 0xff), 1);
 	}
 
+	// (version 5) each player's scoreboard: kills, downs, revives, headshots
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		znPut(&b, g_ZombieStats[i].kills, 2);
+		znPut(&b, g_ZombieStats[i].downs, 2);
+		znPut(&b, g_ZombieStats[i].revives, 2);
+		znPut(&b, g_ZombieStats[i].headshots, 2);
+	}
+
+	// (version 6) the crawlers, a bit a zombie, and each barrier's zombie at
+	// work: which, its tear's clock, the board it pulls, its climb, its reach
+	for (i = 0; i < MAX_BOTS; i += 8) {
+		u32 bits = 0;
+
+		for (k = 0; k < 8 && i + k < MAX_BOTS; k++) {
+			bits |= g_ZombieCrawler[i + k] ? 1u << k : 0;
+		}
+
+		znPut(&b, bits, 1);
+	}
+
+	for (k = 0; k < ZOMBIE_BARRIER_MAX; k++) {
+		const struct zombiebarrier *bar = &g_ZombieBarriers[k];
+		const bool in = k < g_ZombieNumBarriers;
+
+		znPut(&b, (u8)(s8)(in ? znClamp(bar->zombie, -1, 0x7f) : -1), 1);
+		znPut(&b, in ? znClamp(bar->tear60, 0, 0xffff) : 0, 2);
+		znPut(&b, (u8)(s8)(in ? znClamp(bar->pulling, -1, 0x7f) : -1), 1);
+		znPut(&b, (u16)(s16)(in ? znClamp(bar->enter60, -1, 0x7fff) : -1), 2);
+		znPut(&b, (u16)(s16)(in ? znClamp(bar->reach60, -1, 0x7fff) : -1), 2);
+		znPut(&b, in && bar->reachleft ? 1 : 0, 1);
+	}
+
+	// (version 7) what has been shot off each zombie, a byte each (ZGIB_*)
+	for (i = 0; i < MAX_BOTS; i++) {
+		znPut(&b, g_ZombieGib[i], 1);
+	}
+
+
 	if (b.at > size) {
 		static bool warned = false;
 
@@ -16879,8 +21540,10 @@ void zombiesNetCapture(u8 *out, s32 size)
 static void zombiesNetPlay(const struct zombienetsound *s)
 {
 	const f32 pitch = s->pitch / 64.0f;
+	// one of Black Ops II's (zmsfx.c) travels as its slot: this machine's number for it
+	const s32 sound = zmSfxResolve(s->sound);
 
-	if (s->sound == 0 || (s->who >= 0 && (s->who != g_NetLocalSlot || s->mine))) {
+	if (sound == 0 || (s->who >= 0 && (s->who != g_NetLocalSlot || s->mine))) {
 		return;
 	}
 
@@ -16890,13 +21553,13 @@ static void zombiesNetPlay(const struct zombienetsound *s)
 		const s32 index = func0f18d0e8(s->chr);
 
 		if (index >= 0 && index < g_MpNumChrs && g_MpAllChrPtrs[index] && g_MpAllChrPtrs[index]->prop) {
-			psCreate(NULL, g_MpAllChrPtrs[index]->prop, s->sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
+			psCreate(NULL, g_MpAllChrPtrs[index]->prop, sound, -1, -1, 0, 0, PSTYPE_NONE, NULL, pitch, NULL, -1, -1, -1, -1);
 		}
 
 		return;
 	}
 
-	zombiesPlaySoundHere(s->sound, pitch);
+	zombiesPlaySoundHere(sound, pitch);
 }
 
 // The machines here against where the host's stand, once they are up
@@ -16934,6 +21597,7 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 	s16 machines[ZOMBIE_MACHINE_IDS][2];
 	const bool wasover = g_ZombieGameOver;
 	const s32 wasnext = g_ZombieNextWaveFrame;
+	const s32 wasround = g_ZombieRound;
 	u16 seq;
 	s32 v;
 	s32 i;
@@ -17169,9 +21833,66 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		}
 	}
 
+	// (version 5) the scoreboard's, the host's
+	for (i = 0; i < MAX_PLAYERS; i++) {
+		g_ZombieStats[i].kills = znGet(&b, 2);
+		g_ZombieStats[i].downs = znGet(&b, 2);
+		g_ZombieStats[i].revives = znGet(&b, 2);
+		g_ZombieStats[i].headshots = znGet(&b, 2);
+	}
+
+	// (version 6) the crawlers, and the barriers' zombies at work: drawn here
+	// as the host's are (zombiesCodBarrier())
+	for (i = 0; i < MAX_BOTS; i += 8) {
+		const u32 bits = znGet(&b, 1);
+		s32 k2;
+
+		for (k2 = 0; k2 < 8 && i + k2 < MAX_BOTS; k2++) {
+			g_ZombieCrawler[i + k2] = (bits >> k2) & 1;
+		}
+	}
+
+	for (i = 0; i < MAX_BOTS; i++) {
+		g_ZombieAtBarrier[i] = -1;
+	}
+
+	for (i = 0; i < ZOMBIE_BARRIER_MAX; i++) {
+		const s32 zombie = (s8)znGet(&b, 1);
+		const s32 tear60 = znGet(&b, 2);
+		const s32 pulling = (s8)znGet(&b, 1);
+		const s32 enter60 = (s16)znGet(&b, 2);
+		const s32 reach60 = (s16)znGet(&b, 2);
+		const bool reachleft = znGet(&b, 1) != 0;
+
+		if (i < g_ZombieNumBarriers) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[i];
+
+			bar->zombie = zombie >= 0 && zombie < MAX_BOTS ? zombie : -1;
+			bar->tear60 = tear60;
+			bar->pulling = pulling >= 0 && pulling < ZOMBIE_BARRIER_BOARDS ? pulling : -1;
+			bar->enter60 = enter60;
+			bar->reach60 = reach60;
+			bar->reachleft = reachleft;
+
+			if (bar->zombie >= 0) {
+				g_ZombieAtBarrier[bar->zombie] = i;
+			}
+		}
+	}
+
+	// (version 7) the gibs, the host's: this machine throws its own (zombiesCodGibFresh())
+	for (i = 0; i < MAX_BOTS; i++) {
+		g_ZombieGib[i] = znGet(&b, 1) & (ZGIB_LARM | ZGIB_RARM | ZGIB_HEAD);
+	}
+
 	// the round cleared: its sting, as the host's (zombiesTick())
 	if (wasnext < 0 && g_ZombieNextWaveFrame >= 0 && !final && g_ZombieRound > 0) {
 		zombiesRoundSting();
+	}
+
+	// and a round begun: its music
+	if (g_ZombieRound > wasround && !final) {
+		zombiesRoundStartSting();
 	}
 
 	// GAME OVER: this machine's own best for the arena, and its music
@@ -17187,7 +21908,7 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 				g_Vars.stagenum, g_ZombieRound, g_ZombieBestRound);
 
 		if (!final) {
-			musicStartSting(MUSIC_MISSION_FAILED, TICKS(240 * 20));
+			zombiesGameOverMusic();
 		}
 	}
 
@@ -17268,6 +21989,8 @@ void zombiesClientTick(void)
 	}
 
 	// the sides, as the host's (the radar's and the names' colours)
+	zombiesRayGunSounds();
+
 	if (g_Vars.lvframenum < 60) {
 		g_MpSetup.options |= MPOPTION_TEAMSENABLED;
 
@@ -17286,6 +22009,11 @@ void zombiesClientTick(void)
 
 	zombiesTintPerkMachines();
 	zombiesTintPap();
+
+	// each machine's own sounds (zombiesTick() has the host's)
+	zombiesTickHums();
+	zombiesTickLastStandSound();
+	zombiesTickDropHums();
 
 	// between the host's blocks its clocks run on here as they do there
 	if (g_ZombieMaxAmmoBanner60 >= 0) {
@@ -17458,6 +22186,24 @@ MenuItemHandlerResult menuhandlerZombiesStartRound(s32 operation, struct menuite
 	return 0;
 }
 
+// Perk Limit: 1 to 99 at once (there are nine perks, so nine and over is all of them)
+MenuItemHandlerResult menuhandlerZombiesPerkLimit(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (g_ZombieCfgPerkLimit > 1 ? g_ZombieCfgPerkLimit : 1) - 1;
+		break;
+	case MENUOP_SET:
+		g_ZombieCfgPerkLimit = data->slider.value + 1;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d", data->slider.value + 1);
+		break;
+	}
+
+	return 0;
+}
+
 // A checkbox for one of the settings: param3 says which
 #define ZOMBIECFG_POWERUPS   1
 #define ZOMBIECFG_ROUNDMUSIC 2
@@ -17585,6 +22331,14 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 		menuhandlerZombiesStartRound,
 	},
 	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Perk Limit\n",
+		98, // 1 to 99
+		menuhandlerZombiesPerkLimit,
+	},
+	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
 		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
@@ -17629,9 +22383,160 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 
 struct menudialogdef g_ZombiesOptionsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)"Zombies Options",
+	(uintptr_t)"Settings",
 	g_ZombiesOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
 	&g_ExtGameOptionsMenuDialog,
+};
+
+/**
+ * Start in a Zombies match (mpPushPauseDialog(), ingame.c), as Black Ops II's
+ * pause: ZOMBIES over Resume Game, Options and End Game, and nothing of the
+ * Combat Simulator's pause pages (its rankings, stats, inventory, control).
+ * The match stops while a player alone has a menu up (mpIsPaused()), and
+ * goes on under it with anyone else in. The scoreboard is the scoreboard
+ * button's, in play (zombiesScoreboardHeld()).
+ *
+ * Options is OPTIONS over Settings (the Perfect Menu's Settings pages) and
+ * Controls (Settings' Control page: the keys, the mouse, the controller).
+ */
+extern struct menudialogdef g_CiOptionsViaPauseMenuDialog;
+extern struct menudialogdef g_CiControlOptionsMenuDialog;
+void netClientLeave(void);
+
+// End Game, sure: a client leaves the room; anyone else ends it as Zombies'
+// own end does, the fall and the scoreboard (zombiesStartGameOver())
+static MenuItemHandlerResult menuhandlerZombiesEndGame(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		if (NET_CLIENT) {
+			netClientLeave();
+			return 0;
+		}
+
+		func0f0f8120();
+
+		if (!g_ZombieGameOver && g_ZombieRound > 0) {
+			// on their feet: GAME OVER, then the scoreboard, with no fall
+			g_ZombieGameOverQuit = true;
+			zombiesStartGameOver();
+		} else if (!g_ZombieGameOver) {
+			g_Vars.currentplayer->aborted = true;
+			mainEndStage();
+		}
+	}
+
+	return 0;
+}
+
+struct menuitem g_ZombiesEndGameMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LESSHEIGHT,
+		L_MPMENU_291, // "Are you sure?"
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE,
+		L_MPMENU_292, // "Cancel"
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE,
+		L_MPMENU_293, // "End Game"
+		0,
+		menuhandlerZombiesEndGame,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesEndGameMenuDialog = {
+	MENUDIALOGTYPE_DANGER,
+	L_MPMENU_287, // "End Game"
+	g_ZombiesEndGameMenuItems,
+	NULL,
+	0,
+	NULL,
+};
+
+struct menuitem g_ZombiesPauseOptionsMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Settings",
+		0,
+		(void *)&g_CiOptionsViaPauseMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Controls",
+		0,
+		(void *)&g_CiControlOptionsMenuDialog,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesPauseOptionsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"OPTIONS",
+	g_ZombiesPauseOptionsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+struct menuitem g_ZombiesPauseMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Resume Game",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Options",
+		0,
+		(void *)&g_ZombiesPauseOptionsMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"End Game",
+		0,
+		(void *)&g_ZombiesEndGameMenuDialog,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ZombiesPauseMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"ZOMBIES",
+	g_ZombiesPauseMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
 };

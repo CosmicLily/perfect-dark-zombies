@@ -71,6 +71,14 @@ static u32 g_BindContKey = 0;
 // goes to inputKeyBind() as before.
 static void (*g_BindKeySetter)(s32 vk) = NULL;
 
+// The Keyboard & Mouse page's rows and the Controller page's (below, with the
+// Key Bindings page they replace): item->param the page, item->param3 the row
+#define BINDPAGE_KBM 0
+#define BINDPAGE_PAD 1
+
+static MenuItemHandlerResult menuhandlerDeviceBind(s32 operation, struct menuitem *item, union handlerdata *data);
+static MenuItemHandlerResult menuhandlerDeviceBindsReset(s32 operation, struct menuitem *item, union handlerdata *data);
+
 static MenuItemHandlerResult menuhandlerSelectPlayer(s32 operation, struct menuitem *item, union handlerdata *data);
 
 struct menuitem g_ExtendedSelectPlayerMenuItems[] = {
@@ -144,19 +152,9 @@ static MenuItemHandlerResult menuhandlerSelectPlayer(s32 operation, struct menui
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerMouseEnabled(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	switch (operation) {
-	case MENUOP_GET:
-		return inputMouseIsEnabled();
-	case MENUOP_SET:
-		inputMouseEnable(data->checkbox.value);
-		break;
-	}
-
-	return 0;
-}
-
+// The mouse is always on and locks itself as it needs (input.c's MLOCK_AUTO):
+// the page has no Mouse Enabled or Mouse Lock Mode, and inputInit() puts back
+// a pd.ini's own
 static MenuItemHandlerResult menuhandlerMouseAimLock(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -165,30 +163,6 @@ static MenuItemHandlerResult menuhandlerMouseAimLock(s32 operation, struct menui
 	case MENUOP_SET:
 		g_PlayerExtCfg[g_ExtMenuPlayer].mouseaimmode = data->checkbox.value;
 		break;
-	}
-
-	return 0;
-}
-
-static MenuItemHandlerResult menuhandlerMouseLockMode(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	static const char *opts[] = {
-		"Always Off",
-		"Always On",
-		"Auto"
-	};
-
-	switch (operation) {
-	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = ARRAYCOUNT(opts);
-		break;
-	case MENUOP_GETOPTIONTEXT:
-		return (intptr_t)opts[data->dropdown.value];
-	case MENUOP_SET:
-		inputSetMouseLockMode(data->checkbox.value);
-		break;
-	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = inputGetMouseLockMode();
 	}
 
 	return 0;
@@ -331,25 +305,9 @@ struct menuitem g_ExtendedMouseMenuItems[] = {
 		MENUITEMTYPE_CHECKBOX,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Mouse Enabled",
-		0,
-		menuhandlerMouseEnabled,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Mouse Aim Lock",
 		0,
 		menuhandlerMouseAimLock,
-	},
-	{
-		MENUITEMTYPE_DROPDOWN,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Mouse Lock Mode",
-		0,
-		menuhandlerMouseLockMode,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -428,7 +386,7 @@ struct menuitem g_ExtendedMouseMenuItems[] = {
 
 struct menudialogdef g_ExtendedMouseMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)"Extended Mouse Options",
+	(uintptr_t)"Mouse",
 	g_ExtendedMouseMenuItems,
 	NULL,
 	MENUDIALOGFLAG_LITERAL_TEXT,
@@ -656,19 +614,6 @@ static MenuItemHandlerResult menuhandlerSwapSticks(s32 operation, struct menuite
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerCancelCButtons(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	switch (operation) {
-	case MENUOP_GET:
-		return inputControllerGetCancelCButtons(g_ExtMenuPlayer);
-	case MENUOP_SET:
-		inputControllerSetCancelCButtons(g_ExtMenuPlayer, data->checkbox.value);
-		break;
-	}
-
-	return 0;
-}
-
 static MenuItemHandlerResult menuhandlerController(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static char ctrlname[35];
@@ -739,14 +684,6 @@ struct menuitem g_ExtendedControllerMenuItems[] = {
 		menuhandlerSwapSticks,
 	},
 	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Opposite C-Buttons Cancel",
-		0,
-		menuhandlerCancelCButtons,
-	},
-	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
@@ -761,6 +698,37 @@ struct menuitem g_ExtendedControllerMenuItems[] = {
 		(uintptr_t)"Vibration",
 		10,
 		menuhandlerVibration,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	// the controller's buttons, as the Keyboard & Mouse page has the keys
+	// (g_PadBinds[], below, in this order)
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Fire\n", 0, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Secondary Mode\n", 1, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"ADS\n", 2, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Interact\n", 3, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Scoreboard\n", 4, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Switch Weapon\n", 5, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Change Stance\n", 6, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Jump\n", 7, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Reload\n", 8, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Sprint\n", 9, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Knife\n", 10, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Grenade\n", 11, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_PAD, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Pause\n", 12, menuhandlerDeviceBind },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		BINDPAGE_PAD,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Reset to Default\n",
+		0,
+		menuhandlerDeviceBindsReset,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,
@@ -1444,7 +1412,33 @@ static MenuItemHandlerResult menuhandlerModEnhanceTextures(s32 operation, struct
 	return 0;
 }
 
+// The Video page's (mainmenu.c's g_VideoOptionsMenuDialog): its own two rows,
+// then Extended Video's
 struct menuitem g_ExtendedVideoMenuItems[] = {
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		0,
+		L_OPTIONS_215, // "Screen Size"
+		0,
+		menuhandlerScreenSize,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		0,
+		L_OPTIONS_218, // "2-Player Screen Split"
+		0,
+		menuhandlerScreenSplit,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -1825,6 +1819,37 @@ static MenuItemHandlerResult menuhandlerHeadphoneRoom(s32 operation, struct menu
 	}
 
 	return 0;
+}
+
+/**
+ * The Audio page's own (mainmenu.c): Surround Output, Subwoofer and Headphone
+ * Room, there only while Sound Mode is Surround, which is all they act on.
+ */
+MenuItemHandlerResult optionsMenuHandlerSurroundOutput(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_CHECKHIDDEN) {
+		return g_SoundMode != SOUNDMODE_SURROUND;
+	}
+
+	return menuhandlerSurroundOutput(operation, item, data);
+}
+
+MenuItemHandlerResult optionsMenuHandlerSurroundLfe(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_CHECKHIDDEN) {
+		return g_SoundMode != SOUNDMODE_SURROUND;
+	}
+
+	return menuhandlerSurroundLfe(operation, item, data);
+}
+
+MenuItemHandlerResult optionsMenuHandlerHeadphoneRoom(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_CHECKHIDDEN) {
+		return g_SoundMode != SOUNDMODE_SURROUND;
+	}
+
+	return menuhandlerHeadphoneRoom(operation, item, data);
 }
 
 static const char *menutextSurroundNow(struct menuitem *item)
@@ -2431,104 +2456,212 @@ struct menubind {
 	const char *n64name;
 };
 
-static const struct menubind menuBinds[] = {
-	{ CK_ZTRIG,  LANG_N("Fire [ZT]\n"),         LANG_N("N64 Z Trigger\n") },
-	{ CK_LTRIG,  LANG_N("Fire Mode [LT]\n"),    LANG_N("N64 L Trigger\n")},
-	{ CK_RTRIG,  LANG_N("Aim Mode [RT]\n"),     LANG_N("N64 R Trigger\n") },
-	{ CK_A,      LANG_N("Use / Accept [A]\n"),  LANG_N("N64 A Button\n") },
-	{ CK_B,      LANG_N("Use / Cancel [B]\n"),  LANG_N("N64 B Button\n") },
-	{ CK_START,  LANG_N("Pause Menu [ST]\n"),   LANG_N("N64 Start\n") },
-	{ CK_DPAD_U, LANG_N("D-Pad Up [DU]\n"),     LANG_N("N64 D-Pad Up\n") },
-	{ CK_DPAD_R, LANG_N("D-Pad Right [DR]\n"),  LANG_N("N64 D-Pad Right\n") },
-	{ CK_DPAD_L, LANG_N("Prev Weapon [DL]\n"),  LANG_N("N64 D-Pad Left\n") },
-	{ CK_DPAD_D, LANG_N("Radial Menu [DD]\n"),  LANG_N("N64 D-Pad Down\n") },
-	{ CK_C_U,    LANG_N("Forward [CU]\n"),      LANG_N("N64 C-Up\n") },
-	{ CK_C_D,    LANG_N("Backward [CD]\n"),     LANG_N("N64 C-Down\n") },
-	{ CK_C_R,    LANG_N("Strafe Right [CR]\n"), LANG_N("N64 C-Right\n") },
-	{ CK_C_L,    LANG_N("Strafe Left [CL]\n"),  LANG_N("N64 C-Left\n") },
-	{ CK_X,      LANG_N("Reload [X]\n"),        LANG_N("N64 Ext X\n") },
-	{ CK_Y,      LANG_N("Next Weapon [Y]\n"),   LANG_N("N64 Ext Y\n") },
-	{ CK_8000,   LANG_N("Cycle Crouch [+]\n"),  LANG_N("N64 Ext 8000\n") },
-	{ CK_4000,   LANG_N("Half Crouch [+]\n"),   LANG_N("N64 Ext 4000\n") },
-	{ CK_2000,   LANG_N("Full Crouch [+]\n"),   LANG_N("N64 Ext 2000\n") },
-	{ CK_0040,   LANG_N("Fire Left [+]\n"),     LANG_N("N64 Ext 0040\n") },
-	{ CK_0080,   LANG_N("Fire Mode Left [+]\n"), LANG_N("N64 Ext 0080\n") },
-	// Third Person and Combat Roll are not here. They belong to this fork, so
-	// they are bound from Dab's Mod Options with the settings they drive.
-	{ CK_ACCEPT, LANG_N("UI Accept [+]\n"),     LANG_N("EXT UI Accept\n") },
-	{ CK_CANCEL, LANG_N("UI Cancel [+]\n"),     LANG_N("EXT UI Cancel\n") },
+/**
+ * The Keyboard & Mouse page (Settings > Control) and the Controller page's
+ * buttons, which together replace Extended Options' Key Bindings. A row is
+ * one of Zombies' own actions (input.c's zlayout[], slot >= 0), whose keys
+ * are the ones a Zombies match uses, or one of the normal ones (ck). Each
+ * page shows and takes only its own device's keys: the keyboard's and the
+ * mouse's here, the player's controller's buttons there.
+ */
+struct devbind {
+	s8 slot; // Zombies' layout slot, -1 for the normal bind ck
+	u8 ck;
 };
 
-static const char *menutextBind(struct menuitem *item);
-static MenuItemHandlerResult menuhandlerBind(s32 operation, struct menuitem *item, union handlerdata *data);
-static MenuItemHandlerResult menuhandlerResetBindsPC(s32 operation, struct menuitem *item, union handlerdata *data);
-static MenuItemHandlerResult menuhandlerResetBindsN64(s32 operation, struct menuitem *item, union handlerdata *data);
+static const struct devbind g_KbmBinds[] = {
+	{ 1,  0 },          // Fire
+	{ 6,  0 },          // Secondary Mode (the fire mode)
+	{ 2,  0 },          // ADS (the aim mode)
+	{ 5,  0 },          // Interact
+	{ 11, 0 },          // Scoreboard
+	{ -1, CK_DPAD_L },  // Prev Weapon
+	{ -1, CK_Y },       // Next Weapon
+	{ -1, CK_C_U },     // Forward
+	{ -1, CK_C_D },     // Backward
+	{ -1, CK_C_L },     // Move Left
+	{ -1, CK_C_R },     // Move Right
+	{ 3,  0 },          // Reload
+	{ 8,  0 },          // Crouch (the half crouch)
+	{ -1, CK_2000 },    // Prone (the full crouch)
+	{ 0,  0 },          // Jump
+	{ 7,  0 },          // Sprint
+	{ 4,  0 },          // Knife
+	{ 9,  0 },          // Grenade
+	{ 10, 0 },          // Pause
+};
 
-#define DEFINE_MENU_BIND() \
-	{ \
-		MENUITEMTYPE_DROPDOWN, \
-		0, \
-		0, \
-		(uintptr_t)menutextBind, \
-		0, \
-		menuhandlerBind, \
+static const struct devbind g_PadBinds[] = {
+	{ 1,  0 },          // Fire
+	{ 6,  0 },          // Secondary Mode
+	{ 2,  0 },          // ADS
+	{ 5,  0 },          // Interact
+	{ 11, 0 },          // Scoreboard
+	{ -1, CK_Y },       // Switch Weapon (Next Weapon)
+	{ 12, 0 },          // Change Stance (a tap crouches, a hold lies prone)
+	{ 0,  0 },          // Jump
+	{ 3,  0 },          // Reload
+	{ 7,  0 },          // Sprint
+	{ 4,  0 },          // Knife
+	{ 9,  0 },          // Grenade
+	{ 10, 0 },          // Pause
+};
+
+static const struct devbind *g_BindRow = NULL; // the row the Bind prompt is for
+static s32 g_BindPage = -1;                    // ... and its page, whose keys alone it takes; -1 any
+
+static bool bindKeyOnPage(u32 vk, s32 page)
+{
+	return vk && (page == BINDPAGE_PAD) == (vk >= VK_JOY_BEGIN);
+}
+
+static const struct devbind *devBindRow(struct menuitem *item)
+{
+	if (item->param == BINDPAGE_PAD) {
+		return item->param3 < ARRAYCOUNT(g_PadBinds) ? &g_PadBinds[item->param3] : NULL;
 	}
 
-struct menuitem g_ExtendedBindsMenuItems[] = {
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	DEFINE_MENU_BIND(),
-	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
-	},
+	return item->param3 < ARRAYCOUNT(g_KbmBinds) ? &g_KbmBinds[item->param3] : NULL;
+}
+
+static const u32 *devBindKeys(const struct devbind *row)
+{
+	return row->slot >= 0
+		? inputZombiesLayoutBinds(g_ExtMenuPlayer, row->slot)
+		: inputKeyGetBinds(g_ExtMenuPlayer, row->ck);
+}
+
+// The places of a row's keys this page shows, its device's, and then one
+// empty place to add another; the count
+static s32 devBindPlaces(const struct devbind *row, s32 page, s32 places[INPUT_MAX_BINDS])
+{
+	const u32 *keys = devBindKeys(row);
+	s32 empty = -1;
+	s32 n = 0;
+
+	if (keys == NULL) {
+		return 0;
+	}
+
+	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
+		if (bindKeyOnPage(keys[i], page)) {
+			places[n++] = i;
+		} else if (keys[i] == 0 && empty < 0) {
+			empty = i;
+		}
+	}
+
+	if (empty >= 0) {
+		places[n++] = empty;
+	}
+
+	return n;
+}
+
+static void devBindSetKey(s32 vk)
+{
+	if (g_BindRow == NULL) {
+		return;
+	}
+
+	if (g_BindRow->slot >= 0) {
+		inputZombiesLayoutBind(g_ExtMenuPlayer, g_BindRow->slot, g_BindIndex, vk);
+	} else {
+		inputKeyBind(g_ExtMenuPlayer, g_BindRow->ck, g_BindIndex, vk);
+	}
+}
+
+static MenuItemHandlerResult menuhandlerDeviceBind(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	const struct devbind *row = devBindRow(item);
+	const s32 page = item->param;
+	s32 places[INPUT_MAX_BINDS];
+	s32 n;
+
+	static char keyname[128];
+
+	if (row == NULL) {
+		return 0;
+	}
+
+	n = devBindPlaces(row, page, places);
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = n > 0 ? n : 1;
+		break;
+	case MENUOP_GETOPTIONTEXT: {
+		const u32 *keys = devBindKeys(row);
+
+		if (keys && data->dropdown.value < n && keys[places[data->dropdown.value]]) {
+			strncpy(keyname, inputGetKeyName(keys[places[data->dropdown.value]]), sizeof(keyname) - 1);
+			for (char *p = keyname; *p; ++p) {
+				if (*p == '_') *p = ' ';
+			}
+			return (intptr_t)keyname;
+		}
+		return (intptr_t)"NONE";
+	}
+	case MENUOP_SET:
+		g_ExtendedBindKeyMenuItems[0].param2 = item->param2;
+		g_ExtendedBindKeyMenuItems[2].param2 = page == BINDPAGE_PAD
+			? (uintptr_t)"Press a controller button...\n"
+			: (uintptr_t)"Press a key or mouse button...\n";
+		// a row whose every place holds the other device's keys: its last
+		g_BindIndex = data->dropdown.value < n ? places[data->dropdown.value] : INPUT_MAX_BINDS - 1;
+		g_BindRow = row;
+		g_BindPage = page;
+		g_BindKeySetter = devBindSetKey;
+		inputClearLastKey();
+		menuPushDialog(&g_ExtendedBindKeyMenuDialog);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = 0;
+	}
+
+	return 0;
+}
+
+// Reset to Default: the PC's keys and buttons, and Zombies' own as they come
+static MenuItemHandlerResult menuhandlerDeviceBindsReset(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		inputSetDefaultKeyBinds(g_ExtMenuPlayer, false);
+		inputZombiesLayoutReset(g_ExtMenuPlayer);
+	}
+
+	return 0;
+}
+
+struct menuitem g_KbmBindsMenuItems[] = {
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Fire\n", 0, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Secondary Mode\n", 1, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"ADS\n", 2, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Interact\n", 3, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Scoreboard\n", 4, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Prev Weapon\n", 5, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Next Weapon\n", 6, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Forward\n", 7, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Backward\n", 8, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Move Left\n", 9, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Move Right\n", 10, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Reload\n", 11, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Crouch\n", 12, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Prone\n", 13, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Jump\n", 14, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Sprint\n", 15, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Knife\n", 16, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Grenade\n", 17, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_DROPDOWN, BINDPAGE_KBM, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Pause\n", 18, menuhandlerDeviceBind },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{
 		MENUITEMTYPE_SELECTABLE,
-		0,
+		BINDPAGE_KBM,
 		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Reset to PC Defaults\n",
+		(uintptr_t)"Reset to Default\n",
 		0,
-		menuhandlerResetBindsPC,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Reset to N64 Defaults\n",
-		0,
-		menuhandlerResetBindsN64,
-	},
-	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
+		menuhandlerDeviceBindsReset,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -2539,6 +2672,15 @@ struct menuitem g_ExtendedBindsMenuItems[] = {
 		NULL,
 	},
 	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_KbmBindsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Keyboard & Mouse",
+	g_KbmBindsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_IGNOREBACK,
+	NULL,
 };
 
 /**
@@ -2556,6 +2698,9 @@ static s32 g_BindReleaseKey = 0;
 static void menuBindClose(void)
 {
 	g_BindReleaseKey = 0;
+	g_BindPage = -1;
+	g_BindRow = NULL;
+	g_ExtendedBindKeyMenuItems[2].param2 = (uintptr_t)"Press new key or button...\n";
 	menuPopDialog();
 }
 
@@ -2579,6 +2724,14 @@ static MenuItemHandlerResult menuhandlerDoBind(s32 operation, struct menuitem *i
 	}
 
 	const s32 key = inputGetLastKey();
+
+	// a key of the other device's, on a page of one (the Keyboard & Mouse
+	// page, the Controller page's buttons): waited past
+	if (key && key != VK_ESCAPE && key != VK_DELETE && g_BindPage >= 0 && !bindKeyOnPage(key, g_BindPage)) {
+		inputClearLastKey();
+		return 0;
+	}
+
 	if (key && key != VK_ESCAPE) {
 		const s32 vk = (key == VK_DELETE) ? 0 : key;
 		if (g_BindKeySetter) {
@@ -2599,87 +2752,6 @@ static MenuItemHandlerResult menuhandlerDoBind(s32 operation, struct menuitem *i
 	return 0;
 }
 
-static const char *menutextBind(struct menuitem *item)
-{
-	return g_PlayerExtCfg[g_ExtMenuPlayer].extcontrols ?
-		langTr(menuBinds[item - g_ExtendedBindsMenuItems].name) :
-		langTr(menuBinds[item - g_ExtendedBindsMenuItems].n64name);
-}
-
-static MenuItemHandlerResult menuhandlerBind(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	const s32 idx = item - g_ExtendedBindsMenuItems;
-	const u32 *binds;
-
-	static char keyname[128];
-
-	switch (operation) {
-	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = INPUT_MAX_BINDS;
-		break;
-	case MENUOP_GETOPTIONTEXT:
-		binds = inputKeyGetBinds(g_ExtMenuPlayer, menuBinds[idx].ck);
-		if (binds && binds[data->dropdown.value]) {
-			strncpy(keyname, inputGetKeyName(binds[data->dropdown.value]), sizeof(keyname) - 1);
-			for (char *p = keyname; *p; ++p) {
-				if (*p == '_') *p = ' ';
-			}
-			return (intptr_t)keyname;
-		}
-		return (intptr_t)"NONE";
-	case MENUOP_SET:
-		g_ExtendedBindKeyMenuItems[0].param2 = (uintptr_t)menuBinds[idx].name;
-		g_BindIndex = data->dropdown.value;
-		g_BindContKey = menuBinds[idx].ck;
-		g_BindKeySetter = NULL;
-		inputClearLastKey();
-		menuPushDialog(&g_ExtendedBindKeyMenuDialog);
-		break;
-	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = 0;
-	}
-
-	return 0;
-}
-
-static MenuItemHandlerResult menuhandlerResetBindsPC(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_SET) {
-		inputSetDefaultKeyBinds(g_ExtMenuPlayer, false);
-	}
-
-	return 0;
-}
-
-static MenuItemHandlerResult menuhandlerResetBindsN64(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_SET) {
-		inputSetDefaultKeyBinds(g_ExtMenuPlayer, true);
-	}
-
-	return 0;
-}
-
-// the player the page is for, in the selected language: a title handler
-// rather than a literal, which one key per player would need
-static char *menutitleExtendedBinds(void *dialog)
-{
-	static char title[80];
-
-	snprintf(title, sizeof(title), langTr("Player %d Bindings"), g_ExtMenuPlayer + 1);
-
-	return title;
-}
-
-struct menudialogdef g_ExtendedBindsMenuDialog = {
-	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)menutitleExtendedBinds,
-	g_ExtendedBindsMenuItems,
-	NULL,
-	MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_IGNOREBACK,
-	NULL,
-};
-
 static MenuItemHandlerResult menuhandlerOpenControllerMenu(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
@@ -2698,13 +2770,28 @@ static MenuItemHandlerResult menuhandlerOpenGameMenu(s32 operation, struct menui
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerOpenBindsMenu(s32 operation, struct menuitem *item, union handlerdata *data)
+/**
+ * Settings > Control's rows for what were Extended Options' pages (mainmenu.c):
+ * Keyboard & Mouse is the keyboard's player's, player 1's; Controller and
+ * Game ask which player first, as they did there.
+ */
+MenuItemHandlerResult optionsMenuHandlerKeyboardMouse(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
-		g_ExtNextDialog = &g_ExtendedBindsMenuDialog;
-		menuPushDialog(&g_ExtendedSelectPlayerMenuDialog);
+		g_ExtMenuPlayer = 0;
+		menuPushDialog(&g_KbmBindsMenuDialog);
 	}
 	return 0;
+}
+
+MenuItemHandlerResult optionsMenuHandlerController(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	return menuhandlerOpenControllerMenu(operation, item, data);
+}
+
+MenuItemHandlerResult optionsMenuHandlerGame(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	return menuhandlerOpenGameMenu(operation, item, data);
 }
 
 /**
@@ -8014,55 +8101,12 @@ struct menudialogdef g_ExtendedAdvancedMenuDialog = {
 	NULL,
 };
 
+/**
+ * Extended Options as Settings has it (mainmenu.c): Dab's Mod Options and the
+ * packs. Its Video is the Video page now, its surround rows the Audio
+ * page's, and Mouse, Controller, Game and the keys are on Control.
+ */
 struct menuitem g_ExtendedMenuItems[] = {
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Video\n",
-		0,
-		(void *)&g_ExtendedVideoMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Audio\n",
-		0,
-		(void *)&g_ExtendedAudioMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Mouse\n",
-		0,
-		(void *)&g_ExtendedMouseMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Controller\n",
-		0,
-		menuhandlerOpenControllerMenu,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Game\n",
-		0,
-		menuhandlerOpenGameMenu,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Key Bindings\n",
-		0,
-		menuhandlerOpenBindsMenu,
-	},
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -8078,22 +8122,6 @@ struct menuitem g_ExtendedMenuItems[] = {
 		(uintptr_t)"Texture & Model Packs\n",
 		0,
 		(void *)&g_ExtendedTexturePackMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Stage Loader\n",
-		0,
-		(void *)&g_ExtendedMapsMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Advanced\n",
-		0,
-		(void *)&g_ExtendedAdvancedMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

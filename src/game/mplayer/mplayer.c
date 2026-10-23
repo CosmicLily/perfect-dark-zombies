@@ -53,6 +53,7 @@
 #include "net/net.h"
 
 bool zombiesIsActive(void); // zombies.inc
+void zombiesCareerRecord(s32 playernum, s32 shots, s32 hits); // zombies.inc
 #endif
 
 // bss
@@ -2941,6 +2942,13 @@ void mpCalculateAwards(void)
 		mpplayer->medals = 0;
 
 		if (!g_CheatsActiveBank0 && !g_CheatsActiveBank1) {
+#ifndef PLATFORM_N64
+			// Zombies keeps its own under the agent's name (zombies.inc)
+			if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+				zombiesCareerRecord(i, metrics[i].numshots, sum);
+			}
+#endif
+
 			mpplayer->kills += metrics[i].numkills;
 			mpplayer->deaths += metrics[i].numdeaths;
 			mpplayer->gamesplayed++;

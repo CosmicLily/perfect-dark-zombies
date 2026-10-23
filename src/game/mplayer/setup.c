@@ -2308,7 +2308,65 @@ char *mpMenuTextUsernamePassword(struct menuitem *item)
 }
 #endif
 
+#ifndef PLATFORM_N64
+char *zombiesMenuTextCareer(struct menuitem *item); // zombies.inc
+#endif
+
 struct menuitem g_MpPlayerStatsMenuItems[] = {
+#ifndef PLATFORM_N64
+	// Zombies' four, over every match the agent has played: its kills, its
+	// downs, its accuracy and its headshots (zombies.inc keeps them under
+	// the agent's name, item->param which)
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Zombie Kills:\n",
+		(uintptr_t)&zombiesMenuTextCareer,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		1,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Downs:\n",
+		(uintptr_t)&zombiesMenuTextCareer,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		2,
+		0,
+		L_MPMENU_148, // "Accuracy:"
+		(uintptr_t)&zombiesMenuTextCareer,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		3,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Headshots:\n",
+		(uintptr_t)&zombiesMenuTextCareer,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_MPMENU_164, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+#endif
 	{
 		MENUITEMTYPE_LABEL,
 		0,
@@ -2557,8 +2615,15 @@ struct menudialogdef g_MpPlayerStatsMenuDialog = {
 	(uintptr_t)&mpMenuTitleStatsForPlayerName,
 	g_MpPlayerStatsMenuItems,
 	NULL,
+#ifdef PLATFORM_N64
 	MENUDIALOGFLAG_DISABLEITEMSCROLL | MENUDIALOGFLAG_SMOOTHSCROLLABLE,
 	&g_MpCompletedChallengesMenuDialog,
+#else
+	// Zombies' four rows fit as they are: the long page's smooth scroll
+	// squeezed them into one row's height. No challenges beside it.
+	0,
+	NULL,
+#endif
 };
 
 MenuItemHandlerResult mpCharacterHeadMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data, s32 mpheadnum, bool arg4)
@@ -6823,6 +6888,9 @@ struct menudialogdef g_MpStuffViaAdvChallengeMenuDialog = {
 };
 
 struct menuitem g_MpPlayerSetup234MenuItems[] = {
+#ifdef PLATFORM_N64
+	// The PC's name is the agent's (mainmenu.c), and its controls are
+	// Settings' (Control: Keyboard & Mouse, Controller), Zombies' among them
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6831,6 +6899,7 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		(uintptr_t)&mpGetCurrentPlayerName,
 		(void *)&g_MpPlayerNameMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6839,6 +6908,7 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		(void *)&g_MpCharacterMenuDialog,
 	},
+#ifdef PLATFORM_N64
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6847,6 +6917,7 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		(void *)&g_MpControlMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6855,17 +6926,6 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		(void *)&g_MpPlayerOptionsMenuDialog,
 	},
-#ifndef PLATFORM_N64
-	{
-		// Zombies' own controls, each player's (zombies.inc); its rules are the host's, on Game Setup
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Zombies Controls\n",
-		0,
-		(void *)&g_ZombiesControlsMenuDialog,
-	},
-#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6874,6 +6934,9 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		(void *)&g_MpPlayerStatsMenuDialog,
 	},
+#ifdef PLATFORM_N64
+	// The PC's player is the agent's (its name, mainmenu.c): no Load Player
+	// or Save Player of its own
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -6898,6 +6961,7 @@ struct menuitem g_MpPlayerSetup234MenuItems[] = {
 		0,
 		menuhandlerMpSavePlayer,
 	},
+#endif
 	{ MENUITEMTYPE_END },
 };
 
@@ -6907,7 +6971,13 @@ struct menudialogdef g_MpPlayerSetupViaAdvMenuDialog = {
 	g_MpPlayerSetup234MenuItems,
 	NULL,
 	MENUDIALOGFLAG_DROPOUTONCLOSE,
+#ifdef PLATFORM_N64
 	&g_MpStuffMenuDialog,
+#else
+	// Game Setup and this one only: no Stuff (its Start Game is on Game
+	// Setup) and no Combat Challenges beside them
+	NULL,
+#endif
 };
 
 struct menudialogdef g_MpPlayerSetupViaAdvChallengeMenuDialog = {
@@ -6977,8 +7047,14 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
+#ifdef PLATFORM_N64
 		0,
 		L_MPMENU_021, // "Options"
+#else
+		// the scenario's own page, which is Zombies' (zombies.inc)
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Settings\n",
+#endif
 		0,
 		menuhandlerMpOpenOptions,
 	},
@@ -6990,6 +7066,9 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		(uintptr_t)&mpMenuTextArenaName,
 		(void *)&g_MpArenaMenuDialog,
 	},
+#ifdef PLATFORM_N64
+	// Zombies has no use for these: its guns are its own, its rounds never
+	// end on a limit, and its simulants are the zombies
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -7022,6 +7101,8 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		0,
 		(void *)&g_MpSimulantsMenuDialog,
 	},
+	// nor Teams: Zombies puts the players on one and the zombies on the
+	// other itself (zombiesTick())
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -7030,6 +7111,7 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		0,
 		(void *)&g_MpTeamsMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -7038,6 +7120,17 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		0,
 		NULL,
 	},
+#ifndef PLATFORM_N64
+	{
+		// the Stuff page's, which is not beside this one here
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG,
+		L_MPMENU_036, // "Start Game"
+		0,
+		(void *)&g_MpReadyMenuDialog,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

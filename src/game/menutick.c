@@ -751,6 +751,9 @@ void menuTick(void)
 			} else if (g_MenuData.prevmenuroot == -6) {
 				// Match is ending
 				s32 playernum = 0;
+#ifndef PLATFORM_N64
+				bool zombiesnoendscreen = false;
+#endif
 
 				if (g_Vars.normmplayerisrunning) {
 #ifndef PLATFORM_N64
@@ -799,8 +802,18 @@ void menuTick(void)
 							// netplay: another machine's player has its end screen there
 #endif
 						} else {
-							mpPushEndscreenDialog(playernum, i);
-							isdialogopen = true;
+#ifndef PLATFORM_N64
+							// Zombies: its scoreboard over the arena was the
+							// end screen, and the agent is the player (no
+							// Save Player): none of the Combat Simulator's
+							if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES && g_Vars.normmplayerisrunning) {
+								zombiesnoendscreen = true;
+							} else
+#endif
+							{
+								mpPushEndscreenDialog(playernum, i);
+								isdialogopen = true;
+							}
 
 							// the save queue's value 4 means the game file
 							if (i < MAX_LOCAL_PLAYERS && g_PlayerConfigsArray[i].fileguid.fileid && g_PlayerConfigsArray[i].fileguid.deviceserial) {
@@ -811,6 +824,15 @@ void menuTick(void)
 						playernum++;
 					}
 				}
+
+#ifndef PLATFORM_N64
+				// straight on as the end screens' closing goes (below, the
+				// next tick): back to Game Setup
+				if (zombiesnoendscreen && !isdialogopen) {
+					g_MenuData.root = MENUROOT_MPENDSCREEN;
+					isdialogopen = true;
+				}
+#endif
 			} else if (g_MenuData.prevmenuroot == -7) {
 				menuStop();
 				g_FileState = FILESTATE_CHANGINGAGENT;
