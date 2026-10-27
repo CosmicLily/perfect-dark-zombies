@@ -718,3 +718,21 @@ ground: 6% read as inches, 60% as cm/2.54, measured against the map's floors).
 Read now in cm/2.54; the box takes 136,701 triangles; rooms 1000 across (1500
 put two over 32767 vertices), 18x18; and a `zmin` of -200 inches leaves out
 Tranzit's lab under Town (map, props and nodes alike).
+**Town's sky, fog, light, lava and holes (2026-10-27).** The maps line takes
+a `fog` row (`modloaderParseFog()`): Town's is a 22000 far plane, fog from
+992 of the z range, an amber sky 6b5a46 with clouds 8a7660. Light: a low sun
+from the west in the vertices, and `shadePass()` halves any face with a solid
+triangle over it (a ray up from its middle); **it must run before
+`writeBg()`**: first run after it, it changed nothing on screen. `"grass"` in
+the walk-through list made `afr_ground_grass_01` (7,753 ground triangles)
+holes to fall through; only decals, `_dec`, leaves, vines, fx and atmos are
+walk-through now. Lava: C2M leaves `rock_lava_molten` and `rock_lava_cooling`
+empty; codmaptex.py builds them from the dump's `rock_lava_cooling_c` crust
+and the `rock_lava_ember` red mask as orange heat, drawn unshaded. Its floors
+carry GEOFLAG_0400 (nothing of Perfect Dark's sets it), and
+`zombiesTickLava()` burns a player on one (`floorflags`, not `isfalling`; the
+prop's y is no foot height) a fifth of their health every half second, the
+blow's way so Juggernog counts. Exposed lava is round Pack-a-Punch; the big
+lava triangles west of Town lie under the cooled crust and are never the
+floor. `--zombies-test-at X,Z` (one argument, its own word) puts player 1
+there at frame 150.

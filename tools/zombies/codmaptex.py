@@ -145,6 +145,40 @@ def props(models, box, mapdir, moddir):
     print("%d props' materials added, %d in all" % (added, len(lines)))
 
 
+# Tranzit's lava: the cooled crust's picture with the ember mask's red glow
+# turned to an orange-yellow heat over it, how much of each by the material
+LAVA = {"rock_lava_molten": (0.3, 1.3), "rock_lava_cooling": (0.8, 0.45)}
+
+
+def find_dds(dump, zones, name):
+    for z in zones:
+        p = os.path.join(dump, z, "images", name + ".dds")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def lava(dump, zones, mix):
+    crust_p = find_dds(dump, zones, "~-grock_lava_cooling_c") or find_dds(dump, zones, "rock_lava_cooling_c")
+    ember_p = find_dds(dump, zones, "rock_lava_ember")
+    if not crust_p or not ember_p:
+        return None
+    w, h, crust = image_read(crust_p)
+    ew, eh, ember = image_read(ember_p)
+    out = bytearray(w * h * 4)
+    crustk, glowk = mix
+    for y in range(h):
+        for x in range(w):
+            i = (y * w + x) * 4
+            e = ember[((y % eh) * ew + (x % ew)) * 4] / 255.0
+            g = (e ** 0.8) * glowk
+            out[i] = min(255, int(crust[i] * crustk + 255 * g))
+            out[i + 1] = min(255, int(crust[i + 1] * crustk + 130 * g * g))
+            out[i + 2] = min(255, int(crust[i + 2] * crustk + 25 * g * g))
+            out[i + 3] = 255
+    return w, h, out
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--props":
         if len(sys.argv) < 9:
@@ -170,6 +204,19 @@ def main():
 
     for name in sorted(mats):
         colour = mats[name].get("Color Map")
+
+        # C2M leaves Tranzit's two lava materials empty: their pictures are
+        # put together from the dump's (lava())
+        if not colour and name in LAVA:
+            got = lava(dump, zones, LAVA[name])
+            if got:
+                w, h, rgba = got
+                png_write(os.path.join(outdir, "%04x.png" % num), w, h, rgba)
+                open(os.path.join(outdir, "%04x.bin" % num), "wb").write(placeholder(mean(rgba)))
+                lines.append("%s %04x" % (name, num))
+                print("%04x %s %dx%d (lava)" % (num, name, w, h), flush=True)
+                num += 1
+            continue
 
         if not colour:
             continue

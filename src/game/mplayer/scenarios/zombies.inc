@@ -17317,6 +17317,47 @@ static void zombiesReachHit(struct chrdata *zchr, s32 playernum)
 	g_ZombieReachThrough = false;
 }
 
+/**
+ * Lava, as Tranzit's burns: a player standing on it (a floor codmap.c flags
+ * GEOFLAG_0400, under rock_lava_molten) is burnt for ZOMBIE_LAVA_BURN of their
+ * health every ZOMBIE_LAVA_EVERY60, from the moment they step on, a zombie's
+ * blow's way (so Juggernog holds out longer, and going down is going down).
+ * The screen's own hurt flash shows it. Zombies walk it unburnt for now:
+ * Town's streets cross its cracks.
+ */
+#define ZOMBIE_LAVA_BURN    0.2f
+#define ZOMBIE_LAVA_EVERY60 30
+#define ZOMBIE_GEOFLAG_LAVA 0x0400
+
+static s32 g_ZombieLava60[MAX_PLAYERS]; // till the next burn, 0 off the lava
+
+static void zombiesTickLava(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+	struct gset gset = { WEAPON_UNARMED, 0, 0, FUNC_PRIMARY };
+	struct coord dir = { 0, 1, 0 };
+
+	if (!player || !player->prop || !player->prop->chr || !zombiesPlayerIsUp(playernum)
+			|| !(player->floorflags & ZOMBIE_GEOFLAG_LAVA)
+			|| player->isfalling) {
+		g_ZombieLava60[playernum] = 0;
+		return;
+	}
+
+	g_ZombieLava60[playernum] -= g_Vars.lvupdate60;
+
+	if (g_ZombieLava60[playernum] > 0) {
+		return;
+	}
+
+	g_ZombieLava60[playernum] = ZOMBIE_LAVA_EVERY60;
+	g_ZombieReachThrough = true;
+	g_ZombieBlowDamage = ZOMBIE_LAVA_BURN * 8.0f;
+	chrDamageByImpact(player->prop->chr, ZOMBIE_LAVA_BURN * 8.0f, &dir, &gset, NULL, HITPART_GENERAL);
+	g_ZombieBlowDamage = -1;
+	g_ZombieReachThrough = false;
+}
+
 static void zombiesTickBarriers(void)
 {
 	s32 i;
@@ -19823,6 +19864,27 @@ void zombiesTick(void)
 			}
 		}
 	}
+	// --zombies-test-at X Z: player 1 put at X, Z (the floor there) at level
+	// frame 150, and not to be killed by zombies
+	if (sysArgCheck("--zombies-test-at") && !NET_CLIENT && g_Vars.players[0] && g_Vars.players[0]->prop
+			&& g_Vars.lvframenum == 150) {
+		struct coord at;
+		RoomNum rooms[21];
+		RoomNum above[21];
+		const char *s = sysArgGetString("--zombies-test-at");
+
+		at.x = at.z = 0;
+
+		if (s && sscanf(s, "%f,%f", &at.x, &at.z) == 2) {
+			at.y = g_Vars.players[0]->prop->pos.y + 300;
+			func0f065e74(&g_Vars.players[0]->prop->pos, g_Vars.players[0]->prop->rooms, &at, rooms);
+			bgFindRoomsByPos(&at, rooms, above, 20, NULL);
+			at.y = cdFindGroundAtCyl(&at, 20, rooms, NULL, NULL) + 1;
+			chrMoveToPos(g_Vars.players[0]->prop->chr, &at, rooms, 0, true);
+			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-at: player at %.0f %.0f %.0f", at.x, at.y, at.z);
+		}
+	}
+
 	// --zombies-test-qrleave F: Quick Revive's three solo bottles counted as
 	// bought at level frame F, so its machine goes (zombiesTickQrMachine());
 	// watch it with --zombies-test-perk 1
@@ -20124,6 +20186,7 @@ void zombiesTick(void)
 		// online, a buy's and a drink's sounds are the player's own
 		g_ZombieSoundFor = i;
 		zombiesTickRegen(i);
+		zombiesTickLava(i);
 		zombiesTickJuggernog(i);
 		zombiesTickPerkMachines(i);
 		zombiesTickPap(i);

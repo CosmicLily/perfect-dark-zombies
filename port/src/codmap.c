@@ -41,6 +41,7 @@
 #define CODMAP_FLOOR_NY 0.6f  // a triangle facing up this much is a floor
 
 #define FLOOR_FLAGS (0x0001 | 0x0002 | 0x0008 | 0x0010)
+#define GEOFLAG_LAVA 0x0400 // GEOFLAG_0400, which nothing of Perfect Dark's sets
 #define WALL_FLAGS  (0x0004 | 0x0008 | 0x0010)
 
 struct codmaprow {
@@ -50,10 +51,14 @@ struct codmaprow {
 	f32 box[4];         // x0 x1 y0 y1, the map's inches
 	f32 zmin;           // and nothing under this (Town: Tranzit's lab under it)
 	const char *spawns; // the targetname of its player spawns
+	const char *fog;    // the maps block's fog row (modloader.c's modloaderParseFog())
 };
 
 static const struct codmaprow g_CodMapRows[] = {
-	{ "bo2town", "Town (BO2)", "zm_transit", { -2168, 4785, -4578, 2416 }, -200, "town_standard_player_spawns" },
+	{ "bo2town", "Town (BO2)", "zm_transit", { -2168, 4785, -4578, 2416 }, -200, "town_standard_player_spawns",
+		// Tranzit's dusk: a brown haze closing in past a street or two, under a
+		// dull amber sky with a high, dirty cloud layer
+		"15 22000 0 0 0 992 1000 6b5a46 1 6000 0 8a7660 0 -5000 0 000000 0" },
 };
 
 /* ------------------------------------------------------------------------ */
@@ -131,6 +136,7 @@ struct cmat {
 	s32 texnum;    // the mod's texture for it (tools/zombies/codmaptex.py), -1 none
 	u8 solid;
 	u8 nodraw;     // neither drawn nor solid
+	u8 glow;       // lit by itself, whatever light it is in (molten lava)
 };
 
 // codmaptex.py's textures/codmap.txt: a material's name and its texture number
@@ -184,7 +190,10 @@ static u32 matHash(const char *s)
 // textures come
 static s32 matFind(const char *name)
 {
-	static const char *const nosolid[] = { "decal", "foliage", "fol_", "leaf", "leaves", "grass", "vine", "fx_", "sky" };
+	// Not walked on or into: decals, leaves and effects. Ground grass
+	// (afr_ground_grass_01) is ground: with "grass" here Town had holes to fall
+	// through
+	static const char *const nosolid[] = { "decal", "_dec", "foliage", "fol_", "leaf", "leaves", "vine", "fx_", "atmos_", "sky" };
 	// Black Ops II's tools' own surfaces, which its renderer never draws: a
 	// shadow caster's caulk, written "SHADOW PRIMARY" in yellow
 	static const char *const nodraw[] = { "caulk", "shadow", "clip" };
@@ -225,6 +234,7 @@ static s32 matFind(const char *name)
 	}
 
 	g_Mats[g_NumMats].nodraw = 0;
+	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
 		if (strstr(name, nodraw[i])) {
@@ -275,12 +285,18 @@ static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], const f32 *uv
 		t->n[k] /= len;
 	}
 
-	// a light from above and a little to the side, either face alike; a
-	// textured face is its picture so lit, an untextured one its flat colour
-	lit = 0.55f + 0.45f * fabsf(t->n[1] * 0.85f + t->n[0] * 0.3f + t->n[2] * 0.2f);
+	// Tranzit's low, hazy sun from the west and above, either face alike, and
+	// the sky's own light on everything; a textured face is its picture so
+	// lit, an untextured one its flat colour. Under a roof it is darker still
+	// (shadePass())
+	lit = 0.5f + 0.5f * fabsf(t->n[1] * 0.72f - t->n[0] * 0.6f + t->n[2] * 0.35f);
 
 	if (g_Mats[mat].texnum >= 0) {
 		rgb = 0xffffff;
+	}
+
+	if (g_Mats[mat].glow) {
+		lit = 1;
 	}
 	t->colour = (u32)(((rgb >> 16) & 0xff) * lit) << 24 | (u32)(((rgb >> 8) & 0xff) * lit) << 16
 		| (u32)((rgb & 0xff) * lit) << 8 | 0xff;
@@ -1192,6 +1208,11 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 
 		flags = tri->n[1] >= CODMAP_FLOOR_NY ? FLOOR_FLAGS : WALL_FLAGS;
 
+		// lava burns whoever stands on it (zombies.inc's zombiesTickLava())
+		if (flags == FLOOR_FLAGS && strstr(g_Mats[tri->mat].name, "lava_molten")) {
+			flags |= GEOFLAG_LAVA;
+		}
+
 		for (c = 0; c < 3; c++) {
 			lo[c] = hi[c] = tri->p[0][c];
 
@@ -1245,7 +1266,7 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 					}
 				}
 
-				if (flags == FLOOR_FLAGS) {
+				if (flags & 0x0001) {
 					floors++;
 				} else {
 					walls++;
@@ -1466,6 +1487,52 @@ static s32 segmentBlocked(const f32 a[3], const f32 b[3])
 	return 0;
 }
 
+/**
+ * The light under a roof: a face with anything solid over it (a ceiling, a
+ * floor above, an awning, a tree) is drawn at CODMAP_SHADE of its light, as
+ * Black Ops II's baked lighting leaves its interiors dim against the street.
+ * Each triangle asks once, a ray straight up from just over its middle.
+ */
+#define CODMAP_SHADE 0.5f
+
+static void shadePass(void)
+{
+	s32 t, shaded = 0;
+
+	if (!g_BlockCells) {
+		blockGridBuild();
+	}
+
+	for (t = 0; t < g_NumTris; t++) {
+		struct ctri *tri = &g_Tris[t];
+		f32 from[3], to[3];
+		u32 c = tri->colour;
+		s32 k;
+
+		if (g_Mats[tri->mat].glow) {
+			continue;
+		}
+
+		for (k = 0; k < 3; k++) {
+			from[k] = (tri->p[0][k] + tri->p[1][k] + tri->p[2][k]) / 3;
+		}
+
+		from[1] += 15;
+		to[0] = from[0];
+		to[1] = from[1] + 2000;
+		to[2] = from[2];
+
+		if (segmentBlocked(from, to)) {
+			tri->colour = (u32)(((c >> 24) & 0xff) * CODMAP_SHADE) << 24
+				| (u32)(((c >> 16) & 0xff) * CODMAP_SHADE) << 16
+				| (u32)(((c >> 8) & 0xff) * CODMAP_SHADE) << 8 | (c & 0xff);
+			shaded++;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "codmap: %d of %d faces under a roof", shaded, g_NumTris);
+}
+
 static void nodeLink(s32 a, s32 b)
 {
 	struct cnode *n = &g_Nodes[a];
@@ -1533,7 +1600,10 @@ static void readNodes(const char *path, const struct codmaprow *row, const f32 *
 	}
 
 	fclose(f);
-	blockGridBuild();
+
+	if (!g_BlockCells) {
+		blockGridBuild();
+	}
 
 	for (i = 0; i < g_NumNodes; i++) {
 		for (j = i + 1; j < g_NumNodes; j++) {
@@ -2135,6 +2205,8 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 		}
 	}
 
+	// the light under roofs, before the rooms are written with it
+	shadePass();
 	bg = writeBg(rooms, numrooms, portals, numportals);
 	tiles = writeTiles(rooms, numrooms, &floors, &walls);
 	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
@@ -2161,8 +2233,8 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 	{
 		char line[512];
 
-		snprintf(line, sizeof(line), "%s  map \"%s\" bg \"bgdata/bg_%s.seg\" tiles \"bgdata/bg_%s_tilesZ\" pads \"bgdata/bg_%s_padsZ\" mpsetup \"Ump_setup%sZ\"",
-				maps->n ? "\n" : "", row->name, row->key, row->key, row->key, row->key);
+		snprintf(line, sizeof(line), "%s  map \"%s\" bg \"bgdata/bg_%s.seg\" tiles \"bgdata/bg_%s_tilesZ\" pads \"bgdata/bg_%s_padsZ\" mpsetup \"Ump_setup%sZ\" fog \"%s\"",
+				maps->n ? "\n" : "", row->name, row->key, row->key, row->key, row->key, row->fog);
 		cbPut(maps, line, strlen(line));
 	}
 
