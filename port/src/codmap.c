@@ -22,6 +22,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
@@ -1563,8 +1564,6 @@ static void readNodes(const char *path, const struct codmaprow *row, const f32 *
 		}
 	}
 
-	blockGridFree();
-
 	// the groups: each room's nodes that link to each other
 	g_NumGroups = 0;
 
@@ -1605,6 +1604,180 @@ static void readNodes(const char *path, const struct codmaprow *row, const f32 *
 	sysLogPrintf(LOG_NOTE, "codmap: %d path nodes, %d links, %d groups", g_NumNodes, links, g_NumGroups);
 }
 
+/**
+ * Town's own Zombies layout, out of the entities, for zombies.inc to place
+ * as Black Ops II does in place of choosing spots itself: the Survival set's
+ * perk machines (script_string zstandard_*) and Pack-a-Punch, the Mystery
+ * Box, and the boarded windows. Each spot is a pad of its own after the path
+ * nodes', and zombies/<arena>.txt in the mod names them:
+ *
+ *   perk <id> <pad> <x> <z>   a machine at the pad, its back that way (zombies.inc's ZOMBIEPERK_*)
+ *   pap <pad> <x> <z>         Pack-a-Punch, the same
+ *   box <pad> <x> <z>         the Mystery Box
+ *   barrier <pad> <x> <z> <d> a window d from the pad, that way (out of the building)
+ *
+ * A window's inside is the side with a roof over it.
+ */
+#define CODMAP_MAX_EXTRA 64
+#define CODMAP_WINDOW_IN 100.0f // a window's pad, this far inside it
+
+struct cextra {
+	f32 pos[3];
+	f32 yaw;
+};
+
+static struct cextra g_ExtraPads[CODMAP_MAX_EXTRA];
+static s32 g_NumExtraPads;
+static cbuf g_Layout;
+
+struct cent {
+	char classname[64], origin[128], angles[128], targetname[96], noteworthy[96], string[160], model[96];
+};
+
+static s32 extraPad(const f32 pos[3], f32 yaw)
+{
+	if (g_NumExtraPads >= CODMAP_MAX_EXTRA) {
+		return -1;
+	}
+
+	memcpy(g_ExtraPads[g_NumExtraPads].pos, pos, sizeof(f32) * 3);
+	g_ExtraPads[g_NumExtraPads].pos[1] = floorUnder(g_ExtraPads[g_NumExtraPads].pos) + 1;
+	g_ExtraPads[g_NumExtraPads].yaw = yaw;
+
+	return g_NumExtraPads++;
+}
+
+static void layoutLine(const char *fmt, ...)
+{
+	char line[256];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(line, sizeof(line), fmt, ap);
+	va_end(ap);
+	cbPut(&g_Layout, line, strlen(line));
+}
+
+// Whether something solid stands over a point (a roof)
+static s32 roofed(const f32 p[3])
+{
+	const f32 up[3] = { p[0], p[1] + 1200, p[2] };
+	const f32 from[3] = { p[0], p[1] + 120, p[2] };
+
+	return segmentBlocked(from, up);
+}
+
+static void layoutEnt(const struct cent *e, const struct codmaprow *row, const f32 *centre, s32 padbase)
+{
+	static const struct { const char *specialty; s32 id; } perks[] = {
+		{ "specialty_armorvest", 0 }, { "specialty_quickrevive", 1 }, { "specialty_fastreload", 2 },
+		{ "specialty_rof", 3 }, { "specialty_longersprint", 4 },
+	};
+	f32 cod[3] = { 0, 0, 0 }, ang[3] = { 0, 0, 0 }, pos[3], fwd[2];
+	s32 i, pad;
+
+	sscanf(e->origin, "%f %f %f", &cod[0], &cod[1], &cod[2]);
+	sscanf(e->angles, "%f %f %f", &ang[0], &ang[1], &ang[2]);
+
+	if (cod[0] < row->box[0] || cod[0] > row->box[1] || cod[1] < row->box[2] || cod[1] > row->box[3]) {
+		return;
+	}
+
+	codToOurs(cod, centre, pos);
+	// the way it faces, ours: Call of Duty's yaw from +x to +y, our z its -y
+	fwd[0] = cosf(ang[1] * (f32)M_PI / 180.0f);
+	fwd[1] = -sinf(ang[1] * (f32)M_PI / 180.0f);
+
+	if (strcmp(e->targetname, "zm_perk_machine") == 0 && strstr(e->string, "zstandard")) {
+		if (strcmp(e->noteworthy, "specialty_weapupgrade") == 0) {
+			if ((pad = extraPad(pos, 0)) >= 0) {
+				layoutLine("pap %d %.4f %.4f\n", padbase + pad, -fwd[0], -fwd[1]);
+			}
+
+			return;
+		}
+
+		for (i = 0; i < (s32)ARRAYCOUNT(perks); i++) {
+			if (strcmp(e->noteworthy, perks[i].specialty) == 0 && (pad = extraPad(pos, 0)) >= 0) {
+				layoutLine("perk %d %d %.4f %.4f\n", perks[i].id, padbase + pad, -fwd[0], -fwd[1]);
+			}
+		}
+	} else if (strcmp(e->classname, "zbarrier_zmcore_MagicBox") == 0 && strcmp(e->noteworthy, "town_chest_zbarrier") == 0) {
+		if ((pad = extraPad(pos, 0)) >= 0) {
+			layoutLine("box %d %.4f %.4f\n", padbase + pad, -fwd[0], -fwd[1]);
+		}
+	} else if (strncmp(e->classname, "zbarrier_zmcore_BasicWoodBarrier", 32) == 0 && strncmp(e->string, "labs_", 5) != 0) {
+		// in from the window: the side under a roof
+		f32 in[3], out[3];
+		f32 dir[2];
+
+		for (i = 0; i < 3; i++) {
+			in[i] = out[i] = pos[i];
+		}
+
+		in[0] += fwd[0] * CODMAP_WINDOW_IN;
+		in[2] += fwd[1] * CODMAP_WINDOW_IN;
+		out[0] -= fwd[0] * CODMAP_WINDOW_IN;
+		out[2] -= fwd[1] * CODMAP_WINDOW_IN;
+		in[1] = floorUnder(in);
+		out[1] = floorUnder(out);
+
+		if (!roofed(in) && roofed(out)) {
+			f32 t[3];
+
+			memcpy(t, in, sizeof(t));
+			memcpy(in, out, sizeof(t));
+			memcpy(out, t, sizeof(t));
+			dir[0] = fwd[0];
+			dir[1] = fwd[1];
+		} else {
+			dir[0] = -fwd[0];
+			dir[1] = -fwd[1];
+		}
+
+		if ((pad = extraPad(in, 0)) >= 0) {
+			layoutLine("barrier %d %.4f %.4f %.1f\n", padbase + pad, dir[0], dir[1], CODMAP_WINDOW_IN);
+		}
+	}
+}
+
+static void readLayout(const char *path, const struct codmaprow *row, const f32 *centre, s32 padbase)
+{
+	FILE *f = fopen(path, "rb");
+	char line[512];
+	struct cent e;
+
+	g_NumExtraPads = 0;
+	g_Layout.n = 0;
+
+	if (!f) {
+		return;
+	}
+
+	memset(&e, 0, sizeof(e));
+
+	while (fgets(line, sizeof(line), f)) {
+		char key[64], value[256];
+
+		if (line[0] == '{') {
+			memset(&e, 0, sizeof(e));
+		} else if (line[0] == '}') {
+			layoutEnt(&e, row, centre, padbase);
+		} else if (sscanf(line, " \"%63[^\"]\" \"%255[^\"]\"", key, value) == 2) {
+			if (strcmp(key, "classname") == 0) snprintf(e.classname, sizeof(e.classname), "%s", value);
+			else if (strcmp(key, "origin") == 0) snprintf(e.origin, sizeof(e.origin), "%s", value);
+			else if (strcmp(key, "angles") == 0) snprintf(e.angles, sizeof(e.angles), "%s", value);
+			else if (strcmp(key, "targetname") == 0) snprintf(e.targetname, sizeof(e.targetname), "%s", value);
+			else if (strcmp(key, "script_noteworthy") == 0) snprintf(e.noteworthy, sizeof(e.noteworthy), "%s", value);
+			else if (strcmp(key, "script_string") == 0) snprintf(e.string, sizeof(e.string), "%s", value);
+			else if (strcmp(key, "model") == 0) snprintf(e.model, sizeof(e.model), "%s", value);
+		}
+	}
+
+	fclose(f);
+	sysLogPrintf(LOG_NOTE, "codmap: Town's layout: %d spots", g_NumExtraPads);
+}
+
 static void cbS32List(cbuf *b, const s32 *v, s32 n)
 {
 	s32 i;
@@ -1621,7 +1794,7 @@ static void cbS32List(cbuf *b, const s32 *v, s32 n)
 static cbuf writePads(const struct codspawn *spawns, s32 numspawns)
 {
 	cbuf head = {0}, body = {0}, out = {0}, wprec = {0}, nbblob = {0}, rec = {0}, wlists = {0}, nlists = {0}, z;
-	const s32 numpads = numspawns + g_NumNodes;
+	const s32 numpads = numspawns + g_NumNodes + g_NumExtraPads;
 	const size_t start = (0x14 + 2 * numpads + 3) & ~3u;
 	size_t wpstart, wgstart, coverstart;
 	u32 npos, wpos;
@@ -1636,8 +1809,11 @@ static cbuf writePads(const struct codspawn *spawns, s32 numspawns)
 			memcpy(pos, spawns[i].pos, sizeof(pos));
 			pos[1] = floorUnder(pos) + 1;
 			yaw = spawns[i].yaw;
-		} else {
+		} else if (i < numspawns + g_NumNodes) {
 			memcpy(pos, g_Nodes[i - numspawns].pos, sizeof(pos));
+		} else {
+			memcpy(pos, g_ExtraPads[i - numspawns - g_NumNodes].pos, sizeof(pos));
+			yaw = g_ExtraPads[i - numspawns - g_NumNodes].yaw;
 		}
 
 		room = 1 + cellOf(pos[0], pos[2]);
@@ -1951,7 +2127,14 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 	tiles = writeTiles(rooms, numrooms, &floors, &walls);
 	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
 	readNodes(path, row, centre);
+	readLayout(path, row, centre, numspawns + g_NumNodes);
+	blockGridFree();
 	pads = writePads(spawns, numspawns);
+
+	if (g_Layout.n) {
+		snprintf(rel, sizeof(rel), "zombies/%s.txt", row->name);
+		writeOut(outdir, rel, &g_Layout);
+	}
 	setup = writeMpSetup(numspawns);
 
 	snprintf(rel, sizeof(rel), "files/bgdata/bg_%s.seg", row->key);

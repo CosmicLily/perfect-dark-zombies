@@ -693,3 +693,20 @@ places everything from the spawn pads (`zombiesPlaceBarriers()`,
 `zombiesReserveBoxPad()`, `zombiesPlacePerks()`, `zombiesPlaceWallBuys()`);
 `zombiesPlaceMachineObj()` takes a pad, a wall distance and a wall direction,
 so a pad on the spot with the facing passes straight through.
+**Town's own Zombies layout (2026-10-26).** codmap.c writes, after the
+nodes' pads, a pad for each spot of Survival Town (19: five perk machines,
+Pack-a-Punch, the first `town_chest` box, twelve windows; a window's pad is
+100 units inside it, inside being the side with a roof over it), and the mod's
+`zombies/<arena>.txt` (`perk <id> <pad> <x> <z>`, `pap`, `box`, `barrier <pad>
+<x> <z> <dist>`; x z a machine's back, or out through a window).
+`zombiesLayout()` reads it once a stage (`modloaderGetStageModDir()` and
+`modloaderGetStageMapName()`), and where there is one: Juggernog through
+`zombiesFindJuggSpot()` (the player's place ZOMBIE_JUGG_FRONT before it); the
+other perks through `zombiesPlacePerkMachine()` with a wall distance that puts
+the machine on its pad, and no perk the layout lacks; Pack-a-Punch and no
+cornering in `zombiesCornerMachines()`; the box's pad in
+`zombiesReserveBoxPad()`; the windows built straight in
+`zombiesPlaceBarriers()` (zone -1, always open). Eight windows of Town's twelve:
+`ZOMBIE_BARRIER_MAX` is in the online scenario block, left alone. Not yet: wall
+buys (`weapon_upgrade`, `zombie_weapon_upgrade`), and zombies coming in at the
+zones' own spawners rather than the player spawns.

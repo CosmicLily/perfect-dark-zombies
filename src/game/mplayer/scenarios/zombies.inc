@@ -1307,6 +1307,106 @@ static void zombiesMakeDoors(void);
 static s32 zombiesPadComp(s32 padnum);
 static s32 g_ZombieStartComp = -1; // the zone the players start in, -1 for none (no doors)
 
+/**
+ * An arena's own layout, where it has one: a Black Ops II map converted by
+ * codmap.c names where its perk machines, Pack-a-Punch, Mystery Box and
+ * boarded windows stand (the mod's zombies/<arena>.txt, each spot a pad of the
+ * arena's own), and they are put there and faced as Black Ops II has them in
+ * place of being chosen from the spawn pads. Perks the layout has no machine
+ * for are not in the match, as they are not in that map.
+ */
+#define ZOMBIE_LAYOUT_PERKS    16
+#define ZOMBIE_LAYOUT_BARRIERS 16
+
+struct zombielayout {
+	s32 stagenum;   // what it was read for
+	bool have;
+	s32 perkpad[ZOMBIE_LAYOUT_PERKS];
+	f32 perkback[ZOMBIE_LAYOUT_PERKS][2]; // a machine's back, the way it is turned from
+	s32 pappad;
+	f32 papback[2];
+	s32 boxpad;
+	f32 boxback[2];
+	s32 numbarriers;
+	s32 barpad[ZOMBIE_LAYOUT_BARRIERS];
+	f32 barwall[ZOMBIE_LAYOUT_BARRIERS][2]; // from its pad out to the window
+	f32 bardist[ZOMBIE_LAYOUT_BARRIERS];
+};
+
+static struct zombielayout g_ZombieLayout = { -1 };
+
+const char *modloaderGetStageModDir(s32 stagenum);
+const char *modloaderGetStageMapName(s32 stagenum);
+
+static const struct zombielayout *zombiesLayout(void)
+{
+	struct zombielayout *l = &g_ZombieLayout;
+	const char *dir;
+	const char *name;
+	char path[FS_MAXPATH + 1];
+	FILE *f;
+	char line[256];
+	s32 i;
+
+	if (l->stagenum == g_Vars.stagenum) {
+		return l->have ? l : NULL;
+	}
+
+	l->stagenum = g_Vars.stagenum;
+	l->have = false;
+	l->pappad = l->boxpad = -1;
+	l->numbarriers = 0;
+
+	for (i = 0; i < ZOMBIE_LAYOUT_PERKS; i++) {
+		l->perkpad[i] = -1;
+	}
+
+	dir = modloaderGetStageModDir(g_Vars.stagenum);
+	name = modloaderGetStageMapName(g_Vars.stagenum);
+
+	if (!dir || !name) {
+		return NULL;
+	}
+
+	snprintf(path, sizeof(path), "%s/zombies/%s.txt", dir, name);
+	f = fopen(fsFullPath(path), "rb");
+
+	if (!f) {
+		return NULL;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		s32 id, pad;
+		f32 x, z, d;
+
+		if (sscanf(line, "perk %d %d %f %f", &id, &pad, &x, &z) == 4 && id >= 0 && id < ZOMBIE_LAYOUT_PERKS) {
+			l->perkpad[id] = pad;
+			l->perkback[id][0] = x;
+			l->perkback[id][1] = z;
+		} else if (sscanf(line, "pap %d %f %f", &pad, &x, &z) == 3) {
+			l->pappad = pad;
+			l->papback[0] = x;
+			l->papback[1] = z;
+		} else if (sscanf(line, "box %d %f %f", &pad, &x, &z) == 3) {
+			l->boxpad = pad;
+			l->boxback[0] = x;
+			l->boxback[1] = z;
+		} else if (sscanf(line, "barrier %d %f %f %f", &pad, &x, &z, &d) == 4 && l->numbarriers < ZOMBIE_LAYOUT_BARRIERS) {
+			l->barpad[l->numbarriers] = pad;
+			l->barwall[l->numbarriers][0] = x;
+			l->barwall[l->numbarriers][1] = z;
+			l->bardist[l->numbarriers] = d;
+			l->numbarriers++;
+		}
+	}
+
+	fclose(f);
+	l->have = true;
+	sysLogPrintf(LOG_NOTE, "zombies: stage 0x%02x has its own layout (%d windows)", g_Vars.stagenum, l->numbarriers);
+
+	return l;
+}
+
 static void zombiesReserveBoxPad(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -1318,6 +1418,12 @@ static void zombiesReserveBoxPad(void)
 	s32 i;
 
 	g_ZombieBoxPad = -1;
+
+	// the arena's own spot, which is no spawn pad
+	if (zombiesLayout() && zombiesLayout()->boxpad >= 0) {
+		g_ZombieBoxPad = zombiesLayout()->boxpad;
+		return;
+	}
 
 	if (n < 4) {
 		return;
@@ -1404,7 +1510,7 @@ void zombiesReserveJuggPad(void)
 
 	// with fewer, losing one would crowd the zombies coming in; an arena with
 	// a spot of its own needs no pad
-	if (n < 3 || zombiesFindJuggSpot(g_Vars.stagenum)) {
+	if (n < 3 || zombiesFindJuggSpot(g_Vars.stagenum) || zombiesLayout()) {
 		zombiesReserveBoxPad();
 		return;
 	}
@@ -1530,6 +1636,26 @@ static void zombiesPlaceJuggernogAtSpot(const struct zombiespot *spot)
 
 static const struct zombiespot *zombiesFindJuggSpot(s32 stagenum)
 {
+	// an arena's own layout first: the player's place, ZOMBIE_JUGG_FRONT before
+	// the machine, looking at its back (perk 0, ZOMBIEPERK_JUGGERNOG,
+	// which is defined below)
+	if (zombiesLayout() && zombiesLayout()->perkpad[0] >= 0) {
+		static struct zombiespot spot;
+		const struct zombielayout *l = zombiesLayout();
+		struct pad pad;
+
+		padUnpack(l->perkpad[0], PADFIELD_POS | PADFIELD_ROOM, &pad);
+		spot.stagenum = stagenum;
+		spot.x = pad.pos.x - l->perkback[0][0] * ZOMBIE_JUGG_FRONT;
+		spot.y = pad.pos.y;
+		spot.z = pad.pos.z - l->perkback[0][1] * ZOMBIE_JUGG_FRONT;
+		spot.lookx = l->perkback[0][0];
+		spot.lookz = l->perkback[0][1];
+		spot.room = pad.room;
+
+		return &spot;
+	}
+
 	s32 i;
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieJuggSpots); i++) {
@@ -8463,6 +8589,32 @@ static void zombiesPlacePerks(void)
 		taken[ntaken++] = g_ZombieBox->prop->pos;
 	}
 
+	// an arena's own layout: its machines where it has them, and no others
+	if (zombiesLayout()) {
+		const struct zombielayout *l = zombiesLayout();
+
+		for (perk = ZOMBIEPERK_QUICKREVIVE; perk < ZOMBIEPERK_COUNT; perk++) {
+			struct pad pad;
+			struct coord back;
+
+			if (l->perkpad[perk] < 0) {
+				continue;
+			}
+
+			padUnpack(l->perkpad[perk], PADFIELD_POS | PADFIELD_ROOM, &pad);
+			back.x = l->perkback[perk][0];
+			back.y = 0;
+			back.z = l->perkback[perk][1];
+
+			// walldist puts the machine on the pad itself (zombiesPlaceMachineObj())
+			if (zombiesPlacePerkMachine(perk, &pad, ZOMBIE_PERK_HALFDEPTH * zombiesMachineExtrascale(perk) / ZOMBIE_JUGG_SCALE + 8, &back)) {
+				sysLogPrintf(LOG_NOTE, "zombies: %s at the arena's own spot", g_ZombiePerks[perk].name);
+			}
+		}
+
+		return;
+	}
+
 	for (i = 0; i < n; i++) {
 		struct pad pad;
 		RoomNum rooms[2];
@@ -9150,6 +9302,30 @@ static bool zombiesPlacePap(void);
 static void zombiesCornerMachines(void)
 {
 	s32 k;
+
+	// an arena's own layout: every machine stays where it put it, and
+	// Pack-a-Punch at its own spot
+	if (zombiesLayout()) {
+		const struct zombielayout *l = zombiesLayout();
+
+		g_ZombiePapPlaced = false;
+
+		if (l->pappad >= 0) {
+			struct pad pad;
+			struct coord back;
+
+			bzero(&g_ZombiePapObj, sizeof(g_ZombiePapObj));
+			padUnpack(l->pappad, PADFIELD_POS | PADFIELD_ROOM, &pad);
+			back.x = l->papback[0];
+			back.y = 0;
+			back.z = l->papback[1];
+			g_ZombiePapPlaced = zombiesPlaceMachineObj(ZOMBIE_PAP_ID, &g_ZombiePapObj, &pad,
+					ZOMBIE_PERK_HALFDEPTH * zombiesMachineExtrascale(ZOMBIE_PAP_ID) / ZOMBIE_JUGG_SCALE + 8, &back);
+		}
+
+		zombiesRaiseSolid(g_ZombieBox);
+		return;
+	}
 
 	// Double Tap last: it looks over the whole arena (zombiesOpenestCorner()),
 	// and first it took a corner another machine was about to take
@@ -16666,6 +16842,58 @@ static void zombiesPlaceBarriers(void)
 	s32 k;
 
 	g_ZombieNumBarriers = 0;
+
+	// an arena's own layout: its windows, each out from its pad
+	if (zombiesLayout() && zombiesLayout()->numbarriers > 0) {
+		const struct zombielayout *l = zombiesLayout();
+
+		for (i = 0; i < l->numbarriers && g_ZombieNumBarriers < ZOMBIE_BARRIER_MAX; i++) {
+			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNumBarriers];
+			struct pad pad;
+			RoomNum padrooms[2];
+			f32 out;
+
+			padUnpack(l->barpad[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+			padrooms[0] = pad.room;
+			padrooms[1] = -1;
+			bzero(bar, sizeof(*bar));
+
+			for (k = 0; k < ZOMBIE_BARRIER_BOARDS; k++) {
+				bar->anim60[k] = 1000;
+			}
+
+			bar->wall.x = l->barwall[i][0];
+			bar->wall.y = 0;
+			bar->wall.z = l->barwall[i][1];
+			bar->comp = -1;
+			bar->boards = ZOMBIE_BARRIER_BOARDS;
+			bar->zombie = -1;
+			bar->pulling = -1;
+			bar->enter60 = -1;
+			bar->reach60 = -1;
+			bar->pos.x = pad.pos.x + bar->wall.x * (l->bardist[i] - 2);
+			bar->pos.y = pad.pos.y;
+			bar->pos.z = pad.pos.z + bar->wall.z * (l->bardist[i] - 2);
+			func0f065e74(&pad.pos, padrooms, &bar->pos, bar->rooms);
+			bar->pos.y = pad.pos.y - 1;
+			out = l->bardist[i] - ZOMBIE_BARRIER_STAND;
+			out = out < 0 ? 0 : out;
+			bar->stand.x = pad.pos.x + bar->wall.x * out;
+			bar->stand.y = pad.pos.y;
+			bar->stand.z = pad.pos.z + bar->wall.z * out;
+			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+
+			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
+				continue;
+			}
+
+			bar->placed = true;
+			g_ZombieNumBarriers++;
+		}
+
+		sysLogPrintf(LOG_NOTE, "zombies: %d of the arena's %d windows boarded", g_ZombieNumBarriers, l->numbarriers);
+		return;
+	}
 
 	for (k = 0; k < ZOMBIE_MACHINE_IDS; k++) {
 		struct defaultobj *obj = zombiesMachineObjAt(k);
