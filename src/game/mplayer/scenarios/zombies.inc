@@ -17441,6 +17441,31 @@ static void zombiesTickFallNet(s32 playernum)
 	}
 }
 
+/**
+ * bondwalk.c asks, about to kill a falling player (four seconds of fall, or
+ * a fall out of the world): on a Black Ops II map in Zombies, put them back
+ * where they last stood instead, and say so. False lets the death happen.
+ */
+bool zombiesFallNetCatch(s32 playernum)
+{
+	struct player *player = playernum >= 0 && playernum < MAX_PLAYERS ? g_Vars.players[playernum] : NULL;
+
+	if (!zombiesIsActive() || !player || !player->prop || !player->prop->chr
+			|| !codmapStageIs(g_Vars.stagenum) || !g_ZombieSafeHave[playernum]) {
+		return false;
+	}
+
+	g_ZombieFall60[playernum] = 0;
+	chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
+			(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+	player->isfalling = false;
+	player->bdeltapos.y = 0;
+	sysLogPrintf(LOG_NOTE, "zombies: player %d's fall death caught, put back at %.0f %.0f %.0f", playernum,
+			g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
+
+	return true;
+}
+
 static void zombiesTickBarriers(void)
 {
 	s32 i;

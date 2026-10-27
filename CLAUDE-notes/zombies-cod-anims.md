@@ -794,4 +794,8 @@ standing on real ground (not falling, `vv_ground` over -29999) and puts them
 back there once they have nothing under them (**`vv_ground` is held at
 exactly -30000 for none**) or have fallen for two seconds, before
 bondwalk.c's four-second fall death. `--zombies-test-under` with
-`--zombies-test-at` starts a player falling under the floor there.
+`--zombies-test-at` starts a player falling under the floor there.bondwalk.c's four fall deaths (four seconds of fall, and three
+`vv_manground <= -30000` checks that kill at once, missed by the tick's net)
+now ask `zombiesFallNetCatch()` first, which on a Black Ops II map in Zombies
+puts the player back at their last safe place and cancels the fall. Placed at
+8500,8500 (outside Town, ground -2^32) the player used to die on the spot.

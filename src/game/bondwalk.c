@@ -46,6 +46,7 @@
 
 #ifndef PLATFORM_N64
 bool zombiesIsPlayerDowned(s32 playernum); // zombies.inc
+bool zombiesFallNetCatch(s32 playernum); // zombies.inc
 bool zombiesIsActive(void);
 f32 zombiesMoveScale(void);
 #endif
@@ -1867,11 +1868,11 @@ void bwalkUpdateVertical(void)
 					// the list fades to the ending. Only a fall out of the
 					// world kills.
 					if (newmanground <= -30000) {
-						playerDie(true);
+						if (!zombiesFallNetCatch(g_Vars.currentplayernum)) playerDie(true); // Zombies: a Black Ops II map's hole puts back, not kills
 					}
 				} else if (g_Vars.lvframe60 - g_Vars.currentplayer->fallstart > TICKS(240)) {
 					// Have been falling for 4 seconds
-					playerDie(true);
+					if (!zombiesFallNetCatch(g_Vars.currentplayernum)) playerDie(true); // Zombies: a Black Ops II map's hole puts back, not kills
 				}
 			}
 		} else {
@@ -1925,7 +1926,7 @@ void bwalkUpdateVertical(void)
 			}
 
 			if (g_Vars.currentplayer->vv_manground <= -30000) {
-				playerDie(true);
+				if (!zombiesFallNetCatch(g_Vars.currentplayernum)) playerDie(true); // Zombies: a Black Ops II map's hole puts back, not kills
 			}
 		}
 	} else {
@@ -1935,7 +1936,7 @@ void bwalkUpdateVertical(void)
 		}
 
 		if (g_Vars.currentplayer->vv_manground <= -30000) {
-			playerDie(true);
+			if (!zombiesFallNetCatch(g_Vars.currentplayernum)) playerDie(true); // Zombies: a Black Ops II map's hole puts back, not kills
 		}
 	}
 
