@@ -17919,6 +17919,20 @@ static bool zombiesGameOverHidesHud(void)
 	return g_ZombieGameOver && g_ZombieGameOver60 >= ZOMBIE_GO_PAN60;
 }
 
+// bondmove.c's bmoveTick(): the game over is watched, not played - from the
+// fall to the scoreboard no looking round, aiming or firing. Aiming down the
+// sights is let go of with it.
+bool zombiesLocksControls(void)
+{
+	if (!zombiesIsActive() || !g_ZombieGameOver) {
+		return false;
+	}
+
+	g_Vars.currentplayer->insightaimmode = false;
+
+	return true;
+}
+
 // bondgun.c and radar.c: the game's end over the arena and the scoreboard
 // have the screen to themselves, no ammo or radar. Falling, the HUD stays.
 bool zombiesHidesHud(void)

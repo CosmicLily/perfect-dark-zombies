@@ -64,6 +64,7 @@ void zombiesStanceTick(s32 contpad);
 void zombiesSprintPress(void);
 void zombiesSprintTick(void);
 void zombiesGrenadePress(void);
+bool zombiesLocksControls(void);
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -2761,6 +2762,16 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 	f32 ydiff;
 	f32 zdiff;
 	f32 distance;
+
+#ifndef PLATFORM_N64
+	// Zombies' game over: the fall, GAME OVER, the arena and the scoreboard
+	// are watched, not played - no looking round, aiming or firing
+	if (zombiesLocksControls()) {
+		allowc1x = false;
+		allowc1y = false;
+		allowc1buttons = false;
+	}
+#endif
 
 	if (g_NetMode == NETMODE_SERVER && netPlayersHostWalk(allowc1x, allowc1y, allowc1buttons, ignorec2)) return; // netplay: a client's player walks by its commands alone (netplayers.c)
 	if (g_NetMode != NETMODE_NONE) geTankRideCarry(); // netplay: a player on a tank somebody drives goes with it (getank.c)
