@@ -2102,8 +2102,61 @@ void bwalkUpdateVertical(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+bool zombiesIsActive(void);
+
+/**
+ * Zombies: whether a player crouching (not in the full crouch, which is
+ * Zombies' prone) at pos is under a ceiling that only the full crouch fits:
+ * the box at a crouch's height is stopped there and the box at the full
+ * crouch's is not. Such a gap is gone into crouched (bwalk0f0c63bc()), at a
+ * crouch's pace (bwalkApplyCrouchSpeed()): Black Ops II has no gap a player
+ * must lie down for, and the prone's crawl took an age to get through one.
+ */
+static bool bwalkZombiesLowGap(struct coord *pos, RoomNum *fromrooms)
+{
+	struct player *player = g_Vars.currentplayer;
+	const f32 ymin = player->vv_manground + 30 - 0.1f;
+	f32 duck = player->vv_manground + player->vv_headheight - 45.0f * player->vv_eyeheight * (1.0f / 159.0f);
+	f32 squat = player->vv_manground + player->vv_headheight - 90.0f * player->vv_eyeheight * (1.0f / 159.0f);
+	RoomNum rooms[8];
+	f32 radius = player->bond2.radius;
+	bool result;
+
+	if (squat < player->vv_manground + 80) {
+		squat = player->vv_manground + 80;
+	}
+
+	if (duck <= squat) {
+		return false;
+	}
+
+	func0f065e74(&player->prop->pos, fromrooms, pos, rooms);
+	propSetPerimEnabled(player->prop, false);
+
+	result = cdTestVolume(pos, radius, rooms, CDTYPE_BG, CHECKVERTICAL_YES,
+				duck - player->prop->pos.y, ymin - player->prop->pos.y) != CDRESULT_NOCOLLISION
+		&& cdTestVolume(pos, radius, rooms, CDTYPE_BG, CHECKVERTICAL_YES,
+				squat - player->prop->pos.y, ymin - player->prop->pos.y) == CDRESULT_NOCOLLISION;
+
+	propSetPerimEnabled(player->prop, true);
+
+	return result;
+}
+#endif
+
 void bwalkApplyCrouchSpeed(void)
 {
+#ifndef PLATFORM_N64
+	// Zombies: lowered into a gap while crouching, at a crouch's pace
+	if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT && g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK
+			&& zombiesIsActive() && !zombiesIsPlayerDowned(g_Vars.currentplayernum)) {
+		g_Vars.currentplayer->speedforwards *= 0.5f;
+		g_Vars.currentplayer->speedsideways *= 0.5f;
+		return;
+	}
+#endif
+
 	if (bmoveGetCrouchPos() == CROUCHPOS_DUCK) {
 		g_Vars.currentplayer->speedforwards *= 0.5f;
 		g_Vars.currentplayer->speedsideways *= 0.5f;
@@ -2353,6 +2406,22 @@ void bwalk0f0c63bc(struct coord *arg0, u32 arg1, s32 types)
 	// Zombies: a downed player squats whatever the crouch button says
 	if (zombiesIsPlayerDowned(g_Vars.currentplayernum)) {
 		g_Vars.currentplayer->autocrouchpos = CROUCHPOS_SQUAT;
+	} else if (zombiesIsActive() && !geRoomActive() && g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK) {
+		// Zombies: crouching under, or into, a gap only the full crouch
+		// fits lowers the player into it. The walk itself holds them at
+		// its edge until they are low enough (the box is stopped by the
+		// gap's ceiling), so the eye is never over it
+		struct coord target;
+
+		target.x = g_Vars.currentplayer->prop->pos.x + arg0->x;
+		target.y = g_Vars.currentplayer->prop->pos.y;
+		target.z = g_Vars.currentplayer->prop->pos.z + arg0->z;
+
+		if (bwalkZombiesLowGap(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms)
+				|| ((arg0->x != 0.0f || arg0->z != 0.0f)
+					&& bwalkZombiesLowGap(&target, g_Vars.currentplayer->prop->rooms))) {
+			g_Vars.currentplayer->autocrouchpos = CROUCHPOS_SQUAT;
+		}
 	}
 #endif
 
