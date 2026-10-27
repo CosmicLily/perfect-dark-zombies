@@ -2165,6 +2165,7 @@ static struct defaultobj *zombiesMachineObjAt(s32 id)
 struct zombiemesh {
 	bool tried;
 	Gfx *gdl;
+	Gfx *xlugdl;      // its glass and decals, seen through, after gdl's end; NULL for none
 	Vtx *vtx;
 	Col *col;
 	f32 ymin;         // its foot, and the middle of its plan, in the game's axes
@@ -2301,6 +2302,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 	f32 hi[3] = { -1e9f, -1e9f, -1e9f };
 	u32 d;
 	u32 i;
+	s32 pass;
 
 	zm->tried = true;
 
@@ -2324,7 +2326,7 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 	// one triangle command and a material's state before each
 	zm->vtx = malloc(sizeof(Vtx) * m->numtris * 3);
 	zm->col = malloc(sizeof(Col) * m->numtris * 3);
-	maxgfx = m->numtris * 3 + m->numdraws * 18 + 8; // 18: two for the Ray Gun coil's camo lists
+	maxgfx = m->numtris * 3 + m->numdraws * 18 + 9; // 18: two for the Ray Gun coil's camo lists; 9: both lists' ends
 	zm->gdl = malloc(sizeof(Gfx) * maxgfx);
 
 	if (!zm->vtx || !zm->col || !zm->gdl) {
@@ -2336,6 +2338,14 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 		zm->gdl = NULL;
 		objmeshFree(m);
 		return;
+	}
+
+	// Two lists in the one buffer: the solid, then the seen-through (glass,
+	// a blood decal) drawn in the translucent pass (zombiesRenderMachine())
+	for (pass = 0; pass < 2; pass++) {
+	if (pass == 1) {
+		gSPEndDisplayList(&zm->gdl[numgfx++]);
+		zm->xlugdl = &zm->gdl[numgfx];
 	}
 
 	for (d = 0; d < m->numdraws; d++) {
@@ -2358,14 +2368,14 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 			continue;
 		}
 
-		// Glass and a blood decal: see-through, which this list (all of it
-		// opaque) cannot draw. Drawn solid, the glass was a gray slab over
-		// Deadshot's front and Electric Cherry's, and the blood a dark block;
-		// cut out in the list (an alpha compare, then the opaque mode put back
-		// after it) every draw after the first such one was gone, the whole of
-		// Deadshot and PhD Flopper with it. Without them the machine's front
-		// behind the glass is seen.
-		if (mat && (strstr(mat->name, "glass") || strstr(mat->name, "blood"))) {
+		// Glass and a blood decal: see-through, in the second list alone.
+		// Drawn solid, the glass was a gray slab over Deadshot's front and
+		// Electric Cherry's, and the blood a dark block; cut out in the one
+		// list (an alpha compare, then the opaque mode put back after it)
+		// every draw after the first such one was gone, the whole of Deadshot
+		// and PhD Flopper with it. Their pictures' alpha is how much they hide:
+		// Deadshot's grime a third, Electric Cherry's frost clear in the middle
+		if ((mat && (strstr(mat->name, "glass") || strstr(mat->name, "blood"))) != (pass == 1)) {
 			continue;
 		}
 
@@ -2391,7 +2401,10 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 		// light). They used to be brightened by their own shade on top, with
 		// a glow round the machine besides: the "_on" pictures are lit
 		// already, and the machines looked like lamps.
-		if (mat && (zombiesMaterialIsOn(mat->name) || strstr(mat->name, "sign") || zombiesMaterialIsRayGlow(mat->name))) {
+		if (pass == 1) {
+			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, 0, 0, 0, 0, TEXEL0,
+					COMBINED, 0, PRIMITIVE, 0, 0, 0, 0, COMBINED);
+		} else if (mat && (zombiesMaterialIsOn(mat->name) || strstr(mat->name, "sign") || zombiesMaterialIsRayGlow(mat->name))) {
 			gDPSetCombineLERP(gdl++, TEXEL0, 0, SHADE, 0, 0, 0, 0, 1,
 					0, 0, 0, COMBINED, 0, 0, 0, 1);
 		} else {
@@ -2533,8 +2546,14 @@ static void zombiesMeshBuildFrom(struct zombiemesh *zm, const char *rel, const c
 			zm->numruns++;
 		}
 	}
+	}
 
 	gSPEndDisplayList(&zm->gdl[numgfx++]);
+
+	// a second list with nothing in it but its end: none
+	if (zm->xlugdl == &zm->gdl[numgfx - 1]) {
+		zm->xlugdl = NULL;
+	}
 
 	if (zm->numruns > 0) {
 		s32 total = 0;
@@ -3610,13 +3629,15 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 		return false;
 	}
 
-	// all of it in the opaque pass (a glow round it in the translucent one
-	// made the machines look like lamps: gone)
-	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+	// the solid in the opaque pass, the glass in the translucent (a glow
+	// round it there made the machines look like lamps: gone)
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA) && zm->xlugdl == NULL) {
 		return true;
 	}
 
-	zombiesMeshSpin(zm);
+	if (renderdata->flags & MODELRENDERFLAG_OPA) {
+		zombiesMeshSpin(zm);
+	}
 
 	// The mainframe's turn without its size, which realrot carries
 	for (i = 0; i < 3; i++) {
@@ -3668,8 +3689,15 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	gDPPipeSync(renderdata->gdl++);
 	gDPSetCycleType(renderdata->gdl++, G_CYC_2CYCLE);
-	gDPSetRenderMode(renderdata->gdl++, G_RM_PASS,
-			renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF2 : G_RM_AA_OPA_SURF2);
+
+	if (renderdata->flags & MODELRENDERFLAG_OPA) {
+		gDPSetRenderMode(renderdata->gdl++, G_RM_PASS,
+				renderdata->zbufferenabled ? G_RM_AA_ZB_OPA_SURF2 : G_RM_AA_OPA_SURF2);
+	} else {
+		gDPSetRenderMode(renderdata->gdl++, G_RM_PASS,
+				renderdata->zbufferenabled ? G_RM_AA_ZB_XLU_SURF2 : G_RM_AA_XLU_SURF2);
+	}
+
 	// the picture times the baked light, times the room's (the shade colour
 	// objRender() hands the prop's own lists as their fog colour); each
 	// material's combiner is in the list
@@ -3693,7 +3721,7 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	gSPClearGeometryMode(renderdata->gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
 	gSPSetGeometryMode(renderdata->gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
 	gSPMatrix(renderdata->gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
-	gSPDisplayList(renderdata->gdl++, zm->gdl);
+	gSPDisplayList(renderdata->gdl++, (renderdata->flags & MODELRENDERFLAG_OPA) ? zm->gdl : zm->xlugdl);
 	gDPPipeSync(renderdata->gdl++);
 	gDPSetCycleType(renderdata->gdl++, G_CYC_1CYCLE);
 	gSPClearGeometryMode(renderdata->gdl++, G_CULL_BOTH);
