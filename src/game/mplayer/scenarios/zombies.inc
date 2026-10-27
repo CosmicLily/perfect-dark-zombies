@@ -3341,6 +3341,8 @@ static bool zombiesCherryFxAny(void)
 // propobj.c's propsRenderBeams(): every bolt and ring, in the world
 Gfx *zombiesRenderGibs(Gfx *gdl);
 
+static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw);
+
 Gfx *zombiesRenderRayFx(Gfx *gdl)
 {
 	Mtxf *cam = camGetWorldToScreenMtxf();
@@ -3371,6 +3373,9 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 	if (g_ZombieCherryTexState > 0) {
 		any |= zombiesCherryFxAny();
 	}
+
+	// and the power-ups' glow
+	any |= zombiesRenderPowerupGlows(NULL, NULL, NULL, NULL, NULL, false) != NULL;
 
 	if (!any) {
 		return gdl;
@@ -3421,6 +3426,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 	}
 
 	gdl = zombiesRayTex(gdl, false);
+	gdl = zombiesRenderPowerupGlows(gdl, cam, campos, right, up, true);
 
 	// the bolts: a streak along the way and a bright head
 	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
@@ -3538,6 +3544,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 
 static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj);
+static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defaultobj *obj);
 
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
@@ -3566,6 +3573,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// one of Zombies' own guns, as Black Ops II's world model
 	if (zombiesRenderZmGun(renderdata, obj)) {
+		return true;
+	}
+
+	// a power-up, as Black Ops II's own model
+	if (zombiesRenderPowerup(renderdata, obj)) {
 		return true;
 	}
 
@@ -13656,17 +13668,18 @@ static void zombiesTickBox(void)
  * II's _zm_powerups.gsc has it, that is not a flat chance: the next kill
  * after the team's points earned (spent or not) pass a mark drops one, the
  * mark ZOMBIE_DROP_INCREMENT on at first and 1.14 times further each time;
- * besides, any kill drops one ZOMBIE_DROP_CHANCE times in a hundred. It is a small green ammo crate turning and
- * bobbing over the floor, on the radar in green; it lasts ZOMBIE_DROP_LIFE60,
- * blinking for the last ZOMBIE_DROP_BLINK60. Any player standing who walks
+ * besides, any kill drops one ZOMBIE_DROP_CHANCE times in a hundred. It is
+ * Black Ops II's model (zombiesRenderPowerup()) turning and bobbing over the
+ * floor, on the radar in green; it lasts ZOMBIE_DROP_LIFE60, blinking after
+ * ZOMBIE_DROP_SOLID60 (zombiesDropShown()). Any player standing who walks
  * into it fills every gun everyone alive is carrying, and "MAX AMMO!" goes up
  * on every screen.
  */
 #define ZOMBIE_DROP_CHANCE      3       // in a hundred, a kill: randomint(100) > 2 drops none
 #define ZOMBIE_DROP_INCREMENT   2000.0f // zombie_powerup_drop_increment
 #define ZOMBIE_DROPS_PER_ROUND  4
-#define ZOMBIE_DROP_LIFE60      1800    // 30 seconds
-#define ZOMBIE_DROP_BLINK60     480     // blinking for the last 8
+#define ZOMBIE_DROP_SOLID60     900     // _zm_powerups' powerup_timeout: 15 seconds as it is,
+#define ZOMBIE_DROP_LIFE60      1590    // then 40 blinks, slower to quicker: 26.5 seconds in all
 #define ZOMBIE_DROP_RANGE       90.0f   // how near a player picks it up
 #define ZOMBIE_DROP_SIZE        80.0f   // how long the crate is (34 was easy to miss)
 #define ZOMBIE_DROP_FLOAT       40.0f   // its bottom this far over the floor: waist high, as Call of Duty's float
@@ -13835,6 +13848,201 @@ static void zombiesDropRemove(struct zombiedrop *drop)
 	drop->active = false;
 }
 
+/**
+ * Whether a power-up is seen this age: as powerup_timeout has it, 15 seconds
+ * whole, then 40 turns of shown and hidden, the first 15 half a second each,
+ * the next 10 a quarter, the last 15 a tenth
+ */
+static bool zombiesDropShown(s32 age60)
+{
+	s32 t = age60 - ZOMBIE_DROP_SOLID60;
+	s32 i;
+
+	if (t < 0) {
+		return true;
+	}
+
+	for (i = 0; i < 40; i++) {
+		const s32 wait = i < 15 ? 30 : i < 25 ? 15 : 6;
+
+		if (t < wait) {
+			return (i % 2) == 0;
+		}
+
+		t -= wait;
+	}
+
+	return false;
+}
+
+/**
+ * Black Ops II's power-ups (zombie_ammocan, zombie_skull, zombie_x2_icon,
+ * zombie_bomb, zombie_carpenter, zombie_firesale: tools/zombies/glb2obj.py
+ * into the build's zombies/models/pu_<name>/), drawn in place of the stand-in
+ * the drop is made from, ZOMBIE_POWERUP_MESHSIZE on its longest side, its middle
+ * ZOMBIE_POWERUP_FLOAT over the floor, turning and bobbing as the stand-in does. Without the OBJ the stand-in is drawn.
+ */
+#define ZOMBIE_POWERUP_MESHSIZE 40.0f
+#define ZOMBIE_POWERUP_GLOW     48.0f // the green glow's half size about it (fx_zombie_powerup_on)
+#define ZOMBIE_POWERUP_FLOAT    85.0f // its middle over the floor: a man's waist
+
+static struct zombiemesh g_ZombiePowerupMeshes[ZOMBIEPOWERUP_COUNT];
+
+static const char *g_ZombiePowerupMeshNames[ZOMBIEPOWERUP_COUNT] = {
+	"pu_ammocan", "pu_skull", "pu_x2_icon", "pu_bomb", "pu_carpenter", "pu_firesale",
+};
+
+static struct zombiemesh *zombiesPowerupMesh(s32 kind)
+{
+	struct zombiemesh *zm;
+
+	if (kind < 0 || kind >= ZOMBIEPOWERUP_COUNT) {
+		return NULL;
+	}
+
+	zm = &g_ZombiePowerupMeshes[kind];
+
+	if (!zm->tried) {
+		char rel[96];
+
+		snprintf(rel, sizeof(rel), "$E/zombies/models/%s/%s.obj", g_ZombiePowerupMeshNames[kind], g_ZombiePowerupMeshNames[kind]);
+		zombiesMeshBuildFrom(zm, rel, g_ZombiePowerups[kind].banner);
+	}
+
+	return zm->gdl ? zm : NULL;
+}
+
+// A drop's middle this frame: floating at the waist, bobbing (zombiesDropPlace())
+static void zombiesPowerupCentre(struct zombiedrop *drop, f32 pos[3])
+{
+	pos[0] = drop->obj.prop->pos.x;
+	pos[1] = drop->floory + ZOMBIE_POWERUP_FLOAT + sinf(drop->age60 * 0.07f) * 7;
+	pos[2] = drop->obj.prop->pos.z;
+}
+
+/**
+ * Black Ops II's glow about a power-up (fx_zombie_powerup_on): green light
+ * added round its model, drawn with the Ray Gun's sprites (zombiesRenderRayFx()).
+ * Asked with draw false, whether there is any (non-NULL for some)
+ */
+static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw)
+{
+	s32 i;
+	s32 k;
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieDrops); i++) {
+		struct zombiedrop *drop = &g_ZombieDrops[i];
+		struct coord centre;
+		f32 pos[3];
+		f32 a[3];
+		f32 b[3];
+		f32 pulse;
+
+		if (!drop->active || drop->obj.prop == NULL || (drop->obj.flags2 & OBJFLAG2_INVISIBLE)
+				|| zombiesPowerupMesh(drop->kind) == NULL) {
+			continue;
+		}
+
+		if (!draw) {
+			return (Gfx *)1;
+		}
+
+		zombiesPowerupCentre(drop, pos);
+
+		// in front of the model, towards the eye, so it is about it all round
+		// and not hidden behind it
+		{
+			f32 to[3] = { campos->x - pos[0], campos->y - pos[1], campos->z - pos[2] };
+			f32 len = sqrtf(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]);
+			f32 pull = len > ZOMBIE_POWERUP_MESHSIZE ? ZOMBIE_POWERUP_MESHSIZE * 0.6f / len : 0;
+
+			centre.x = pos[0] + to[0] * pull;
+			centre.y = pos[1] + to[1] * pull;
+			centre.z = pos[2] + to[2] * pull;
+		}
+
+		pulse = 0.85f + 0.15f * sinf(drop->age60 * 0.1f);
+
+		// a wide soft green, and a smaller brighter one in it
+		for (k = 0; k < 3; k++) {
+			a[k] = right[k] * ZOMBIE_POWERUP_GLOW * pulse;
+			b[k] = up[k] * ZOMBIE_POWERUP_GLOW * pulse;
+		}
+
+		gDPSetPrimColor(gdl++, 0, 0, 0x30, 0xff, 0x40, 0x80);
+		gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+
+		for (k = 0; k < 3; k++) {
+			a[k] *= 0.5f;
+			b[k] *= 0.5f;
+		}
+
+		gDPSetPrimColor(gdl++, 0, 0, 0x60, 0xff, 0x60, 0x38);
+		gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+	}
+
+	return draw ? gdl : NULL;
+}
+
+static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	struct zombiedrop *drop = NULL;
+	struct zombiemesh *zm;
+	f32 centre[3];
+	f32 pos[3];
+	f32 longest;
+	f32 k;
+	Mtxf world;
+	Mtxf *mtx;
+	s32 i;
+	s32 j;
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieDrops); i++) {
+		if (obj == &g_ZombieDrops[i].obj) {
+			drop = &g_ZombieDrops[i];
+			break;
+		}
+	}
+
+	if (drop == NULL || obj->prop == NULL || (zm = zombiesPowerupMesh(drop->kind)) == NULL) {
+		return false;
+	}
+
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	longest = zm->width > zm->height ? zm->width : zm->height;
+	longest = zm->depth > longest ? zm->depth : longest;
+	k = ZOMBIE_POWERUP_MESHSIZE / (longest * ZOMBIE_MESH_FIXED);
+
+	centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
+	centre[1] = (zm->ymin + zm->height / 2) * ZOMBIE_MESH_FIXED;
+	centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
+
+	zombiesPowerupCentre(drop, pos);
+
+	mtx4LoadYRotation(drop->age60 * 0.04f, &world);
+
+	for (i = 0; i < 3; i++) {
+		for (j = 0; j < 3; j++) {
+			world.m[i][j] *= k;
+		}
+	}
+
+	for (i = 0; i < 3; i++) {
+		world.m[3][i] = pos[i] - (world.m[0][i] * centre[0] + world.m[1][i] * centre[1] + world.m[2][i] * centre[2]);
+	}
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+	// its own gold, whatever light it is in, as Black Ops II's shine
+	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
+
+	return true;
+}
+
 // The crate where it is this frame: turning, and bobbing over the floor
 static void zombiesDropPlace(struct zombiedrop *drop)
 {
@@ -13881,7 +14089,7 @@ static void zombiesDropPlace(struct zombiedrop *drop)
 	obj->shadecol[3] = obj->nextcol[3] = 0xff;
 
 	// blinking as it runs out
-	if (ZOMBIE_DROP_LIFE60 - drop->age60 < ZOMBIE_DROP_BLINK60 && (drop->age60 / 12) % 2) {
+	if (!zombiesDropShown(drop->age60)) {
 		obj->flags2 |= OBJFLAG2_INVISIBLE;
 	} else {
 		obj->flags2 &= ~OBJFLAG2_INVISIBLE;
@@ -18862,6 +19070,50 @@ void zombiesTick(void)
 		}
 	}
 
+	// --zombies-test-powerups K: at level frame 200, power-ups K to K+3 (of
+	// ZOMBIEPOWERUP_*, round from the last to the first) in a row in front of
+	// player 1, who is not to be killed; --zombies-shot-step S takes
+	// --screenshot-frame's picture every S frames from there on
+	if (sysArgCheck("--zombies-test-powerups") && !NET_CLIENT && g_Vars.players[0] && g_Vars.players[0]->prop) {
+		extern s32 g_ShotFrame;
+		struct prop *pprop = g_Vars.players[0]->prop;
+
+		g_PlayerInvincible = true;
+
+		if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+			g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+		}
+
+		if (g_Vars.lvframenum == 200) {
+			const struct coord *look = &g_Vars.players[0]->cam_look;
+			const f32 len = sqrtf(look->x * look->x + look->z * look->z) + 0.001f;
+			const f32 fx = look->x / len;
+			const f32 fz = look->z / len;
+			const s32 first = sysArgGetInt("--zombies-test-powerups", 0);
+			s32 k;
+
+			for (k = 0; k < ARRAYCOUNT(g_ZombieDrops); k++) {
+				const f32 side = (k - 1.5f) * 70.0f;
+				struct coord pos;
+				bool made;
+
+				pos.x = pprop->pos.x + fx * 200.0f - fz * side;
+				pos.y = pprop->pos.y;
+				pos.z = pprop->pos.z + fz * 200.0f + fx * side;
+
+				made = zombiesDropMake(&g_ZombieDrops[k], (first + k) % ZOMBIEPOWERUP_COUNT, &pos,
+						zombiesGroundAt(&pos, pprop->rooms), pprop->rooms);
+
+				if (made) {
+					g_ZombieDropSerial[k]++;
+				}
+
+				sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-powerups: %d at %.0f %.0f %.0f, %s",
+						(first + k) % ZOMBIEPOWERUP_COUNT, pos.x, pos.y, pos.z, made ? "made" : "not made");
+			}
+		}
+	}
+
 	// --zombies-test-drink P: player 1 buys perk P at level frame 200 (its
 	// sounds and its drink), the player not to be killed; --zombies-shot-step
 	// S takes --screenshot-frame's picture every S frames from there on
@@ -20290,7 +20542,9 @@ static Gfx *zombiesRenderDropMarkers(Gfx *gdl)
 		s32 rows;
 		s32 r;
 
-		if (!drop->active || prop == NULL || (drop->obj.flags2 & OBJFLAG2_INVISIBLE)) {
+		// Black Ops II's own model glows instead (zombiesRenderPowerupGlows())
+		if (!drop->active || prop == NULL || (drop->obj.flags2 & OBJFLAG2_INVISIBLE)
+				|| zombiesPowerupMesh(drop->kind)) {
 			continue;
 		}
 

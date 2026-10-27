@@ -554,3 +554,21 @@ throw in third person was checked and is right (`--zombies-test-throw F`
 throws for player 1 every 120 frames). `--zombies-cherry-cam D` with D below
 0 puts the camera in front of player 1 (but the first person drink is drawn
 over it).
+**Power-ups as Black Ops II's own models (2026-10-26).** The six drops draw
+`zombie_ammocan`, `zombie_skull`, `zombie_x2_icon`, `zombie_bomb`,
+`zombie_carpenter` and `zombie_firesale` (`zombiesRenderPowerup()`), from the
+OpenAssetTools dump's `model_export/*.glb` (common_zm has the skull, x2 and
+bomb; so_zclassic_zm_transit the ammo can and hammer; zm_buried the fire
+sale) through `tools/zombies/glb2obj.py` into `build-dabs/zombies/models/
+pu_<name>/`. Give glb2obj a folder with the .glb and an `images/` of that
+zone's .dds plus common_zm's. Every one but the ammo can's body is the
+material `mc_mtl_x2icon_gold`, whose picture only common_zm has: the
+carpenter's, the fire sale's and the ammo can's second material came out
+untextured, so `pu_x2_icon_0.png` was copied in and a `map_Kd` added to their
+.mtl by hand. The diamonds over a drop are drawn only for a drop without its
+model; with one, a green glow (fx_zombie_powerup_on's look) is drawn with the
+Ray Gun's sprites, pulled towards the eye by most of the model's size, or the
+model hid all of it but its lowest edge. `--zombies-test-powerups K` lays out
+kinds K to K+3 in front of player 1 at frame 200 (`--zombies-test-turn 90` on
+Complex faces open floor from the spawn). Timing is powerup_timeout's: 15 s
+whole, then 40 blinks (15 at 0.5 s, 10 at 0.25, 15 at 0.1), 26.5 s in all.
