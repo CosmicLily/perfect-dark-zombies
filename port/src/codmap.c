@@ -139,12 +139,14 @@ struct cmat {
 	u8 solid;
 	u8 nodraw;     // neither drawn nor solid
 	u8 glow;       // lit by itself, whatever light it is in (molten lava)
-	u8 unseen;     // solid but not drawn: glass, which the rooms cannot draw see-through
+	u8 unseen;     // solid but not drawn: glass and decals, which the rooms cannot draw blended
+	u8 cut;        // its picture see-through in places: drawn cut out (an alpha test)
 };
 
 // codmaptex.py's textures/codmap.txt: a material's name and its texture number
 static char (*g_TexNames)[96];
 static s32 *g_TexNums;
+static u8 *g_TexCut;
 static s32 g_NumTexNames;
 
 #define CODMAP_TEX 32 // codmaptex.py's placeholder side: a texel is 32 of a vertex's s or t
@@ -162,12 +164,24 @@ static void texTableRead(const char *path)
 		return;
 	}
 
-	while (fscanf(f, "%95s %x", name, &num) == 2) {
-		g_TexNames = realloc(g_TexNames, sizeof(*g_TexNames) * (g_NumTexNames + 1));
-		g_TexNums = realloc(g_TexNums, sizeof(*g_TexNums) * (g_NumTexNames + 1));
-		snprintf(g_TexNames[g_NumTexNames], sizeof(g_TexNames[0]), "%s", name);
-		g_TexNums[g_NumTexNames] = (s32)num;
-		g_NumTexNames++;
+	{
+		char line[256];
+
+		while (fgets(line, sizeof(line), f)) {
+			s32 cut = 0;
+
+			if (sscanf(line, "%95s %x %d", name, &num, &cut) < 2) {
+				continue;
+			}
+
+			g_TexNames = realloc(g_TexNames, sizeof(*g_TexNames) * (g_NumTexNames + 1));
+			g_TexNums = realloc(g_TexNums, sizeof(*g_TexNums) * (g_NumTexNames + 1));
+			g_TexCut = realloc(g_TexCut, g_NumTexNames + 1);
+			snprintf(g_TexNames[g_NumTexNames], sizeof(g_TexNames[0]), "%s", name);
+			g_TexNums[g_NumTexNames] = (s32)num;
+			g_TexCut[g_NumTexNames] = cut != 0;
+			g_NumTexNames++;
+		}
 	}
 
 	fclose(f);
@@ -226,9 +240,18 @@ static s32 matFind(const char *name)
 	g_Mats[g_NumMats].solid = 1;
 	g_Mats[g_NumMats].texnum = -1;
 
+	g_Mats[g_NumMats].cut = 0;
+
 	for (i = 0; i < g_NumTexNames; i++) {
 		if (strcmp(g_TexNames[i], name) == 0) {
 			g_Mats[g_NumMats].texnum = g_TexNums[i];
+			// Black Ops II keeps more than cover in many colour maps' alpha
+			// (bricks, floors, whole cars came out holed): cut out only what is
+			// meant to be seen through
+			// (branches and leaves are not wholly clear between twigs, and with
+			// no blend colour to test against they stayed slabs: hidden below)
+			g_Mats[g_NumMats].cut = g_TexCut[i] && (strstr(name, "fence") || strstr(name, "chain")
+					|| strstr(name, "barbed") || strstr(name, "_holes"));
 		}
 	}
 
@@ -242,7 +265,15 @@ static s32 matFind(const char *name)
 	// glass, and the cut-out cards of trees, bushes and grass (a branch is a
 	// picture with see-through between its twigs, and drawn opaque it was a
 	// grey slab): the rooms draw opaque alone. A tree keeps its bark
-	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL
+	// Glass and decals want blending, which a room's opaque list has not (a
+	// decal cut out flickers against the wall under it); the rest of what is
+	// see-through in places (fences, branches, grass) is drawn cut out
+	// (decals stay drawn: some are the only floor there is, and hidden they
+	// left holes)
+	// Chain-link mesh too: the alpha test does not cut it in the port's
+	// renderer, and drawn it was a black sheet; its posts and rails are props
+	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL || strstr(name, "chainlink") != NULL
+		|| strstr(name, "chain_link") != NULL || strstr(name, "barbedfence") != NULL
 		|| ((strstr(name, "foliage") || strstr(name, "_grass") || strstr(name, "gobo"))
 			&& !strstr(name, "bark") && !strstr(name, "ground"));
 	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
@@ -885,7 +916,8 @@ static void roomWrite(struct croom *r, u32 baseptr)
 	s32 i = 0;
 	s32 c;
 
-	// the state that holds throughout: the vertex colour, both faces
+	// The state that holds throughout: one cycle, the vertex colour, both
+	// faces (two cycles and a render mode of the room's own drew nothing at all)
 	{
 		Gfx g[3];
 
@@ -915,7 +947,18 @@ static void roomWrite(struct croom *r, u32 baseptr)
 		// it there and patches the G_TEXTURE before it), the picture times
 		// the vertex colour; or none, the vertex colour alone
 		if (i == 0 || g_Mats[g_Tris[r->tris[i - 1]].mat].texnum != texnum) {
+			// a cut-out (a fence's mesh, a branch's twigs): its picture's
+			// clear texels not drawn
+			const s32 cut = texnum >= 0 && g_Mats[g_Tris[r->tris[i]].mat].cut;
 			Gfx g[2];
+
+			// (no blend colour: the port's renderer knows no G_SETBLENDCOLOR and
+			// ended the room's list there, drawing none of it; the threshold then
+			// passes every texel not wholly clear)
+			gDPPipeSync(&g[0]);
+			gDPSetAlphaCompare(&g[1], cut ? G_AC_THRESHOLD : G_AC_NONE);
+			gfxWords(&words, &g[0]);
+			gfxWords(&words, &g[1]);
 
 			if (texnum >= 0) {
 				gSPTexture(&g[0], 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
@@ -923,7 +966,11 @@ static void roomWrite(struct croom *r, u32 baseptr)
 				// subcmd 4: one tile, wrapping both ways
 				cbU32(&words, 0xc0000000u | 4);
 				cbU32(&words, (u32)texnum & 0xfff);
-				gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_MODULATERGB);
+				if (cut) {
+					gDPSetCombineMode(&g[1], G_CC_MODULATERGBA, G_CC_MODULATERGBA);
+				} else {
+					gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_MODULATERGB);
+				}
 				gfxWords(&words, &g[1]);
 			} else {
 				gSPTexture(&g[0], 0, 0, 0, G_TX_RENDERTILE, G_OFF);

@@ -752,3 +752,15 @@ every bot at the start; those are now flagged `g_ZombieHidden` until
 `zombiesSpawnOne()` sends them in, and `zombiesRenderCodZombie()` draws
 nothing for one (`zombiesHideCorpse()`), so the match no longer opens on the
 horde dropping dead round the players.
+**Town's room state, and what does not work in it (2026-10-27).** A
+codmap room's list must stay one cycle with no render mode of its own: two
+cycles with `G_RM_PASS`/`*_OPA_SURF2` (to let `gfxReplaceGbiCommands()` fog it)
+drew no room at all, and **the port's renderer knows no G_SETBLENDCOLOR
+(0xf9)**: it logged "Unknown GBI opcode 0xf9" and ended every room's list
+there. So there is no fog on the rooms yet, and an alpha test has only the
+threshold 0, which cut nothing out of the chain-link fence: chain-link and
+barbed fence materials are hidden (`unseen`) instead, as glass and foliage
+cards are; decals stay drawn (hidden, one left a hole in the bank's floor).
+codmaptex.py's codmap.txt has a third column, 1 when a picture is see-through
+in 2% or more of it; many of Black Ops II's opaque maps (bricks, cars) are,
+so only fence-like names may use it.

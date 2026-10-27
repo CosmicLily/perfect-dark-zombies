@@ -68,6 +68,15 @@ def halve(w, h, rgba):
     return nw, nh, out
 
 
+def cutout(rgba):
+    """1 when enough of the picture is see-through to be drawn cut out (a
+    fence's mesh, a branch's twigs): codmap.c draws it with an alpha test"""
+    n = len(rgba) // 4
+    step = max(1, n // 8192)
+    clear = sum(1 for i in range(0, n, step) if rgba[i * 4 + 3] < 128)
+    return 1 if clear * step > n * 0.02 else 0
+
+
 def mean(rgba):
     n = len(rgba) // 4
     step = max(1, n // 4096)
@@ -131,7 +140,7 @@ def props(models, box, mapdir, moddir):
                         w, h, rgba = halve(w, h, rgba)
                     png_write(os.path.join(outdir, "%04x.png" % num), w, h, rgba)
                     open(os.path.join(outdir, "%04x.bin" % num), "wb").write(placeholder(mean(rgba)))
-                    lines.append("%s %04x" % (cur, num))
+                    lines.append("%s %04x %d" % (cur, num, cutout(rgba)))
                     have.add(cur)
                     print("%04x %s %dx%d" % (num, cur, w, h), flush=True)
                     num += 1
@@ -213,7 +222,7 @@ def main():
                 w, h, rgba = got
                 png_write(os.path.join(outdir, "%04x.png" % num), w, h, rgba)
                 open(os.path.join(outdir, "%04x.bin" % num), "wb").write(placeholder(mean(rgba)))
-                lines.append("%s %04x" % (name, num))
+                lines.append("%s %04x %d" % (name, num, cutout(rgba)))
                 print("%04x %s %dx%d (lava)" % (num, name, w, h), flush=True)
                 num += 1
             continue
@@ -243,7 +252,7 @@ def main():
 
         png_write(os.path.join(outdir, "%04x.png" % num), w, h, rgba)
         open(os.path.join(outdir, "%04x.bin" % num), "wb").write(placeholder(mean(rgba)))
-        lines.append("%s %04x" % (name, num))
+        lines.append("%s %04x %d" % (name, num, cutout(rgba)))
         print("%04x %s %dx%d" % (num, name, w, h), flush=True)
         num += 1
 
