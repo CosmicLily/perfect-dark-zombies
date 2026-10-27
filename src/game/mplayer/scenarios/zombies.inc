@@ -1636,6 +1636,12 @@ static s32 g_ZombieNearPerk[MAX_PLAYERS];      // the machine (not Juggernog's) 
 static s32 g_ZombiePerkHeld60[MAX_PLAYERS];
 static bool g_ZombiePerkNeedsRelease[MAX_PLAYERS];
 static s32 g_ZombieQrSoloBuys = 0;
+static s32 g_ZombieQrLeave60 = -1;             // Quick Revive alone, its machine going (zombiesTickQrMachine()), -1 not
+#define ZOMBIE_QR_LEAVE_WAIT60 120
+#define ZOMBIE_QR_LEAVE_RISE60 180
+#define ZOMBIE_QR_LEAVE_RISE   (40 * 2.54f) // inches, our units
+#define ZOMBIE_QR_LEAVE_ROCK   10.0f // degrees
+#define ZOMBIE_QR_LEAVE_SWING  30.0f // 60ths
 static s32 g_ZombieSelfRevive60[MAX_PLAYERS];  // Quick Revive alone: 60ths until up again, 0 for none
 
 // Alive, standing or down (zombiesPlayerIsUp() is standing only)
@@ -1708,6 +1714,7 @@ static void zombiesResetPerks(void)
 	// a new stage: the last one's props went with it
 	bzero(g_ZombiePerkObjs, sizeof(g_ZombiePerkObjs));
 	g_ZombieQrSoloBuys = 0;
+	g_ZombieQrLeave60 = -1;
 
 	for (k = 0; k < ZOMBIEPERK_COUNT; k++) {
 		g_ZombiePerkPlaced[k] = false;
@@ -3569,6 +3576,74 @@ static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defa
  * propobj.c's objRender(), for each object before it draws its model: true
  * when this is a machine with a model of its own, drawn here instead.
  */
+/**
+ * Quick Revive's machine as it goes: risen so far, and rocked about its own
+ * side-to-side axis through its foot (vibrate's swing); nothing while it stays
+ */
+static void zombiesQrLeavePose(Mtxf *world, const struct coord *foot, const f32 side[3])
+{
+	const s32 t = g_ZombieQrLeave60 - ZOMBIE_QR_LEAVE_WAIT60;
+	f32 a[3];
+	f32 r[3][3];
+	f32 m[3][4];
+	f32 len;
+	f32 ang;
+	f32 c;
+	f32 s;
+	s32 i;
+	s32 j;
+
+	if (t <= 0) {
+		return;
+	}
+
+	len = sqrtf(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+
+	if (len <= 0) {
+		return;
+	}
+
+	for (i = 0; i < 3; i++) {
+		a[i] = side[i] / len;
+	}
+
+	ang = ZOMBIE_QR_LEAVE_ROCK * (M_BADPI / 180.0f) * sinf(t * (2 * M_BADPI) / ZOMBIE_QR_LEAVE_SWING);
+	c = cosf(ang);
+	s = sinf(ang);
+
+	// Rodrigues: r[row][col], turning about a
+	for (i = 0; i < 3; i++) {
+		for (j = 0; j < 3; j++) {
+			r[i][j] = (1 - c) * a[i] * a[j] + (i == j ? c : 0);
+		}
+	}
+
+	r[0][1] -= s * a[2]; r[0][2] += s * a[1];
+	r[1][0] += s * a[2]; r[1][2] -= s * a[0];
+	r[2][0] -= s * a[1]; r[2][1] += s * a[0];
+
+	// world's columns (m[col][row]) turned, its place turned about the foot
+	for (j = 0; j < 4; j++) {
+		const f32 v[3] = {
+			world->m[j][0] - (j == 3 ? foot->x : 0),
+			world->m[j][1] - (j == 3 ? foot->y : 0),
+			world->m[j][2] - (j == 3 ? foot->z : 0),
+		};
+
+		for (i = 0; i < 3; i++) {
+			m[i][j] = r[i][0] * v[0] + r[i][1] * v[1] + r[i][2] * v[2];
+		}
+	}
+
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 3; i++) {
+			world->m[j][i] = m[i][j] + (j == 3 ? (&foot->x)[i] : 0);
+		}
+	}
+
+	world->m[3][1] += ZOMBIE_QR_LEAVE_RISE * (t < ZOMBIE_QR_LEAVE_RISE60 ? t : ZOMBIE_QR_LEAVE_RISE60) / ZOMBIE_QR_LEAVE_RISE60;
+}
+
 bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj *obj)
 {
 	struct zombiemesh *zm = NULL;
@@ -3683,6 +3758,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 	world.m[3][0] = base.x;
 	world.m[3][1] = base.y;
 	world.m[3][2] = base.z;
+
+	// Quick Revive alone, going (zombiesTickQrMachine())
+	if (id == ZOMBIEPERK_QUICKREVIVE) {
+		zombiesQrLeavePose(&world, &obj->prop->pos, obj->realrot[0]);
+	}
 
 	mtx = gfxAllocateMatrix();
 	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
@@ -18923,15 +19003,19 @@ static void zombiesTickDropHums(void)
 }
 
 /**
- * Quick Revive alone, as Black Ops II's: once its last bottle (the third) is
- * bought and spent - nobody has the perk or is drinking it - the machine goes,
- * out of the world, its prompt, hum and jingle with it (a machine no longer
- * placed, to everything that looks for one). Machines are made anew with the
- * next stage.
+ * Quick Revive alone, as Black Ops II's (_zm_perks' revive_solo_fx): once its
+ * last bottle (the third) is drunk, the machine goes, as the Mystery Box goes.
+ * Two seconds on, zmb_box_move, and it rises 40 inches over three seconds,
+ * rocking (vibrate: ten degrees, half a second a swing; zombiesQrLeavePose()),
+ * then a puff of smoke (the poltergeist effect's place) and zmb_box_poof, and
+ * it is out of the world, its prompt, hum and jingle with it (a machine no
+ * longer placed, to everything that looks for one). The life it gave is kept.
+ * Machines are made anew with the next stage.
  */
 static void zombiesTickQrMachine(void)
 {
 	struct defaultobj *obj = &g_ZombiePerkObjs[ZOMBIEPERK_QUICKREVIVE];
+	s32 before;
 	s32 p;
 
 	if (!g_ZombiePerkPlaced[ZOMBIEPERK_QUICKREVIVE] || !obj->prop
@@ -18939,13 +19023,39 @@ static void zombiesTickQrMachine(void)
 		return;
 	}
 
-	for (p = 0; p < PLAYERCOUNT(); p++) {
-		if (zombiesPlayerHasPerk(p, ZOMBIEPERK_QUICKREVIVE)
-				|| (g_ZombieDrink60[p] >= 0 && g_ZombieDrinkPerk[p] == ZOMBIEPERK_QUICKREVIVE)) {
-			return;
+	// the last bottle still in the hand: not yet
+	if (g_ZombieQrLeave60 < 0) {
+		for (p = 0; p < PLAYERCOUNT(); p++) {
+			if (g_ZombieDrink60[p] >= 0 && g_ZombieDrinkPerk[p] == ZOMBIEPERK_QUICKREVIVE) {
+				return;
+			}
 		}
+
+		g_ZombieQrLeave60 = 0;
+		return;
 	}
 
+	before = g_ZombieQrLeave60;
+	g_ZombieQrLeave60 += g_Vars.lvupdate60;
+
+	if (before < ZOMBIE_QR_LEAVE_WAIT60 && g_ZombieQrLeave60 >= ZOMBIE_QR_LEAVE_WAIT60) {
+		zombiesPlayCodSound(ZMSFX_BOX_MOVE, obj->prop);
+	}
+
+	if (g_ZombieQrLeave60 < ZOMBIE_QR_LEAVE_WAIT60 + ZOMBIE_QR_LEAVE_RISE60) {
+		return;
+	}
+
+	// the puff where it was, as high as it went
+	{
+		struct coord pos = obj->prop->pos;
+
+		pos.y += ZOMBIE_QR_LEAVE_RISE + 90;
+		smokeCreateSimple(&pos, obj->prop->rooms, SMOKETYPE_MEDIUM);
+		zombiesCodOr(ZMSFX_BOX_POOF, obj->prop, SFX_EXPLOSION_8098, 1.4f);
+	}
+
+	g_ZombieQrLeave60 = -1;
 	propDeregisterRooms(obj->prop);
 	propDisable(obj->prop);
 	g_ZombiePerkPlaced[ZOMBIEPERK_QUICKREVIVE] = false;
@@ -19096,6 +19206,14 @@ void zombiesTick(void)
 			zombiesGrenadePress();
 			setCurrentPlayerNum(prevplayernum);
 		}
+	}
+
+	// --zombies-test-qrleave F: Quick Revive's three solo bottles counted as
+	// bought at level frame F, so its machine goes (zombiesTickQrMachine());
+	// watch it with --zombies-test-perk 1
+	if (sysArgCheck("--zombies-test-qrleave") && !NET_CLIENT
+			&& g_Vars.lvframenum == sysArgGetInt("--zombies-test-qrleave", 200)) {
+		g_ZombieQrSoloBuys = ZOMBIE_QR_SOLO_BUYS;
 	}
 
 	// --zombies-test-powerups K: at level frame 200, power-ups K to K+3 (of

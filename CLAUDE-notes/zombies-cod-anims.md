@@ -572,3 +572,12 @@ model hid all of it but its lowest edge. `--zombies-test-powerups K` lays out
 kinds K to K+3 in front of player 1 at frame 200 (`--zombies-test-turn 90` on
 Complex faces open floor from the spawn). Timing is powerup_timeout's: 15 s
 whole, then 40 blinks (15 at 0.5 s, 10 at 0.25, 15 at 0.1), 26.5 s in all.
+**Solo Quick Revive's machine leaving (2026-10-26).** As _zm_perks'
+revive_solo_fx: the machine goes once the third solo bottle is *drunk*, not
+once its life is used (ours waited for that before, and then just vanished).
+Two seconds on, `box_move`; it rises 40 inches over three seconds rocking
+ten degrees a half-second swing about its own side axis through its foot
+(`zombiesQrLeavePose()`, in the drawn matrix only: the prop and its collision
+stay put until it goes); then a medium smoke burst stands in for the
+poltergeist effect (effect files do not dump) with `box_poof`, and the prop is
+disabled as before. `--zombies-test-qrleave F --zombies-test-perk 1` films it.

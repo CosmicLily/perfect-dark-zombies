@@ -69,6 +69,7 @@
 #include "game/quaternion.h"
 #include "game/sparks.h"
 #include "game/explosions.h"
+#include "game/smoke.h"
 #include "input.h"
 #include "net/net.h"
 #include "zmsfx.h"
