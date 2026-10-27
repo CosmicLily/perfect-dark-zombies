@@ -18057,6 +18057,14 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 			look->x = pl->prop->pos.x + pl->cam_look.x * 150 - pos->x;
 			look->y = pl->prop->pos.y - 60 - pos->y;
 			look->z = pl->prop->pos.z + pl->cam_look.z * 150 - pos->z;
+
+			// D below 0: in front of them, looking back at their chest
+			if (d < 0) {
+				pos->y = pl->prop->pos.y + 20;
+				look->x = pl->prop->pos.x - pos->x;
+				look->y = pl->prop->pos.y - pos->y;
+				look->z = pl->prop->pos.z - pos->z;
+			}
 			guNormalize(&look->x, &look->y, &look->z);
 			up->x = 0;
 			up->y = 1;
@@ -18802,9 +18810,29 @@ void zombiesTick(void)
 
 	zombiesTickPopups();
 
-	// --zombies-test-cherry: Electric Cherry's burst round player 1 every 90
-	// frames (from frame 30), the player not to be killed; --zombies-shot-step
-	// S takes --screenshot-frame's picture every S frames from there on
+	// --zombies-test-throw F: player 1 throws a grenade at level frame F and
+	// every 120 frames after (the button let go at once: a quick throw), with
+	// grenades to spare; with --zombies-test-hold, seen in third person
+	if (sysArgCheck("--zombies-test-throw") && !NET_CLIENT && g_Vars.players[0]) {
+		extern s32 g_ShotFrame;
+		const s32 at = sysArgGetInt("--zombies-test-throw", 300);
+
+		g_PlayerInvincible = true;
+
+		if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+			g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+		}
+
+		if (g_Vars.lvframenum >= at && (g_Vars.lvframenum - at) % 120 == 0) {
+			const s32 prevplayernum = g_Vars.currentplayernum;
+
+			g_ZombieGrenades[0] = ZOMBIE_GRENADES_MAX;
+			setCurrentPlayerNum(0);
+			zombiesGrenadePress();
+			setCurrentPlayerNum(prevplayernum);
+		}
+	}
+
 	// --zombies-test-drink P: player 1 buys perk P at level frame 200 (its
 	// sounds and its drink), the player not to be killed; --zombies-shot-step
 	// S takes --screenshot-frame's picture every S frames from there on
@@ -18824,6 +18852,9 @@ void zombiesTick(void)
 		}
 	}
 
+	// --zombies-test-cherry: Electric Cherry's burst round player 1 every 90
+	// frames (from frame 30), the player not to be killed; --zombies-shot-step
+	// S takes --screenshot-frame's picture every S frames from there on
 	if (sysArgCheck("--zombies-test-cherry")) {
 		extern s32 g_ShotFrame;
 

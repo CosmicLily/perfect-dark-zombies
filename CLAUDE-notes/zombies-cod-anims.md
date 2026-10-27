@@ -537,3 +537,20 @@ and `--zombies-test-zombie 300` (the camera among them):
   `-O2 -finline-functions` (it made little difference: the loop is memory
   bound); a slot is skinned once a frame however many views draw it, and one
   further than `ZMCHAR_LOD_DIST` (2000) every other frame.
+**The drink clip, second look (2026-10-26):** still off. What is ruled out:
+the body's joint offsets are `divebake.py`'s PD table exactly; at clip frame
+32 each hand's place *from its shoulder* in the chest's frame is the
+converter's to the unit (right hand (-26, 184, 216): up by the face and in
+front of it, where Black Ops II's right wrist is 14 inches from the head).
+The shoulders sit some 450 units lower against the chest matrix's origin
+than the converter's `pos[2]` (the chest matrix is not where its offsets
+start, as the throw found), which does not change the arms. Yet drawn, the
+bottle hand reaches forward at chest height. So the matrices as posed are
+right and something after them (the mesh's binding to the arm's second
+matrices, or a later pose) is not: look there next. Watch it with
+`--zombies-test-hold 2 --zombies-test-third 1 --zombies-test-turn 180
+--zombies-test-drink 0`; clip frame F is level frame 218 + 2F. The grenade
+throw in third person was checked and is right (`--zombies-test-throw F`
+throws for player 1 every 120 frames). `--zombies-cherry-cam D` with D below
+0 puts the camera in front of player 1 (but the first person drink is drawn
+over it).
