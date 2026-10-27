@@ -17583,7 +17583,10 @@ static bool zombiesBoxPrompt(s32 playernum, char *text)
 #define ZOMBIE_GO_PAN60        330         // black, and the camera over the arena
 #define ZOMBIE_GO_BLACK60      30          // the fade to black and the fade back each
 #define ZOMBIE_GO_SKIP60       (ZOMBIE_GO_PAN60 + 150) // alone, fire or accept ends it from here
-#define ZOMBIE_GAMEOVER60      (ZOMBIE_GO_PAN60 + 720) // how long until the end screens
+// how long until the end screens: the whole of Tranzit's game over song (21
+// seconds from the game's end, zombiesGameOverMusic()) and a breath after it.
+// At 17.5 seconds the end screens cut its last few off.
+#define ZOMBIE_GAMEOVER60      (ZOMBIE_GO_PAN60 + 990)
 #define ZOMBIE_GAMEOVER_FADE60 60          // the old GAME OVER's fade in
 #define ZOMBIE_GROAN_MIN60     70          // a groan from somewhere this often at the most,
 #define ZOMBIE_GROAN_MAX60     200         // and at the least, while any zombie is near
