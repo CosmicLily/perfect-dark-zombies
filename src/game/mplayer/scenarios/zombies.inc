@@ -17888,9 +17888,10 @@ static void zombiesRoundSting(void)
 	}
 }
 
-// The game over's: Black Ops II's (Buried's Dead or Undead, Tranzit having
-// none), or Perfect Dark's failed mission's when its file is not there
-#define ZOMBIE_GAME_OVER240 TICKS(240 * 26)
+// The game over's: Black Ops II's, Tranzit's (21 seconds, in the patch's bank,
+// zmb_patch.all.sabs: no alias names it), or Perfect Dark's failed mission's
+// when its file is not there
+#define ZOMBIE_GAME_OVER240 TICKS(240 * 21)
 
 static void zombiesGameOverMusic(void)
 {

@@ -506,3 +506,16 @@ and a watchdog (`unk48`, snd.c) resets the player when one runs a second past
 its envelope capped at 5.5 s. The round start played three seconds and then
 the whole mix went silent. `zmSfxIsOurs()` lets these sounds through both,
 as GoldenEye's bank sounds are let through the first.
+## Tranzit's game over song, and finding a sound no alias names (2026-10-26)
+
+Tranzit's game over song is in **`zmb_patch.all.sabs`** (the patch's bank),
+the FLAC at byte 31153505, 21.0 s, stereo 48 kHz. No dumped aliases.csv names
+it: Tranzit's own `zmb_classic_transit.all` has no `mus_zombie_game_over`
+(Buried's "Dead or Undead" was used first, and was wrong). Found by sound: the
+YouTube video "TranZit - Game Over Song" played in the browser pane through a
+Web Audio analyser (not to the speakers), its loudness every 0.1 s, matched
+against every 18-40 s FLAC stream in every `zmb_*.sabs` (each stream starts
+"fLaC"; its STREAMINFO gives the length). The right one scored 0.887 lined up
+at its start; every other was 0.6 or less and lined up mid-track. The banks
+that had to be looked in beyond the map's own: `zmb_patch`,
+`zmb_returned_tranzit`, `zmb_highrise`, `zmb_rt_load`, `zmb_code_post_gfx`.

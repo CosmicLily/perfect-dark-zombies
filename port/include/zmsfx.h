@@ -62,7 +62,7 @@ enum {
 	ZMSFX_SWIPED,              // evt_player_swiped, one of three: a blow taken
 	ZMSFX_SWIPED_END = ZMSFX_SWIPED + 3 - 1,
 	ZMSFX_PU_LOOP,             // zmb_spawn_powerup_loop: a power-up lying there, looped
-	ZMSFX_GAME_OVER,           // mus_zombie_game_over, Buried's "Dead or Undead" (Tranzit has none)
+	ZMSFX_GAME_OVER,           // Tranzit's game over song (zmb_patch.all.sabs, found by its sound)
 	ZMSFX_PERK_STING,          // + a perk (zombies.inc's ZOMBIEPERK_*): its sting as it is bought (mus_perks_*_sting)
 	ZMSFX_PERK_JINGLE = ZMSFX_PERK_STING + 9, // + a perk: its machine's jingle (mus_perks_*_jingle)
 	ZMSFX_FIXED_COUNT = ZMSFX_PERK_JINGLE + 9
