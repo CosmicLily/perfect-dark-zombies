@@ -41,7 +41,9 @@ enum {
 	ZMCHAR_CRAWL_TEAR = ZMCHAR_TEAR + 6 * 3,       // + board * 3 + ZMCHAR_TEAR_*: a crawler's
 	ZMCHAR_BOARD_PULL = ZMCHAR_CRAWL_TEAR + 6 * 3, // + board: the board's own, going
 	ZMCHAR_BOARD_REPAIR = ZMCHAR_BOARD_PULL + 6,   // + board: and coming back
-	ZMCHAR_ANIMCOUNT = ZMCHAR_BOARD_REPAIR + 6
+	ZMCHAR_JUMPUP = ZMCHAR_BOARD_REPAIR + 6,       // + one of 4: up a ledge, by its height (zmcharJumpUp())
+	ZMCHAR_CRAWL_JUMPUP = ZMCHAR_JUMPUP + 4,       // + one of 4: a crawler's
+	ZMCHAR_ANIMCOUNT = ZMCHAR_CRAWL_JUMPUP + 4
 };
 
 enum {
@@ -95,6 +97,13 @@ bool zmcharAnimRoot(s32 anim, f32 frame, f32 pos[3], f32 q[4]);
  * lands (frames: its root going down, and all the way down)
  */
 s32 zmcharJumpDown(f32 inches, bool crawler, f32 *leave, f32 *land);
+
+/**
+ * The jump up a ledge nearest a climb of inches, a crawler's or not (an
+ * animation, -1 none there), and how far its root goes up over it and how
+ * far forward (inches, at its last frame)
+ */
+s32 zmcharJumpUp(f32 inches, bool crawler, f32 *rise, f32 *forward);
 
 // A joint of the zombie's skeleton by name (j_head, j_knee_le ...), -1 none,
 // and its parent

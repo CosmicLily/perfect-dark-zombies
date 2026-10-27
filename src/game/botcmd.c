@@ -26,6 +26,8 @@
  * The second value is the maximum attack distance.
  * The third value doesn't appear to have any purpose.
  */
+bool zombiesIsActive(void);
+
 f32 g_BotDistConfigs[][3] = {
 	{ 0,    120,  10000 }, // BOTDISTCFG_CLOSE
 	{ 300,  450,  4500  }, // BOTDISTCFG_PISTOL
@@ -189,7 +191,10 @@ void botcmdTickDistMode(struct chrdata *chr)
 			break;
 		}
 
-		aibot->distmodettl60 = TICKS(60);
+		// a zombie's way to its target found again four times as often: Call
+		// of Duty's keep after a player who moves, where a second's old way
+		// sent them to where the player had been
+		aibot->distmodettl60 = zombiesIsActive() ? TICKS(15) : TICKS(60);
 	}
 }
 

@@ -164,6 +164,9 @@ static const char *const g_ZmcharAnimNames[ZMCHAR_TEAR] = {
 static const f32 g_ZmcharJumpDownHeight[] = { 48, 72, 96, 127, 190, 222 };
 static const f32 g_ZmcharCrawlJumpDownHeight[] = { 48, 96, 127, 189, 222 };
 
+// each jump up's, walking and crawling alike (ZMCHAR_JUMPUP, ZMCHAR_CRAWL_JUMPUP)
+static const f32 g_ZmcharJumpUpHeight[] = { 48, 96, 127, 222 };
+
 // each loop's root motion, inches a second (the .xanim's tag_origin delta:
 // these are drawn where the zombie's body is, its motion its own)
 static const f32 g_ZmcharAnimSpeed[ZMCHAR_TEAR] = {
@@ -185,8 +188,12 @@ static void zmcharAnimName(s32 anim, char *out, s32 size)
 				parts[(anim - ZMCHAR_CRAWL_TEAR) % 3]);
 	} else if (anim < ZMCHAR_BOARD_REPAIR) {
 		snprintf(out, size, "o_zombie_board_%d_pull", anim - ZMCHAR_BOARD_PULL + 1);
-	} else {
+	} else if (anim < ZMCHAR_JUMPUP) {
 		snprintf(out, size, "o_zombie_board_%d_repair", anim - ZMCHAR_BOARD_REPAIR + 1);
+	} else if (anim < ZMCHAR_CRAWL_JUMPUP) {
+		snprintf(out, size, "ai_zombie_jump_up_%d", (s32)g_ZmcharJumpUpHeight[anim - ZMCHAR_JUMPUP]);
+	} else {
+		snprintf(out, size, "ai_zombie_crawl_jump_up_%d", (s32)g_ZmcharJumpUpHeight[anim - ZMCHAR_CRAWL_JUMPUP]);
 	}
 }
 
@@ -779,6 +786,42 @@ bool zmcharAnimRoot(s32 anim, f32 frame, f32 pos[3], f32 q[4])
 	}
 
 	return any;
+}
+
+s32 zmcharJumpUp(f32 inches, bool crawler, f32 *rise, f32 *forward)
+{
+	const s32 first = crawler ? ZMCHAR_CRAWL_JUMPUP : ZMCHAR_JUMPUP;
+	f32 pos[3];
+	f32 q[4];
+	s32 best = -1;
+	s32 k;
+
+	for (k = 0; k < ARRAYCOUNT(g_ZmcharJumpUpHeight); k++) {
+		if (!zmcharReady() || !g_ZmcharAnims[first + k].ok) {
+			continue;
+		}
+
+		if (best < 0 || fabsf(g_ZmcharJumpUpHeight[k] - inches) < fabsf(g_ZmcharJumpUpHeight[best - first] - inches)) {
+			best = first + k;
+		}
+	}
+
+	if (best < 0) {
+		return -1;
+	}
+
+	*rise = g_ZmcharJumpUpHeight[best - first];
+	*forward = 0;
+
+	if (zmcharAnimRoot(best, g_ZmcharAnims[best].frames - 1, pos, q)) {
+		if (pos[2] > 1) {
+			*rise = pos[2];
+		}
+
+		*forward = pos[0];
+	}
+
+	return best;
 }
 
 s32 zmcharJumpDown(f32 inches, bool crawler, f32 *leave, f32 *land)

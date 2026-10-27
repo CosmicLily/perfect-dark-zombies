@@ -44,6 +44,7 @@
 
 bool zombiesIsActive(void);
 f32 zombiesChrSpeedScale(struct chrdata *chr);
+bool zombiesFacesTarget(struct chrdata *chr);
 
 #define PICKUPCRITERIA_DEFAULT  0
 #define PICKUPCRITERIA_CRITICAL 1
@@ -357,7 +358,8 @@ bool botIsJumping(struct chrdata *chr)
  */
 static void botTickEvade(struct chrdata *chr)
 {
-	if (!g_Vars.normmplayerisrunning || chr->target == -1) {
+	// Call of Duty's zombies never jump or roll out of the way
+	if (!g_Vars.normmplayerisrunning || chr->target == -1 || zombiesIsActive()) {
 		return;
 	}
 
@@ -441,7 +443,8 @@ void botTryDodge(struct chrdata *chr)
 {
 	bool toleft;
 
-	if (!g_Vars.normmplayerisrunning || !chr->aibot) {
+	// a zombie shot keeps coming (Call of Duty's never dodge)
+	if (!g_Vars.normmplayerisrunning || !chr->aibot || zombiesIsActive()) {
 		return;
 	}
 
@@ -1265,7 +1268,10 @@ s32 botTick(struct prop *prop)
 				targetangle = chrGetInverseTheta(chr);
 			} else if (aibot->skrocket) {
 				targetangle = chrGetInverseTheta(chr);
-			} else if (botIsAboutToAttack(chr, false)) {
+			} else if (botIsAboutToAttack(chr, false) && (!zombiesIsActive() || zombiesFacesTarget(chr))) {
+				// a zombie faces the way it walks until its target is in
+				// reach, as Call of Duty's do: turned to its target the whole
+				// way, it walked sideways and backwards along its route
 				struct prop *target = chrGetTargetProp(chr);
 				targetangle = chrGetAngleToPos(chr, &target->pos);
 				targetangle = oldangle + targetangle + aibot->extraangle;

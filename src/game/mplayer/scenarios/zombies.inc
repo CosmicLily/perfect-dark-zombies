@@ -879,6 +879,19 @@ f32 zombiesChrSpeedScale(struct chrdata *chr)
 // Barriers and buyable doors (below, before zombiesTick())
 static s32 g_ZombieSpawnAt = -1;            // the barrier the zombie being sent in goes to, -1 a pad
 static s32 g_ZombieAtBarrier[MAX_BOTS];     // the barrier each zombie is held at, -1 none
+
+// Each zombie's jump up a ladder (zombiesTickClimb())
+static struct {
+	bool on;
+	s32 anim;
+	s32 t60;
+	s32 len60;
+	struct coord from;  // where it stood at the foot, its feet's height
+	f32 theta;          // facing the ladder
+	f32 stretch;        // the ledge's rise over the clip's own
+	struct coord to;    // its place on the floor at the top
+	RoomNum torooms[8];
+} g_ZombieClimb[MAX_BOTS];
 static s32 zombiesBarrierPick(void);
 static void zombiesBarrierTake(s32 b, s32 botnum);
 
@@ -899,6 +912,7 @@ static bool zombiesSpawnOne(void)
 			g_ZombieAtBarrier[i] = -1;
 			g_ZombieCrawler[i] = 0;
 			g_ZombieGib[i] = 0;
+			g_ZombieClimb[i].on = false;
 			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
 
@@ -6819,6 +6833,27 @@ static struct {
 	f32 land;    // and on the floor
 } g_ZombieCodFall[MAX_BOTS];
 
+/**
+ * A zombie up a ladder. Black Ops II's zombies have no ladders: at a ledge
+ * they jump up it (ai_zombie_jump_up_48 to _222, a crawler's
+ * ai_zombie_crawl_jump_up_*) and down it the other way (zombiesCodFall(),
+ * which a ladder's head already was). A zombie whose way brings it onto a
+ * ladder's foot (chr->onladder, standing on its floor) is held there instead
+ * of climbing (zombiesTickClimb(), the host's), plays the jump up nearest the
+ * ladder's height, carried by its root with its rise stretched to the
+ * ledge's (zombiesCodClimbPlace()), and is put on the floor at the top past
+ * the ladder's face as it ends. A ladder with no floor found behind its head
+ * is climbed as before.
+ */
+struct prop *chrGetTargetProp(struct chrdata *chr);
+void botApplyHold(struct chrdata *chr, struct coord *pos, RoomNum *room, f32 angle);
+
+#define ZOMBIE_CLIMB_MIN  60.0f // a ladder reaching at least this far over its feet
+#define ZOMBIE_CLIMB_PAST 45.0f // the floor at the top looked for this far past the ladder's face
+
+// (g_ZombieClimb is above zombiesSpawnOne(), which clears it)
+
+
 static Mtxf g_ZombieCodPlace[MAX_BOTS]; // each one's place as last drawn: its vertices' units into the world
 static bool g_ZombieCodPlaced[MAX_BOTS];
 
@@ -6849,6 +6884,30 @@ static bool zombiesCodNearPlayer(struct chrdata *chr)
 	return false;
 }
 
+/**
+ * bot.c asks, turning a zombie: whether it turns to face its target (a player
+ * up close, in sight) or the way it is walking, as Call of Duty's zombies do.
+ * Twice a swipe's reach, so it has turned by the time it swings.
+ */
+bool zombiesFacesTarget(struct chrdata *chr)
+{
+	struct prop *target = chr->target != -1 ? chrGetTargetProp(chr) : NULL;
+	f32 dx;
+	f32 dy;
+	f32 dz;
+
+	if (target == NULL || chr->prop == NULL) {
+		return false;
+	}
+
+	dx = target->pos.x - chr->prop->pos.x;
+	dy = target->pos.y - chr->prop->pos.y;
+	dz = target->pos.z - chr->prop->pos.z;
+
+	return dx * dx + dz * dz < ZOMBIE_COD_REACH * ZOMBIE_COD_REACH * 4 && dy < 150 && dy > -150
+		&& chr->aibot && chr->aibot->targetinsight;
+}
+
 static void zombiesCodSet(s32 i, s32 anim)
 {
 	if (g_ZombieCod[i].anim == anim) {
@@ -6864,6 +6923,185 @@ static void zombiesCodSet(s32 i, s32 anim)
 
 static bool zombiesCodBarrier(s32 i, struct chrdata *chr, s32 *anim, f32 *frame);
 static void zombiesCodBarrierPlace(s32 i, Mtxf *world);
+
+// Up a ledge: facing the ladder from where it stood, its clip's root motion
+// carrying it, the rise stretched to the ledge's (zombiesTickClimb())
+static void zombiesCodClimbPlace(s32 i, Mtxf *world)
+{
+	const f32 s = sinf(g_ZombieClimb[i].theta);
+	const f32 c = cosf(g_ZombieClimb[i].theta);
+	f32 root[3] = { 0, 0, 0 };
+	f32 q[4];
+
+	world->m[0][0] = s * ZOMBIE_COD_SCALE / 4.0f;
+	world->m[0][1] = 0;
+	world->m[0][2] = c * ZOMBIE_COD_SCALE / 4.0f;
+	world->m[1][0] = c * ZOMBIE_COD_SCALE / 4.0f;
+	world->m[1][1] = 0;
+	world->m[1][2] = -s * ZOMBIE_COD_SCALE / 4.0f;
+	world->m[2][0] = 0;
+	world->m[2][1] = ZOMBIE_COD_SCALE / 4.0f;
+	world->m[2][2] = 0;
+
+	zmcharAnimRoot(g_ZombieCod[i].anim, g_ZombieCod[i].frame, root, q);
+
+	// the clip's root is where the body is drawn from: the frame's x and y
+	// on the floor, its z up the ledge, stretched
+	world->m[3][0] = g_ZombieClimb[i].from.x + (s * root[0] + c * root[1]) * ZOMBIE_COD_SCALE;
+	world->m[3][1] = g_ZombieClimb[i].from.y + root[2] * g_ZombieClimb[i].stretch * ZOMBIE_COD_SCALE;
+	world->m[3][2] = g_ZombieClimb[i].from.z + (c * root[0] - s * root[1]) * ZOMBIE_COD_SCALE;
+}
+
+static void zombiesCodSet(s32 i, s32 anim);
+
+/**
+ * zombiesTick()'s, the host's, for each zombie before its orders: a jump up
+ * a ladder begun (its foot reached), moved on, and ended on the floor at the
+ * top. True while it is held for one.
+ */
+static bool zombiesTickClimb(s32 i, struct chrdata *chr, struct prop *target)
+{
+	struct coord n;
+	struct coord above;
+	struct coord land;
+	RoomNum aboverooms[8];
+	f32 top = -1e9f;
+	f32 face = 0;
+	f32 ground;
+	f32 rise;
+	f32 forward;
+	f32 len;
+	f32 d;
+	s32 anim;
+	s32 k;
+
+	if (g_ZombieClimb[i].on) {
+		g_ZombieClimb[i].t60 += g_Vars.lvupdate60;
+
+		if (g_ZombieClimb[i].t60 < g_ZombieClimb[i].len60) {
+			if (chr->aibot->command != AIBOTCMD_HOLD) {
+				botApplyHold(chr, &chr->prop->pos, chr->prop->rooms, g_ZombieClimb[i].theta);
+			}
+
+			if (target) {
+				botSetTarget(chr, target - g_Vars.props);
+			}
+
+			return true;
+		}
+
+		// up: on the floor at the top, facing on, and after the players again
+		g_ZombieClimb[i].on = false;
+		chrMoveToPos(chr, &g_ZombieClimb[i].to, g_ZombieClimb[i].torooms, g_ZombieClimb[i].theta, true);
+		return false;
+	}
+
+	if (!chr->onladder || chr->manground - chr->ground > 5 || g_ZombieAtBarrier[i] >= 0
+			|| zmcharAnimFrames(ZMCHAR_JUMPUP) <= 0) {
+		return false;
+	}
+
+	// the ladder's head: its tiles stacked, each asked again above the last
+	for (k = 0; k < 8; k++) {
+		const f32 base = k == 0 ? chr->manground + 1 : top + 5;
+		struct coord kn;
+		f32 kface;
+		f32 ktop;
+
+		if (!cdFindLadderDist(&chr->prop->pos, chr->radius * 2.5f, base + 40 - chr->prop->pos.y,
+					base - chr->prop->pos.y, chr->prop->rooms, GEOFLAG_LADDER, &kn, &kface, &ktop)
+				|| ktop <= top) {
+			break;
+		}
+
+		if (k == 0) {
+			n = kn;
+			face = kface;
+		}
+
+		top = ktop;
+	}
+
+	if (k == 0 || top - chr->manground < ZOMBIE_CLIMB_MIN) {
+		return false;
+	}
+
+	len = sqrtf(n.x * n.x + n.z * n.z);
+
+	if (len <= 0) {
+		return false;
+	}
+
+	n.x /= len;
+	n.z /= len;
+
+	// the floor at the top, past the ladder's face (the normal faces the
+	// zombie: the ledge is the other way)
+	above = chr->prop->pos;
+	above.y = top + 30;
+	func0f065e74(&chr->prop->pos, chr->prop->rooms, &above, aboverooms);
+
+	anim = -1;
+	rise = 0;
+	forward = 0;
+	ground = -1e9f;
+
+	for (d = face + ZOMBIE_CLIMB_PAST; d <= face + ZOMBIE_CLIMB_PAST * 3; d += ZOMBIE_CLIMB_PAST) {
+		land = above;
+		land.x -= n.x * d;
+		land.z -= n.z * d;
+		func0f065e74(&above, aboverooms, &land, g_ZombieClimb[i].torooms);
+		land.y = top + 30;
+		ground = cdFindGroundAtCyl(&land, chr->radius, g_ZombieClimb[i].torooms, NULL, NULL);
+
+		if (ground > top - 60 && ground < top + 40) {
+			break;
+		}
+	}
+
+	if (ground <= top - 60 || ground >= top + 40) {
+		return false;
+	}
+
+	anim = zmcharJumpUp((ground - chr->manground) / ZOMBIE_COD_SCALE, g_ZombieCrawler[i] != 0, &rise, &forward);
+
+	if (anim < 0) {
+		return false;
+	}
+
+	// where the clip itself ends, when that is further on than the floor found
+	if (forward * ZOMBIE_COD_SCALE > d) {
+		struct coord further = above;
+
+		further.x -= n.x * forward * ZOMBIE_COD_SCALE;
+		further.z -= n.z * forward * ZOMBIE_COD_SCALE;
+		func0f065e74(&above, aboverooms, &further, aboverooms);
+		further.y = top + 30;
+
+		if (fabsf(cdFindGroundAtCyl(&further, chr->radius, aboverooms, NULL, NULL) - ground) < 20) {
+			land = further;
+			roomsCopy(aboverooms, g_ZombieClimb[i].torooms);
+		}
+	}
+
+	g_ZombieClimb[i].on = true;
+	g_ZombieClimb[i].anim = anim;
+	g_ZombieClimb[i].t60 = 0;
+	g_ZombieClimb[i].len60 = (s32)(zmcharAnimFrames(anim) * 60 / zmcharAnimRate(anim));
+	g_ZombieClimb[i].from = chr->prop->pos;
+	g_ZombieClimb[i].from.y = chr->manground;
+	g_ZombieClimb[i].theta = atan2f(-n.x, -n.z);
+	g_ZombieClimb[i].stretch = (ground - chr->manground) / ZOMBIE_COD_SCALE / MAX(1.0f, rise);
+	g_ZombieClimb[i].to = land;
+	g_ZombieClimb[i].to.y = ground + (chr->prop->pos.y - chr->manground);
+
+	botApplyHold(chr, &chr->prop->pos, chr->prop->rooms, g_ZombieClimb[i].theta);
+
+	sysLogPrintf(LOG_NOTE, "zombies: zombie %d jumps up a ledge of %.0f inches (clip %d, %.0f), from %.0f %.0f %.0f at frame %d",
+			i, (ground - chr->manground) / ZOMBIE_COD_SCALE, anim, rise, chr->prop->pos.x, chr->manground, chr->prop->pos.z, g_Vars.lvframenum);
+
+	return true;
+}
 
 static void zombiesReachHit(struct chrdata *zchr, s32 playernum);
 
@@ -7260,8 +7498,12 @@ bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *
 
 		atbarrier = zombiesCodBarrier(i, chr, &forced, &forcedframe);
 
-		// a swipe, as the game's tick has it (zombiesTickSwings())
-		if (!atbarrier && g_ZombieSwing[i].anim >= 0) {
+		// up a ledge, as the game's tick has it (zombiesTickClimb())
+		if (!atbarrier && g_ZombieClimb[i].on) {
+			forced = g_ZombieClimb[i].anim;
+			forcedframe = MIN(zmcharAnimFrames(forced) - 1, g_ZombieClimb[i].t60 * zmcharAnimRate(forced) / 60.0f);
+		} else if (!atbarrier && g_ZombieSwing[i].anim >= 0) {
+			// a swipe, as the game's tick has it (zombiesTickSwings())
 			forced = g_ZombieSwing[i].anim;
 			forcedframe = g_ZombieSwing[i].t60 * zmcharAnimRate(forced) / 60.0f;
 		}
@@ -7298,6 +7540,8 @@ bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *
 	// at a barrier: in its frame, carried by the clip's own root motion
 	if (atbarrier) {
 		zombiesCodBarrierPlace(i, &world);
+	} else if (g_ZombieClimb[i].on) {
+		zombiesCodClimbPlace(i, &world);
 	}
 
 	// kept, for a shot's test against its bones (zombiesCodTestHit())
@@ -18458,9 +18702,28 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 		// frames from there on
 		if (sysArgCheck("--zombies-test-follow")) {
 			extern s32 g_ShotFrame;
-			const s32 b = sysArgGetInt("--zombies-test-follow", 0);
-			struct chrdata *zchr = b < g_BotCount ? g_MpBotChrPtrs[b] : NULL;
+			static s32 climber = -1;
+			s32 b = sysArgGetInt("--zombies-test-follow", 0);
+			struct chrdata *zchr;
 
+			// --zombies-follow-climb: the first zombie to jump up a ledge
+			// instead, the pictures from its jump on
+			if (sysArgCheck("--zombies-follow-climb")) {
+				s32 k;
+
+				for (k = 0; climber < 0 && k < g_BotCount && k < MAX_BOTS; k++) {
+					if (g_ZombieClimb[k].on) {
+						climber = k;
+						g_ShotFrame = g_Vars.lvframenum + 2;
+					}
+				}
+
+				if (climber >= 0) {
+					b = climber;
+				}
+			}
+
+			zchr = b < g_BotCount ? g_MpBotChrPtrs[b] : NULL;
 			g_PlayerInvincible = true;
 
 			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
@@ -19578,6 +19841,11 @@ void zombiesTick(void)
 
 			// at a barrier's boards: held there until they are torn off
 			if (zombiesBarrierHolds(i, zchr, target)) {
+				continue;
+			}
+
+			// at a ladder: Black Ops II's jump up it instead
+			if (zombiesTickClimb(i, zchr, target)) {
 				continue;
 			}
 

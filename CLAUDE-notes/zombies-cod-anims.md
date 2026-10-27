@@ -581,3 +581,38 @@ ten degrees a half-second swing about its own side axis through its foot
 stay put until it goes); then a medium smoke burst stands in for the
 poltergeist effect (effect files do not dump) with `box_poof`, and the prop is
 disabled as before. `--zombies-test-qrleave F --zombies-test-perk 1` films it.
+## Zombies that walk like Call of Duty's, and jump up ladders (2026-10-26)
+
+A zombie is a simulant given AIBOTCMD_ATTACK on a player; the swipes and
+their damage are ours (`zombiesTickSwings()`), but the walking was the
+simulant's, and that is what looked like a simulant. Three things in it, each
+behind `zombiesIsActive()` so other modes are untouched:
+- **Facing.** bot.c turns a simulant to its target whenever
+  `botIsAboutToAttack()` (nearly always for a zombie), while it walks its
+  route: zombies walked sideways and backwards round every corner. Now a zombie
+  faces the way it walks (`chrGetRotY()`) and turns to the player only within
+  twice a swipe's reach and in sight (`zombiesFacesTarget()`).
+- **Evades.** `botTickEvade()` (random jumps and rolls) and `botTryDodge()`
+  (rolling when shot, from chraction.c) return at once for zombies. The
+  navmesh brain's jump links (simbrain.c) are crossings, kept.
+- **Re-pathing.** `botcmdTickDistMode()` re-issues `chrGoToProp()` every 15
+  60ths for a zombie (60 otherwise): a second-old way sent it where the player
+  had been.
+
+**Ladders.** Black Ops II's zombies have no ladders: they jump up a ledge
+(`ai_zombie_jump_up_48/96/127/222`, `ai_zombie_crawl_jump_up_*`: Origins'
+dump has the 48 and 96, Tranzit's the 127 and 222; `vmconv.py anim` into
+`characters/`, `ZMCHAR_JUMPUP`/`ZMCHAR_CRAWL_JUMPUP` at the end of zmchar's
+table) and the jump down was already ours (a ladder's head is walked off).
+`zombiesTickClimb()` (host, each zombie before its orders) takes a zombie
+whose GOPOS has it `onladder` while standing on its floor: the ladder's head
+from `cdFindLadderDist()`'s `top`, asked again above each tile; the floor at
+the top past the ladder's face (the normal faces the zombie, so the ledge is
+`-normal`), 1 to 3 x 45 past the face, within -60..+40 of the head, else it
+climbs as before. Held there (botApplyHold) for the clip's length, drawn at
+the foot carried by the clip's root with its rise stretched to the ledge's
+(`zombiesCodClimbPlace()`), then `chrMoveToPos()` onto the top. Pipes (0x29)
+has one a zombie reaches at round 5; `--zombies-test-follow 0
+--zombies-follow-climb --screenshot-frame 99999 --zombies-shot-step 20`
+films the first jump from its start. Stock (waypoint) movement only: modern
+(navmesh) movement crosses its ladder links its own way.
