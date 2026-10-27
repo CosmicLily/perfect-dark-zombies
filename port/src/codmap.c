@@ -116,6 +116,7 @@ static cbuf rzip(const uint8_t *data, size_t n)
 
 struct ctri {
 	f32 p[3][3];   // our axes and units
+	f32 uv[3][2];  // the OBJ's, v down
 	f32 n[3];
 	u32 colour;    // the vertices', lit
 	s32 mat;
@@ -125,8 +126,41 @@ struct ctri {
 struct cmat {
 	char name[96];
 	u32 rgb;
+	s32 texnum;    // the mod's texture for it (tools/zombies/codmaptex.py), -1 none
 	u8 solid;
+	u8 nodraw;     // neither drawn nor solid
 };
+
+// codmaptex.py's textures/codmap.txt: a material's name and its texture number
+static char (*g_TexNames)[96];
+static s32 *g_TexNums;
+static s32 g_NumTexNames;
+
+#define CODMAP_TEX 32 // codmaptex.py's placeholder side: a texel is 32 of a vertex's s or t
+
+static void texTableRead(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	char name[96];
+	u32 num;
+
+	g_NumTexNames = 0;
+
+	if (!f) {
+		sysLogPrintf(LOG_WARNING, "codmap: no %s, so no textures", path);
+		return;
+	}
+
+	while (fscanf(f, "%95s %x", name, &num) == 2) {
+		g_TexNames = realloc(g_TexNames, sizeof(*g_TexNames) * (g_NumTexNames + 1));
+		g_TexNums = realloc(g_TexNums, sizeof(*g_TexNums) * (g_NumTexNames + 1));
+		snprintf(g_TexNames[g_NumTexNames], sizeof(g_TexNames[0]), "%s", name);
+		g_TexNums[g_NumTexNames] = (s32)num;
+		g_NumTexNames++;
+	}
+
+	fclose(f);
+}
 
 static struct ctri *g_Tris;
 static s32 g_NumTris, g_MaxTris;
@@ -149,6 +183,9 @@ static u32 matHash(const char *s)
 static s32 matFind(const char *name)
 {
 	static const char *const nosolid[] = { "decal", "foliage", "fol_", "leaf", "leaves", "grass", "vine", "fx_", "sky" };
+	// Black Ops II's tools' own surfaces, which its renderer never draws: a
+	// shadow caster's caulk, written "SHADOW PRIMARY" in yellow
+	static const char *const nodraw[] = { "caulk", "shadow", "clip" };
 	static const u32 palette[] = {
 		0x8a7a66, 0x6f6a60, 0x7d6b55, 0x5f5a52, 0x8f8576, 0x6b5b4a, 0x777a74, 0x857060,
 		0x6a6f6a, 0x9a8c78, 0x5c5248, 0x807568,
@@ -171,6 +208,13 @@ static s32 matFind(const char *name)
 	snprintf(g_Mats[g_NumMats].name, sizeof(g_Mats[g_NumMats].name), "%s", name);
 	g_Mats[g_NumMats].rgb = palette[h % ARRAYCOUNT(palette)];
 	g_Mats[g_NumMats].solid = 1;
+	g_Mats[g_NumMats].texnum = -1;
+
+	for (i = 0; i < g_NumTexNames; i++) {
+		if (strcmp(g_TexNames[i], name) == 0) {
+			g_Mats[g_NumMats].texnum = g_TexNums[i];
+		}
+	}
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nosolid); i++) {
 		if (strstr(name, nosolid[i])) {
@@ -178,10 +222,18 @@ static s32 matFind(const char *name)
 		}
 	}
 
+	g_Mats[g_NumMats].nodraw = 0;
+
+	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
+		if (strstr(name, nodraw[i])) {
+			g_Mats[g_NumMats].nodraw = 1;
+		}
+	}
+
 	return g_NumMats++;
 }
 
-static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], s32 mat)
+static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], const f32 *uv[3], s32 mat)
 {
 	struct ctri *t;
 	f32 u[3], v[3], len, lit;
@@ -197,6 +249,11 @@ static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], s32 mat)
 	memcpy(t->p[0], a, sizeof(f32) * 3);
 	memcpy(t->p[1], b, sizeof(f32) * 3);
 	memcpy(t->p[2], c, sizeof(f32) * 3);
+
+	for (k = 0; k < 3; k++) {
+		t->uv[k][0] = uv[k] ? uv[k][0] : 0;
+		t->uv[k][1] = uv[k] ? 1 - uv[k][1] : 0;
+	}
 
 	for (k = 0; k < 3; k++) {
 		u[k] = b[k] - a[k];
@@ -216,8 +273,13 @@ static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], s32 mat)
 		t->n[k] /= len;
 	}
 
-	// a light from above and a little to the side, either face alike
+	// a light from above and a little to the side, either face alike; a
+	// textured face is its picture so lit, an untextured one its flat colour
 	lit = 0.55f + 0.45f * fabsf(t->n[1] * 0.85f + t->n[0] * 0.3f + t->n[2] * 0.2f);
+
+	if (g_Mats[mat].texnum >= 0) {
+		rgb = 0xffffff;
+	}
 	t->colour = (u32)(((rgb >> 16) & 0xff) * lit) << 24 | (u32)(((rgb >> 8) & 0xff) * lit) << 16
 		| (u32)((rgb & 0xff) * lit) << 8 | 0xff;
 	t->mat = mat;
@@ -241,6 +303,8 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 	char line[1024];
 	f32 *verts = NULL;
 	s32 numverts = 0, maxverts = 0;
+	f32 *uvs = NULL;
+	s32 numuvs = 0, maxuvs = 0;
 	s32 mat = -1;
 
 	if (!f) {
@@ -257,6 +321,15 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 			sscanf(line + 2, "%f %f %f", &verts[numverts * 3], &verts[numverts * 3 + 1], &verts[numverts * 3 + 2]);
 			numverts++;
+		} else if (line[0] == 'v' && line[1] == 't' && line[2] == ' ') {
+			if (numuvs == maxuvs) {
+				maxuvs = maxuvs ? maxuvs * 2 : 1 << 20;
+				uvs = realloc(uvs, sizeof(f32) * 2 * maxuvs);
+			}
+
+			uvs[numuvs * 2] = uvs[numuvs * 2 + 1] = 0;
+			sscanf(line + 3, "%f %f", &uvs[numuvs * 2], &uvs[numuvs * 2 + 1]);
+			numuvs++;
 		} else if (strncmp(line, "usemtl ", 7) == 0) {
 			char *e = line + strlen(line);
 
@@ -267,6 +340,7 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 			mat = matFind(line + 7);
 		} else if (line[0] == 'f' && line[1] == ' ') {
 			s32 idx[16];
+			s32 tidx[16];
 			s32 n = 0;
 			char *s = line + 2;
 			f32 cx = 0, cy = 0;
@@ -283,6 +357,21 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 				idx[n] = atoi(s);
 				idx[n] = idx[n] < 0 ? numverts + idx[n] : idx[n] - 1;
+				tidx[n] = -1;
+
+				while (*s && *s != ' ' && *s != '/') {
+					s++;
+				}
+
+				if (*s == '/' && s[1] != '/') {
+					tidx[n] = atoi(s + 1);
+					tidx[n] = tidx[n] < 0 ? numuvs + tidx[n] : tidx[n] - 1;
+
+					if (tidx[n] >= numuvs) {
+						tidx[n] = -1;
+					}
+				}
+
 				n++;
 
 				while (*s && *s != ' ') {
@@ -290,7 +379,7 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 				}
 			}
 
-			if (n < 3 || mat < 0) {
+			if (n < 3 || mat < 0 || g_Mats[mat].nodraw) {
 				continue;
 			}
 
@@ -321,13 +410,22 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 				codToOurs(&verts[idx[0] * 3], centre, a);
 				codToOurs(&verts[idx[k] * 3], centre, b);
 				codToOurs(&verts[idx[k + 1] * 3], centre, c);
-				triAdd(a, b, c, mat);
+				{
+					const f32 *uv[3] = {
+						tidx[0] >= 0 ? &uvs[tidx[0] * 2] : NULL,
+						tidx[k] >= 0 ? &uvs[tidx[k] * 2] : NULL,
+						tidx[k + 1] >= 0 ? &uvs[tidx[k + 1] * 2] : NULL,
+					};
+
+					triAdd(a, b, c, uv, mat);
+				}
 			}
 		}
 	}
 
 	fclose(f);
 	free(verts);
+	free(uvs);
 	sysLogPrintf(LOG_NOTE, "codmap: %s: %d vertices, %d triangles in the box, %d materials", path, numverts, g_NumTris, g_NumMats);
 
 	return g_NumTris > 0;
@@ -434,6 +532,14 @@ static s16 s16of(f32 v)
 	return i < -32768 ? -32768 : i > 32767 ? 32767 : i;
 }
 
+static int triTexCompare(const void *a, const void *b)
+{
+	const s32 ta = g_Mats[g_Tris[*(const s32 *)a].mat].texnum;
+	const s32 tb = g_Mats[g_Tris[*(const s32 *)b].mat].texnum;
+
+	return ta < tb ? -1 : ta > tb;
+}
+
 /**
  * A room as Perfect Dark's room format has it (geconvert.c's roomPack()): its
  * header, one opaque leaf, its vertices (x y z, flags, colour slot, s t), its
@@ -451,39 +557,85 @@ static void roomWrite(struct croom *r, u32 baseptr)
 	s32 i = 0;
 	s32 c;
 
-	// the state: no texture, the vertex colour as it is, both faces
+	// the state that holds throughout: the vertex colour, both faces
 	{
-		Gfx g[4];
+		Gfx g[3];
 
-		gSPTexture(&g[0], 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-		gDPSetCombineMode(&g[1], G_CC_SHADE, G_CC_SHADE);
-		gSPClearGeometryMode(&g[2], G_LIGHTING | G_TEXTURE_GEN | G_CULL_BOTH);
-		gSPSetGeometryMode(&g[3], G_SHADE | G_SHADING_SMOOTH);
+		gDPSetCycleType(&g[0], G_CYC_1CYCLE);
+		gSPClearGeometryMode(&g[1], G_LIGHTING | G_TEXTURE_GEN | G_CULL_BOTH);
+		gSPSetGeometryMode(&g[2], G_SHADE | G_SHADING_SMOOTH);
 
-		for (c = 0; c < 4; c++) {
+		for (c = 0; c < 3; c++) {
 			gfxWords(&words, &g[c]);
 		}
 	}
 
+	// a texture's triangles together
+	qsort(r->tris, r->numtris, sizeof(s32), triTexCompare);
+
 	while (i < r->numtris) {
 		f32 batch[16][3];
+		s16 bst[16][2];
 		u32 bcol[16];
 		u8 idx[64][3];
 		s32 nb = 0, nt = 0;
 		const s32 start = numvtx;
+		const s32 texnum = g_Mats[g_Tris[r->tris[i]].mat].texnum;
 		s32 k;
+
+		// a new texture: the room's command for it (texLoadFromGdl() loads
+		// it there and patches the G_TEXTURE before it), the picture times
+		// the vertex colour; or none, the vertex colour alone
+		if (i == 0 || g_Mats[g_Tris[r->tris[i - 1]].mat].texnum != texnum) {
+			Gfx g[2];
+
+			if (texnum >= 0) {
+				gSPTexture(&g[0], 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
+				gfxWords(&words, &g[0]);
+				// subcmd 4: one tile, wrapping both ways
+				cbU32(&words, 0xc0000000u | 4);
+				cbU32(&words, (u32)texnum & 0xfff);
+				gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_MODULATERGB);
+				gfxWords(&words, &g[1]);
+			} else {
+				gSPTexture(&g[0], 0, 0, 0, G_TX_RENDERTILE, G_OFF);
+				gDPSetCombineMode(&g[1], G_CC_SHADE, G_CC_SHADE);
+				gfxWords(&words, &g[0]);
+				gfxWords(&words, &g[1]);
+			}
+		}
 
 		for (; i < r->numtris && nt < 64; i++) {
 			const struct ctri *t = &g_Tris[r->tris[i]];
 			s32 got[3];
 			s32 added = nb;
 			s32 ok = 1;
+			s16 st[3][2];
+			f32 base[2];
+
+			if (g_Mats[t->mat].texnum != texnum) {
+				break;
+			}
+
+			// the texture's coordinates in its placeholder's texels, a
+			// thirty-second each, moved by whole repeats to near 0 so that
+			// they fit sixteen bits
+			for (c = 0; c < 2; c++) {
+				base[c] = floorf(MIN(t->uv[0][c], MIN(t->uv[1][c], t->uv[2][c])));
+			}
+
+			for (k = 0; k < 3; k++) {
+				for (c = 0; c < 2; c++) {
+					st[k][c] = s16of((t->uv[k][c] - base[c]) * CODMAP_TEX * 32);
+				}
+			}
 
 			for (k = 0; k < 3 && ok; k++) {
 				s32 j = 0;
 
 				while (j < added && !(batch[j][0] == t->p[k][0] && batch[j][1] == t->p[k][1]
-							&& batch[j][2] == t->p[k][2] && bcol[j] == t->colour)) {
+							&& batch[j][2] == t->p[k][2] && bcol[j] == t->colour
+							&& bst[j][0] == st[k][0] && bst[j][1] == st[k][1])) {
 					j++;
 				}
 
@@ -494,6 +646,8 @@ static void roomWrite(struct croom *r, u32 baseptr)
 					}
 
 					memcpy(batch[added], t->p[k], sizeof(batch[added]));
+					bst[added][0] = st[k][0];
+					bst[added][1] = st[k][1];
 					bcol[added] = t->colour;
 					added++;
 				}
@@ -524,8 +678,8 @@ static void roomWrite(struct croom *r, u32 baseptr)
 
 			cbU8(&vtx, 0);
 			cbU8(&vtx, k << 2);
-			cbU16(&vtx, 0);
-			cbU16(&vtx, 0);
+			cbU16(&vtx, (u16)bst[k][0]);
+			cbU16(&vtx, (u16)bst[k][1]);
 			cbU32(&col, bcol[k]);
 			numvtx++;
 		}
@@ -1030,6 +1184,9 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 	cbuf bg, tiles, pads, setup;
 
 	g_NumTris = 0;
+	g_NumMats = 0;
+	snprintf(path, sizeof(path), "%s/textures/codmap.txt", outdir);
+	texTableRead(path);
 	snprintf(path, sizeof(path), "%s/%s/%s.obj", indir, row->map, row->map);
 
 	if (!readObj(path, row, centre)) {
@@ -1191,6 +1348,22 @@ void codmapEnableMapsAtStartup(void)
 	modMapsEnableByName(CODMAP_MODDIR);
 	configSave(CONFIG_PATH);
 	sysLogPrintf(LOG_NOTE, "codmap: Black Ops II's maps turned on in the Stage Loader");
+}
+
+const char *modloaderGetStageModDir(s32 stagenum);
+s32 mainGetStageNum(void);
+
+/**
+ * texpack.c asks: whether the running stage is one of Black Ops II's, whose
+ * mod's own pack (textures/<num>.png) is its textures and not a choice, so it
+ * is drawn whatever Mod.LoadTextures says - the placeholders under it are a
+ * flat colour each
+ */
+s32 codmapStageWantsPack(void)
+{
+	const char *dir = modloaderGetStageModDir(mainGetStageNum());
+
+	return dir && strstr(dir, CODMAP_MODDIR) != NULL;
 }
 
 // --codmap-convert <dir>: every row whose map C2M exported into dir, then exit

@@ -182,6 +182,7 @@ static s32 reloadKeyVk = -1;
 static s32 cycleKeyVk = -1;
 
 static s32 loadTextures = 1;
+s32 codmapStageWantsPack(void); // codmap.c
 static char **replacePaths;   // one per texture number, NULL where there is none
 static char **replaceAlphaPaths; // the _a half of a Rice pack's split images
 static u8 *replaceKinds;      // what kind of file replacePaths[i] is
@@ -3101,8 +3102,9 @@ s32 texpackHaveReplacements(void)
 	// stock one at all, and that is the only way it would be asked for - see
 	// texpackModUse(). The cost of saying yes is one registry probe per
 	// texture the renderer uploads.
+	// (Black Ops II's maps draw their own whatever the setting: codmap.c)
 	return replacePaths != NULL
-		|| (loadTextures && fsGetNumModDirs() > fsGetNumOverlayModDirs());
+		|| ((loadTextures || codmapStageWantsPack()) && fsGetNumModDirs() > fsGetNumOverlayModDirs());
 }
 
 /**

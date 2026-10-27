@@ -645,3 +645,20 @@ Next: textures (Greyhound's export of the search string into `_images`; the
 rooms drawn at run time as `gebeanstage.c` draws an HD level, or the pictures
 as mod textures), waypoints from the entity file's 5,350 `node_pathnode`s,
 and Zombies' parts from its zones, spawners, barriers and box spots.
+**Town's textures (2026-10-26).** `tools/zombies/codmaptex.py` gives each
+material of C2M's `_matdata.json` with a colour map in the OpenAssetTools dump
+(161 of Town's 163: the dump's `images/` hold them under C2M's own names, so no
+Greyhound export is needed for textures) a texture number from 0x0e00 up, and
+writes the mod's `textures/<num>.png` (the picture, halved to 1024 at most) and
+`textures/<num>.bin` (a 32x32 placeholder of its mean colour) and
+`textures/codmap.txt`. **The zlib texture record is paletted only:**
+`texAlignIndices()` steps by palette indices and leaves its step unset for
+any other format, so an RGBA16 placeholder came out as noise; it is
+RGBA16_CI8 with one colour. codmap.c writes a G_TEXTURE on and a `0xc0`
+subcommand 4 (one tile, wrap) before each material's triangles (the loader
+adopts the G_TEXTURE and patches its lod), G_CC_MODULATERGB, texture
+coordinates in the placeholder's texels (32 a texel) moved by whole repeats
+near 0; untextured ones G_TEXTURE off and G_CC_SHADE. The PNGs are the
+textures, so `texpackHaveReplacements()` serves a Black Ops II stage's own pack
+whatever `Mod.LoadTextures` says (`codmapStageWantsPack()`). Materials named
+caulk, shadow or clip (the "SHADOW PRIMARY" tool surface) are dropped whole.
