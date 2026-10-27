@@ -662,3 +662,16 @@ near 0; untextured ones G_TEXTURE off and G_CC_SHADE. The PNGs are the
 textures, so `texpackHaveReplacements()` serves a Black Ops II stage's own pack
 whatever `Mod.LoadTextures` says (`codmapStageWantsPack()`). Materials named
 caulk, shadow or clip (the "SHADOW PRIMARY" tool surface) are dropped whole.
+**Town's props (2026-10-26).** `--codmap-props <Greyhound's xmodels/>` places
+every model `_xmodels.json` puts in the box: 1,273 of Town's 1,639 (the other
+366 are the lab's, under Town, which Greyhound did not export from Town). Each
+model's least detailed OBJ (146,000 triangles in all; the most detailed would
+be 744,000 against the map's 80,000), **in centimetres: Greyhound writes cm,
+C2M's placements are inches** (unscaled, every prop was 2.54 times too big);
+turned Rz*Ry*Rx (Maya's xyz order, as C2M's import scripts set
+rotateX/Y/Z), scaled, moved, then into ours as the map is. Solid only when
+over 24 inches across or high. Its materials' pictures are already PNG
+(`_images/<material>/`, the .mtl's `map_Kd`); `codmaptex.py --props`
+numbers them after the map's (0x0ea1 up, 289 in all). The placement JSON has
+a space after each colon. Breakable storefront windows stand alone in the
+street: their walls are likely script brushmodels, not in C2M's world export.

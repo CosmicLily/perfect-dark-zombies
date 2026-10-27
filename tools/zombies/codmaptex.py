@@ -10,10 +10,14 @@ full size - CLAUDE-notes/texture-packs.md, "The mod gets an index of its own").
 codmap.c reads textures/codmap.txt, a line a material: name, number.
 
     python3 tools/zombies/codmaptex.py <C2M's map folder> <the dump's t6/> <the mod's folder> <zone>...
+    python3 tools/zombies/codmaptex.py --props <Greyhound's xmodels/> <x0> <x1> <y0> <y1> <C2M's map folder> <the mod's folder>
 
 The zones are the dump's folders looked in for the pictures, in order
-(zm_transit so_zclassic_zm_transit common_zm for Tranzit). The art stays
-on the player's disk, out of the tree.
+(zm_transit so_zclassic_zm_transit common_zm for Tranzit). The second form
+adds, after the map's own, the materials of the props C2M's _xmodels.json
+places inside the box (the map's inches), from Greyhound's export of them: each
+model's least detailed OBJ (the one codmap.c places), its .mtl's map_Kd
+picture, already a PNG. The art stays on the player's disk, out of the tree.
 """
 
 import json
@@ -78,7 +82,77 @@ def mean(rgba):
     return tuple(t // max(1, k) for t in tot)
 
 
+def prop_obj(models, name):
+    """A model's least detailed OBJ in Greyhound's export, None for none"""
+    best = None
+    for lod in range(8):
+        p = os.path.join(models, name, "%s_LOD%d.obj" % (name, lod))
+        if os.path.isfile(p):
+            best = p
+    return best
+
+
+def props(models, box, mapdir, moddir):
+    stem = os.path.basename(os.path.normpath(mapdir))
+    outdir = os.path.join(moddir, "textures")
+    table = os.path.join(outdir, "codmap.txt")
+    lines = [l for l in open(table).read().split("\n") if l.strip()] if os.path.isfile(table) else []
+    have = {l.split()[0] for l in lines}
+    num = max([int(l.split()[1], 16) for l in lines] + [FIRST_NUM - 1]) + 1
+    place = json.load(open(os.path.join(mapdir, stem + "_xmodels.json")))
+    names = sorted({e["Name"] for e in place if "Name" in e
+                    and box[0] <= float(e["PosX"]) <= box[1] and box[2] <= float(e["PosY"]) <= box[3]})
+    added = 0
+
+    for name in names:
+        obj = prop_obj(models, name)
+        if not obj:
+            continue
+        folder = os.path.dirname(obj)
+        for mtl in [f for f in os.listdir(folder) if f.endswith(".mtl")]:
+            cur = None
+            for line in open(os.path.join(folder, mtl), errors="replace"):
+                bits = line.strip().split(None, 1)
+                if not bits:
+                    continue
+                if bits[0] == "newmtl":
+                    cur = bits[1]
+                elif bits[0] == "map_Kd" and cur and cur not in have and len(bits) > 1:
+                    rel = bits[1].replace("\\\\", "/").replace("\\", "/")
+                    src = os.path.normpath(os.path.join(folder, rel))
+                    if not os.path.isfile(src):
+                        continue
+                    try:
+                        w, h, rgba = image_read(src)
+                    except Exception as e:
+                        print("%s: %s" % (src, e))
+                        continue
+                    while max(w, h) > MAX_SIDE:
+                        w, h, rgba = halve(w, h, rgba)
+                    png_write(os.path.join(outdir, "%04x.png" % num), w, h, rgba)
+                    open(os.path.join(outdir, "%04x.bin" % num), "wb").write(placeholder(mean(rgba)))
+                    lines.append("%s %04x" % (cur, num))
+                    have.add(cur)
+                    print("%04x %s %dx%d" % (num, cur, w, h), flush=True)
+                    num += 1
+                    added += 1
+                    if num > 0xfff:
+                        print("out of texture numbers")
+                        open(table, "w").write("\n".join(lines) + "\n")
+                        return
+
+    open(table, "w").write("\n".join(lines) + "\n")
+    print("%d props' materials added, %d in all" % (added, len(lines)))
+
+
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--props":
+        if len(sys.argv) < 9:
+            print(__doc__)
+            sys.exit(1)
+        props(sys.argv[2], [float(v) for v in sys.argv[3:7]], sys.argv[7], sys.argv[8])
+        return
+
     if len(sys.argv) < 5:
         print(__doc__)
         sys.exit(1)

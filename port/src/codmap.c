@@ -433,6 +433,276 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 /* ------------------------------------------------------------------------ */
 
+/**
+ * The props: every model C2M's _xmodels.json places in the row's box, from
+ * Greyhound's export of it (--codmap-props <its xmodels/>): its least
+ * detailed OBJ (the most detailed of Town's props come to 744,000 triangles,
+ * the least to 146,000, against the map's 80,000), in the model's own inches,
+ * z up; turned by the placement's angles (Maya's order, as C2M's own import
+ * scripts set them: x, then y, then z), scaled and moved, then into ours as the
+ * map is. A prop is solid when it is bigger than CODMAP_PROP_SOLID across or
+ * high: bottles and papers are not.
+ */
+#define CODMAP_PROP_SOLID 24.0f // inches
+
+struct cmodel {
+	char name[96];
+	s32 tried;
+	s32 numtris;
+	f32 (*p)[3][3];
+	f32 (*uv)[3][2];
+	s32 *mat;
+	u8 solid;
+};
+
+static struct cmodel *g_Models;
+static s32 g_NumModels, g_MaxModels;
+
+static struct cmodel *modelGet(const char *dir, const char *name)
+{
+	char path[1024];
+	struct cmodel *m;
+	FILE *f = NULL;
+	char line[1024];
+	f32 *verts = NULL, *uvs = NULL;
+	s32 numverts = 0, maxverts = 0, numuvs = 0, maxuvs = 0, maxtris = 0;
+	f32 lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+	s32 mat = -1;
+	s32 i, lod;
+
+	for (i = 0; i < g_NumModels; i++) {
+		if (strcmp(g_Models[i].name, name) == 0) {
+			return g_Models[i].numtris ? &g_Models[i] : NULL;
+		}
+	}
+
+	if (g_NumModels == g_MaxModels) {
+		g_MaxModels = g_MaxModels ? g_MaxModels * 2 : 128;
+		g_Models = realloc(g_Models, sizeof(*g_Models) * g_MaxModels);
+	}
+
+	m = &g_Models[g_NumModels++];
+	memset(m, 0, sizeof(*m));
+	snprintf(m->name, sizeof(m->name), "%s", name);
+
+	// the least detailed there is
+	for (lod = 7; lod >= 0 && !f; lod--) {
+		snprintf(path, sizeof(path), "%s/%s/%s_LOD%d.obj", dir, name, name, lod);
+		f = fopen(path, "rb");
+	}
+
+	if (!f) {
+		return NULL;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		if (line[0] == 'v' && line[1] == ' ') {
+			if (numverts == maxverts) {
+				maxverts = maxverts ? maxverts * 2 : 4096;
+				verts = realloc(verts, sizeof(f32) * 3 * maxverts);
+			}
+
+			sscanf(line + 2, "%f %f %f", &verts[numverts * 3], &verts[numverts * 3 + 1], &verts[numverts * 3 + 2]);
+
+			// Greyhound writes centimetres; the map's placements are inches
+			for (i = 0; i < 3; i++) {
+				verts[numverts * 3 + i] /= 2.54f;
+				lo[i] = verts[numverts * 3 + i] < lo[i] ? verts[numverts * 3 + i] : lo[i];
+				hi[i] = verts[numverts * 3 + i] > hi[i] ? verts[numverts * 3 + i] : hi[i];
+			}
+
+			numverts++;
+		} else if (line[0] == 'v' && line[1] == 't' && line[2] == ' ') {
+			if (numuvs == maxuvs) {
+				maxuvs = maxuvs ? maxuvs * 2 : 4096;
+				uvs = realloc(uvs, sizeof(f32) * 2 * maxuvs);
+			}
+
+			uvs[numuvs * 2] = uvs[numuvs * 2 + 1] = 0;
+			sscanf(line + 3, "%f %f", &uvs[numuvs * 2], &uvs[numuvs * 2 + 1]);
+			numuvs++;
+		} else if (strncmp(line, "usemtl ", 7) == 0) {
+			char *e = line + strlen(line);
+
+			while (e > line + 7 && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ')) {
+				*--e = 0;
+			}
+
+			mat = matFind(line + 7);
+		} else if (line[0] == 'f' && line[1] == ' ' && mat >= 0 && !g_Mats[mat].nodraw) {
+			s32 vi[3], ti[3];
+
+			if (sscanf(line + 2, "%d/%d/%*d %d/%d/%*d %d/%d/%*d", &vi[0], &ti[0], &vi[1], &ti[1], &vi[2], &ti[2]) != 6) {
+				continue;
+			}
+
+			if (m->numtris == maxtris) {
+				maxtris = maxtris ? maxtris * 2 : 1024;
+				m->p = realloc(m->p, sizeof(*m->p) * maxtris);
+				m->uv = realloc(m->uv, sizeof(*m->uv) * maxtris);
+				m->mat = realloc(m->mat, sizeof(*m->mat) * maxtris);
+			}
+
+			for (i = 0; i < 3; i++) {
+				const s32 v = vi[i] - 1, t = ti[i] - 1;
+
+				if (v < 0 || v >= numverts) {
+					break;
+				}
+
+				memcpy(m->p[m->numtris][i], &verts[v * 3], sizeof(f32) * 3);
+				m->uv[m->numtris][i][0] = t >= 0 && t < numuvs ? uvs[t * 2] : 0;
+				m->uv[m->numtris][i][1] = t >= 0 && t < numuvs ? uvs[t * 2 + 1] : 0;
+			}
+
+			if (i == 3) {
+				m->mat[m->numtris++] = mat;
+			}
+		}
+	}
+
+	fclose(f);
+	free(verts);
+	free(uvs);
+
+	m->solid = (hi[0] - lo[0] > CODMAP_PROP_SOLID || hi[1] - lo[1] > CODMAP_PROP_SOLID
+			|| hi[2] - lo[2] > CODMAP_PROP_SOLID);
+
+	return m->numtris ? m : NULL;
+}
+
+// One placement's triangles into g_Tris
+static s32 propPlace(const struct cmodel *m, const f32 pos[3], const f32 rot[3], f32 scale, const f32 *centre)
+{
+	f32 r[3][3];
+	f32 c[3], s[3];
+	s32 t, k, i;
+
+	for (i = 0; i < 3; i++) {
+		c[i] = cosf(rot[i] * (f32)M_PI / 180.0f);
+		s[i] = sinf(rot[i] * (f32)M_PI / 180.0f);
+	}
+
+	// Rz * Ry * Rx
+	r[0][0] = c[2] * c[1];
+	r[0][1] = c[2] * s[1] * s[0] - s[2] * c[0];
+	r[0][2] = c[2] * s[1] * c[0] + s[2] * s[0];
+	r[1][0] = s[2] * c[1];
+	r[1][1] = s[2] * s[1] * s[0] + c[2] * c[0];
+	r[1][2] = s[2] * s[1] * c[0] - c[2] * s[0];
+	r[2][0] = -s[1];
+	r[2][1] = c[1] * s[0];
+	r[2][2] = c[1] * c[0];
+
+	for (t = 0; t < m->numtris; t++) {
+		f32 out[3][3];
+		const f32 *uv[3];
+
+		for (k = 0; k < 3; k++) {
+			f32 cod[3];
+
+			for (i = 0; i < 3; i++) {
+				cod[i] = pos[i] + scale * (r[i][0] * m->p[t][k][0] + r[i][1] * m->p[t][k][1] + r[i][2] * m->p[t][k][2]);
+			}
+
+			codToOurs(cod, centre, out[k]);
+			uv[k] = m->uv[t][k];
+		}
+
+		triAdd(out[0], out[1], out[2], uv, m->mat[t]);
+
+		if (g_NumTris > 0 && !m->solid) {
+			g_Tris[g_NumTris - 1].solid = 0;
+		}
+	}
+
+	return m->numtris;
+}
+
+static char *jsonValue(char *s)
+{
+	while (*s == ' ' || *s == ':' || *s == '"' || *s == '\t') {
+		s++;
+	}
+
+	return s;
+}
+
+// Every placement in the row's box (C2M's _xmodels.json, one object a prop)
+static void readProps(const char *jsonpath, const char *modeldir, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(jsonpath, "rb");
+	char *text, *at;
+	long len;
+	s32 placed = 0, missing = 0, tris = 0;
+
+	if (!f) {
+		sysLogPrintf(LOG_WARNING, "codmap: no %s, so no props", jsonpath);
+		return;
+	}
+
+	fseek(f, 0, SEEK_END);
+	len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	text = malloc(len + 1);
+	len = (long)fread(text, 1, len, f);
+	text[len] = 0;
+	fclose(f);
+
+	for (at = strchr(text, '{'); at; at = strchr(at + 1, '{')) {
+		char *end = strchr(at, '}');
+		char name[96] = "";
+		f32 pos[3] = { 0, 0, 0 }, rot[3] = { 0, 0, 0 }, scale = 1;
+		static const char *const keys[] = { "\"PosX\"", "\"PosY\"", "\"PosZ\"", "\"RotX\"", "\"RotY\"", "\"RotZ\"", "\"Scale\"" };
+		f32 *dst[] = { &pos[0], &pos[1], &pos[2], &rot[0], &rot[1], &rot[2], &scale };
+		const struct cmodel *m;
+		char *k;
+		s32 i;
+
+		if (!end) {
+			break;
+		}
+
+		*end = 0;
+		k = strstr(at, "\"Name\"");
+
+		// a value: past the key, the colon, any space and the opening quote
+		if (k) {
+			k = jsonValue(k + 6);
+			sscanf(k, "%95[^\"]", name);
+		}
+
+		for (i = 0; i < 7; i++) {
+			k = strstr(at, keys[i]);
+
+			if (k) {
+				*dst[i] = (f32)atof(jsonValue(k + strlen(keys[i])));
+			}
+		}
+
+		*end = '}';
+
+		if (!name[0] || pos[0] < row->box[0] || pos[0] > row->box[1] || pos[1] < row->box[2] || pos[1] > row->box[3]) {
+			continue;
+		}
+
+		m = modelGet(modeldir, name);
+
+		if (!m) {
+			missing++;
+			continue;
+		}
+
+		tris += propPlace(m, pos, rot, scale, centre);
+		placed++;
+	}
+
+	free(text);
+	sysLogPrintf(LOG_NOTE, "codmap: %d props placed (%d triangles), %d with no model exported", placed, tris, missing);
+}
+
+/* ------------------------------------------------------------------------ */
+
 struct codspawn {
 	f32 pos[3];
 	f32 yaw;
@@ -1191,6 +1461,12 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 	if (!readObj(path, row, centre)) {
 		return 0;
+	}
+
+	// the props, where Greyhound's export of them is given
+	if (sysArgGetString("--codmap-props")) {
+		snprintf(path, sizeof(path), "%s/%s/%s_xmodels.json", indir, row->map, row->map);
+		readProps(path, sysArgGetString("--codmap-props"), row, centre);
 	}
 
 	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
