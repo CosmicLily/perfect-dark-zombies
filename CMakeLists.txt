@@ -531,6 +531,13 @@ set_source_files_properties("${CMAKE_SOURCE_DIR}/port/src/xblamesh.c" PROPERTIES
   COMPILE_OPTIONS "-O2;-finline-functions"
 )
 
+# Zombies' Black Ops II zombies (zmchar.c) are the same: every zombie on screen
+# skinned on the CPU, some 9,000 vertices each, every frame. At -Og a crowd of
+# crawlers took a fifth of a 60 FPS frame in that loop alone.
+set_source_files_properties("${CMAKE_SOURCE_DIR}/port/src/zmchar.c" PROPERTIES
+  COMPILE_OPTIONS "-O2;-finline-functions"
+)
+
 # Enhance Textures' resampler is a few float loops over every texel a texture
 # uploads, run on the render thread as the texture is first drawn. Its clamps
 # are min/max on floats, which the vectoriser will not touch while NaN and

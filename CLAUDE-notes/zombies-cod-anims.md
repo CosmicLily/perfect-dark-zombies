@@ -519,3 +519,21 @@ against every 18-40 s FLAC stream in every `zmb_*.sabs` (each stream starts
 at its start; every other was 0.6 or less and lined up mid-track. The banks
 that had to be looked in beyond the map's own: `zmb_patch`,
 `zmb_returned_tranzit`, `zmb_highrise`, `zmb_rt_load`, `zmb_code_post_gfx`.
+## The zombies' cost, and the crawlers' lag (2026-10-26)
+
+Timed in `zmcharDraw()` (`sysGetMicroseconds()`, a log line every two
+seconds) on a seeded match started on round 50 with `--zombies-test-crawlers 1`
+and `--zombies-test-zombie 300` (the camera among them):
+- **The hitches were picture binding.** `modelpackBindMaterial()` reads and
+  decodes the PNG every call, and a slot's list is built anew for every
+  zombie of a new look (a crawler losing its legs, a respawn): 45 ms a build,
+  a frame and a half each. The models' 116 PNGs are 16 pictures (each body
+  piece has its own copy), so `zmcharBindAll()` binds them once as the
+  zombies load, sharing a tile between files of the same bytes (FNV-1a), and
+  each `struct zcdraw` keeps its tile (rebound only for a new pack's
+  generation). A build is now 0.3-0.5 ms.
+- **The steady cost is skinning**, 0.2 ms a whole zombie and 0.35 a crawler
+  (three models, some 9,000 vertices) on screen. `zmchar.c` is now built at
+  `-O2 -finline-functions` (it made little difference: the loop is memory
+  bound); a slot is skinned once a frame however many views draw it, and one
+  further than `ZMCHAR_LOD_DIST` (2000) every other frame.

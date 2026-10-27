@@ -67,6 +67,12 @@ struct zcdraw {
 	u32 count;
 	u32 flags;
 	struct objmaterial mat;
+	// its picture as bound, kept: binding reads and decodes the PNG again,
+	// some 12 ms, and a slot built anew for a zombie of another look (a
+	// crawler's legs gone) hitched the frame by a frame and a half
+	const void *tile;
+	u32 tilegen; // modelpackGetGeneration() when it was bound
+	bool tiled;
 };
 
 struct zcmodel {
@@ -292,6 +298,18 @@ static struct zcanim g_ZmcharAnims[ZMCHAR_ANIMCOUNT];
 static struct zcslot g_ZmcharSlots[ZMCHAR_SLOTS];
 static f32 g_ZmcharSlotPose[ZMCHAR_SLOTS][ZMCHAR_MAXBONES][3];
 static bool g_ZmcharSlotPosed[ZMCHAR_SLOTS];
+
+/**
+ * Skinning is the zombies' cost: some 0.2 to 0.4 ms each a frame. A slot is
+ * skinned once a level frame however many views draw it (split screen), and
+ * one further than ZMCHAR_LOD_DIST from the camera every other frame, its
+ * last vertices drawn between: at that distance its pose at 30 a second does
+ * not show. g_Vars.lvframenum the last frame each slot was skinned.
+ */
+#define ZMCHAR_LOD_DIST 2000.0f
+
+extern struct g_vars g_Vars;
+static s32 g_ZmcharSlotSkinned[ZMCHAR_SLOTS];
 
 s32 zmcharJoint(const char *name)
 {
@@ -543,6 +561,80 @@ static bool zmcharLoadAnim(struct zcanim *a, s32 anim)
 	return a->ok;
 }
 
+/**
+ * Every draw's picture bound as the zombies load, once a game. The models'
+ * 116 pictures are 16 (each body piece carries its own copy of its body's),
+ * so a file whose bytes are one already bound shares that one's tile: 16
+ * decodes, where binding as each slot was first built read and decoded every
+ * copy, some 45 ms a new piece, a hitch whenever a zombie of a new look (a
+ * crawler's legs gone) was first drawn.
+ */
+static void zmcharBindAll(void)
+{
+	struct { u64 hash; const void *tile; } seen[64];
+	s32 numseen = 0;
+	s32 numbound = 0;
+	s32 i;
+	s32 d;
+
+	for (i = 0; i < ZMCHAR_MODELS; i++) {
+		if (!g_ZmcharHave[i]) {
+			continue;
+		}
+
+		for (d = 0; d < g_ZmcharModels[i].numdraws; d++) {
+			struct zcdraw *draw = &g_ZmcharModels[i].draws[d];
+			u64 hash = 14695981039346656037ull;
+			s32 alpha;
+			s32 soft;
+			s32 k;
+			FILE *f;
+
+			if (draw->mat.kind != OBJMAT_IMAGE) {
+				continue;
+			}
+
+			// FNV-1a over the file's bytes
+			f = fopen(draw->mat.image, "rb");
+
+			if (f) {
+				u8 buf[65536];
+				size_t n;
+
+				while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+					size_t b;
+
+					for (b = 0; b < n; b++) {
+						hash = (hash ^ buf[b]) * 1099511628211ull;
+					}
+				}
+
+				fclose(f);
+			}
+
+			for (k = 0; k < numseen && seen[k].hash != hash; k++);
+
+			if (k < numseen) {
+				draw->tile = seen[k].tile;
+			} else {
+				draw->tile = modelpackBindMaterial(&draw->mat, &alpha, &soft);
+				numbound++;
+
+				if (numseen < (s32)ARRAYCOUNT(seen)) {
+					seen[numseen].hash = hash;
+					seen[numseen].tile = draw->tile;
+					numseen++;
+				}
+			}
+
+			draw->tilegen = modelpackGetGeneration();
+			draw->tiled = true;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "zmchar: %d pictures bound for the zombies' draws", numbound);
+}
+
 bool zmcharReady(void)
 {
 	s32 i;
@@ -574,6 +666,10 @@ bool zmcharReady(void)
 	g_ZmcharOk = g_ZmcharAnims[ZMCHAR_WALK].ok && g_ZmcharRootJoint >= 0;
 
 	memset(g_ZmcharWhite, 0xff, sizeof(g_ZmcharWhite));
+
+	if (g_ZmcharOk) {
+		zmcharBindAll();
+	}
 
 	sysLogPrintf(LOG_NOTE, "zmchar: Black Ops II's zombie, %d and %d vertices, %d bones joined%s",
 			g_ZmcharModels[0].numverts, g_ZmcharModels[1].numverts, g_ZmcharNumJoints,
@@ -923,7 +1019,7 @@ static bool zmcharBuildSlot(struct zcslot *s, s32 look)
 		const struct zcmodel *m = &g_ZmcharModels[k];
 
 		for (d = 0; d < m->numdraws; d++) {
-			const struct zcdraw *draw = &m->draws[d];
+			struct zcdraw *draw = &m->draws[d];
 			const void *tile = NULL;
 			s32 alpha = 0;
 			s32 soft = 0;
@@ -934,8 +1030,15 @@ static bool zmcharBuildSlot(struct zcslot *s, s32 look)
 			u32 t;
 			Gfx *gdl = &s->gdl[numgfx];
 
+			// bound once, again only for a new pack (struct zcdraw)
 			if (draw->mat.kind == OBJMAT_IMAGE) {
-				tile = modelpackBindMaterial(&draw->mat, &alpha, &soft);
+				if (!draw->tiled || draw->tilegen != modelpackGetGeneration()) {
+					draw->tile = modelpackBindMaterial(&draw->mat, &alpha, &soft);
+					draw->tilegen = modelpackGetGeneration();
+					draw->tiled = true;
+				}
+
+				tile = draw->tile;
 			}
 
 			if (!tile) {
@@ -1051,36 +1154,20 @@ static bool zmcharBuildSlot(struct zcslot *s, s32 look)
 	return true;
 }
 
-Gfx *zmcharDraw(Gfx *gdl, s32 slot, s32 look, Mtxf *mtx, s32 anim, f32 frame, s32 from, f32 fromframe, f32 blend,
-		u8 r, u8 g, u8 b)
+// A slot's joints posed and its models' vertices skinned into its arrays:
+// each its place and a shade from its turned normal, a light from above, in
+// front and to the left of the zombie
+static void zmcharSkin(s32 slot, struct zcslot *s, const s32 *models, s32 nummodels,
+		s32 anim, f32 frame, s32 from, f32 fromframe, f32 blend)
 {
 	static f32 world[ZMCHAR_MAXBONES][3][4];
 	// by a model's place in the look (three at the most), not its number
 	static f32 skin[3][ZMCHAR_MAXBONES][3][4];
 	static f32 pos[3][65536 / 4][3];
 	static u8 shade[3][65536 / 4];
-	struct zcslot *s;
-	s32 models[3];
-	s32 nummodels;
 	s32 n;
 	s32 k;
 	s32 i;
-
-	if (!zmcharReady() || slot < 0 || slot >= ZMCHAR_SLOTS) {
-		return gdl;
-	}
-
-	s = &g_ZmcharSlots[slot];
-	nummodels = zmcharLookModels(look, models);
-
-	// its list built the first time, and again for a zombie of another look
-	if ((!s->built || s->key != zmcharLookKey(look)) && !zmcharBuildSlot(s, look)) {
-		return gdl;
-	}
-
-	if (!s->gdl) {
-		return gdl;
-	}
 
 	zmcharPose(anim, frame, from, fromframe, blend, world);
 
@@ -1092,9 +1179,8 @@ Gfx *zmcharDraw(Gfx *gdl, s32 slot, s32 look, Mtxf *mtx, s32 anim, f32 frame, s3
 	}
 
 	g_ZmcharSlotPosed[slot] = true;
+	g_ZmcharSlotSkinned[slot] = g_Vars.lvframenum;
 
-	// each model's vertices skinned: its place and a shade from its turned
-	// normal, a light from above, in front and to the left of the zombie
 	for (n = 0; n < nummodels && (k = models[n]) >= 0; n++) {
 		const struct zcmodel *m = &g_ZmcharModels[k];
 
@@ -1145,7 +1231,51 @@ Gfx *zmcharDraw(Gfx *gdl, s32 slot, s32 look, Mtxf *mtx, s32 anim, f32 frame, s3
 		out->z = (s16)(p[2] * ZMCHAR_FIXED);
 		s->col[i].r = s->col[i].g = s->col[i].b = shade[k2][vi];
 	}
+}
 
+Gfx *zmcharDraw(Gfx *gdl, s32 slot, s32 look, Mtxf *mtx, s32 anim, f32 frame, s32 from, f32 fromframe, f32 blend,
+		u8 r, u8 g, u8 b)
+{
+	struct zcslot *s;
+	s32 models[3];
+	s32 nummodels;
+	bool rebuilt = false;
+	bool again = true;
+
+	if (!zmcharReady() || slot < 0 || slot >= ZMCHAR_SLOTS) {
+		return gdl;
+	}
+
+	s = &g_ZmcharSlots[slot];
+	nummodels = zmcharLookModels(look, models);
+
+	// its list built the first time, and again for a zombie of another look
+	if (!s->built || s->key != zmcharLookKey(look)) {
+		rebuilt = true;
+
+		if (!zmcharBuildSlot(s, look)) {
+			return gdl;
+		}
+	}
+
+	if (!s->gdl) {
+		return gdl;
+	}
+
+	// not again if skinned already this frame (another view), or if far and
+	// skinned last frame: its vertices as they are (ZMCHAR_LOD_DIST)
+	if (!rebuilt && g_ZmcharSlotPosed[slot]) {
+		const f32 dist2 = mtx->m[3][0] * mtx->m[3][0] + mtx->m[3][1] * mtx->m[3][1] + mtx->m[3][2] * mtx->m[3][2];
+		const s32 since = g_Vars.lvframenum - g_ZmcharSlotSkinned[slot];
+
+		if (since == 0 || (since == 1 && dist2 > ZMCHAR_LOD_DIST * ZMCHAR_LOD_DIST)) {
+			again = false;
+		}
+	}
+
+	if (again) {
+		zmcharSkin(slot, s, models, nummodels, anim, frame, from, fromframe, blend);
+	}
 	gDPPipeSync(gdl++);
 	gDPSetCycleType(gdl++, G_CYC_2CYCLE);
 	gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
