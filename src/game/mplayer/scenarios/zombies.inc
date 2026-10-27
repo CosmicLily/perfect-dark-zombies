@@ -135,7 +135,7 @@ static s32 g_ZombieRegenDelay60[MAX_PLAYERS];
  * left standing. Solo, a death is the end, as before.
  */
 #define ZOMBIE_BLEEDOUT60     2700   // 45 seconds
-#define ZOMBIE_REVIVE60       240    // 4 seconds of holding B
+#define ZOMBIE_REVIVE60       180    // 3 seconds of holding B: _zm_laststand's reviveTime (1.5 with Quick Revive)
 #define ZOMBIE_REVIVE_RANGE   110.0f
 #define ZOMBIE_ALLDOWN_END60  180    // the match ends this long after the last one standing goes down
 
@@ -169,12 +169,14 @@ extern s32 g_ZombieCfgRoundMusic;
 extern s32 g_ZombieCfgGroans;
 extern s32 g_ZombieCfgPerkLimit;
 #define ZOMBIE_POINTS_HIT      10
-#define ZOMBIE_POINTS_KILL     60
+#define ZOMBIE_POINTS_KILL     60  // the torso's: _zm_score's 50 and its 10 for torso_upper or torso_lower
+#define ZOMBIE_POINTS_LIMB     50  // an arm or a leg: the 50 alone
 #define ZOMBIE_POINTS_HEADSHOT 100
 #define ZOMBIE_POINTS_MELEE    130
 #define ZOMBIE_POINTS_BLAST    50
 
 static s32 g_ZombiePoints[MAX_PLAYERS];
+static s32 g_ZombieTeamEarned; // every point anyone has been given this match, spent or not (score_total): power-ups drop by it
 
 // The match's scoreboard (zombiesRenderScoreboard()), as Black Ops II's has
 // it: the zombies each player killed, the times they went down, the players
@@ -476,10 +478,12 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 		value = ZOMBIE_POINTS_BLAST;
 	} else if (ismelee) {
 		value = ZOMBIE_POINTS_MELEE;
-	} else if (hitpart == HITPART_HEAD) {
+	} else if (hitpart == HITPART_HEAD || hitpart == HITPART_HAT) {
 		value = ZOMBIE_POINTS_HEADSHOT;
-	} else {
+	} else if (hitpart == HITPART_TORSO || hitpart == HITPART_PELVIS) {
 		value = ZOMBIE_POINTS_KILL;
+	} else {
+		value = ZOMBIE_POINTS_LIMB;
 	}
 
 	// Double Points
@@ -488,12 +492,13 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 	}
 
 	g_ZombiePoints[playernum] += value;
+	g_ZombieTeamEarned += value;
 	zombiesAddPopup(playernum, value);
 
 	if (killed && g_ZombieStats[playernum].kills < 0xffff) {
 		g_ZombieStats[playernum].kills++;
 
-		if (hitpart == HITPART_HEAD && !explosion && !ismelee) {
+		if ((hitpart == HITPART_HEAD || hitpart == HITPART_HAT) && !explosion && !ismelee) {
 			g_ZombieStats[playernum].headshots++;
 		}
 	}
@@ -661,19 +666,20 @@ static s32 zombiesCountAlive(void)
 	return alive;
 }
 
-// Frames between zombie spawns: a slow trickle early on, as Call of Duty's
-// first rounds are, then quicker: 4 seconds in round 1, 10% quicker each
-// round (about 1.5s by round 10), never under half a second.
-#define ZOMBIE_SPAWN_DELAY_FIRST 240
-#define ZOMBIE_SPAWN_DELAY_MIN   30
+// Frames between zombie spawns, Black Ops II's zombie_spawn_delay: 2 seconds
+// in round 1, a twentieth quicker each round after (1.26 by round 10, 0.75
+// by 20), never under 0.08 of a second. It was 4 seconds and a tenth off a
+// round, with half a second the least: round 1 came in at half the pace.
+#define ZOMBIE_SPAWN_DELAY_FIRST 120
+#define ZOMBIE_SPAWN_DELAY_MIN   5
 
 static s32 zombiesSpawnDelay(s32 round)
 {
 	f32 delay = ZOMBIE_SPAWN_DELAY_FIRST;
 	s32 i;
 
-	for (i = 1; i < round; i++) {
-		delay *= 0.9f;
+	for (i = 1; i < round && delay > ZOMBIE_SPAWN_DELAY_MIN; i++) {
+		delay *= 0.95f;
 	}
 
 	if (delay < ZOMBIE_SPAWN_DELAY_MIN) {
@@ -1594,7 +1600,7 @@ static void zombiesPlaceJuggernog(void)
 #define ZOMBIE_PERK_HALFDEPTH   45.0f  // the machine's, at ZOMBIE_JUGG_SCALE
 #define ZOMBIE_QR_SOLO_COST     500
 #define ZOMBIE_QR_SOLO_BUYS     3
-#define ZOMBIE_QR_SELF60        480    // 8 seconds down, then up again
+#define ZOMBIE_QR_SELF60        600    // 10 seconds down, then up again: _zm_laststand's solo_revive_time
 #define ZOMBIE_SPEEDCOLA_RATE   2.0f
 #define ZOMBIE_DOUBLETAP_RATE   1.33f
 #define ZOMBIE_DOUBLETAP_DAMAGE 2.0f
@@ -10188,14 +10194,8 @@ void zombiesGrenadePress(void)
 		return;
 	}
 
+	// none left: nothing happens, as Black Ops II has it (no sound)
 	if (g_ZombieGrenades[playernum] <= 0) {
-		if (!NET_CLIENT) {
-			g_ZombieSoundFor = playernum;
-			zombiesPlaySound(SFX_MENU_ERROR, 0.4f);
-			g_ZombieSoundFor = -1;
-			g_ZombieGrenadeWait60[playernum] = ZOMBIE_GRENADE_WAIT60;
-		}
-
 		return;
 	}
 
@@ -10970,7 +10970,11 @@ bool zombiesPlayerGoesDown(s32 playernum, bool force)
 	// the last stand's pistol in hand
 	zombiesLastStandBegin(playernum);
 
-	zombiesPlaySound(SFX_MENU_ERROR, 0.6f);
+	// Black Ops II's own cue is the last stand's loop (zombiesTickLastStandSound());
+	// Perfect Dark's buzz only when that sound was never baked
+	if (zmSfxSound(ZMSFX_LASTSTAND) <= 0) {
+		zombiesPlaySound(SFX_MENU_ERROR, 0.6f);
+	}
 
 	sprintf(msg, "PLAYER %d IS DOWN!\n", playernum + 1);
 	zombiesTellOthers(playernum, msg);
@@ -13648,14 +13652,18 @@ static void zombiesTickBox(void)
 
 /**
  * Max Ammo, Call of Duty's power-up: a zombie killed by a player may leave one
- * where it fell (ZOMBIE_DROP_CHANCE in a hundred, no more than
- * ZOMBIE_DROPS_PER_ROUND a round). It is a small green ammo crate turning and
+ * where it fell, no more than ZOMBIE_DROPS_PER_ROUND a round. As Black Ops
+ * II's _zm_powerups.gsc has it, that is not a flat chance: the next kill
+ * after the team's points earned (spent or not) pass a mark drops one, the
+ * mark ZOMBIE_DROP_INCREMENT on at first and 1.14 times further each time;
+ * besides, any kill drops one ZOMBIE_DROP_CHANCE times in a hundred. It is a small green ammo crate turning and
  * bobbing over the floor, on the radar in green; it lasts ZOMBIE_DROP_LIFE60,
  * blinking for the last ZOMBIE_DROP_BLINK60. Any player standing who walks
  * into it fills every gun everyone alive is carrying, and "MAX AMMO!" goes up
  * on every screen.
  */
-#define ZOMBIE_DROP_CHANCE      4       // in a hundred, a kill
+#define ZOMBIE_DROP_CHANCE      3       // in a hundred, a kill: randomint(100) > 2 drops none
+#define ZOMBIE_DROP_INCREMENT   2000.0f // zombie_powerup_drop_increment
 #define ZOMBIE_DROPS_PER_ROUND  4
 #define ZOMBIE_DROP_LIFE60      1800    // 30 seconds
 #define ZOMBIE_DROP_BLINK60     480     // blinking for the last 8
@@ -13735,6 +13743,9 @@ struct zombiedrop {
 static struct zombiedrop g_ZombieDrops[4];
 static u8 g_ZombieDropSerial[4];           // each slot's drops counted (online: a client knows a new one)
 static s32 g_ZombieDropsThisRound = 0;
+static f32 g_ZombieDropIncrement = ZOMBIE_DROP_INCREMENT;
+static s32 g_ZombieScoreToDrop = 0;        // over g_ZombieTeamEarned
+static bool g_ZombieDropDue = false;       // zombie_drop_item: the next kill drops one
 static s32 g_ZombieMaxAmmoBanner60 = -1;   // how long a power-up's name has been up, -1 when not
 static s32 g_ZombieBannerKind = ZOMBIEPOWERUP_MAXAMMO;
 static s32 g_ZombiePowerupBag[ZOMBIEPOWERUP_COUNT];
@@ -13746,6 +13757,10 @@ static void zombiesResetDrops(void)
 	// a new stage: the last one's props went with it
 	bzero(g_ZombieDrops, sizeof(g_ZombieDrops));
 	g_ZombieDropsThisRound = 0;
+	g_ZombieTeamEarned = 0;
+	g_ZombieDropIncrement = ZOMBIE_DROP_INCREMENT;
+	g_ZombieScoreToDrop = (s32)ZOMBIE_DROP_INCREMENT;
+	g_ZombieDropDue = false;
 	g_ZombieMaxAmmoBanner60 = -1;
 	g_ZombiePowerupBagLeft = 0;
 	g_ZombieInstaKill60 = 0;
@@ -13880,8 +13895,18 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 	struct zombiedrop *drop = NULL;
 	s32 i;
 
-	if (victim->prop == NULL || !g_ZombieCfgPowerups || g_ZombieDropsThisRound >= ZOMBIE_DROPS_PER_ROUND
-			|| (s32)(rngRandom() % 100) >= ZOMBIE_DROP_CHANCE) {
+	// watch_for_drop: the team's points past the mark make the next kill's
+	if (g_ZombieTeamEarned > g_ZombieScoreToDrop) {
+		g_ZombieDropIncrement *= 1.14f;
+		g_ZombieScoreToDrop = g_ZombieTeamEarned + (s32)g_ZombieDropIncrement;
+		g_ZombieDropDue = true;
+	}
+
+	if (victim->prop == NULL || !g_ZombieCfgPowerups || g_ZombieDropsThisRound >= ZOMBIE_DROPS_PER_ROUND) {
+		return;
+	}
+
+	if ((s32)(rngRandom() % 100) >= ZOMBIE_DROP_CHANCE && !g_ZombieDropDue) {
 		return;
 	}
 
@@ -13901,6 +13926,7 @@ static void zombiesMaybeDrop(struct chrdata *victim)
 				victim->ground > -30000 ? victim->ground : victim->prop->pos.y - 60, victim->prop->rooms)) {
 		g_ZombieDropSerial[drop - g_ZombieDrops]++; // a new one in the slot, for the clients
 		g_ZombieDropsThisRound++;
+		g_ZombieDropDue = false;
 		zombiesCodOr(ZMSFX_PU_SPAWN, NULL, SFX_PICKUP_SHIELD, 1.5f);
 	}
 }
@@ -14051,6 +14077,7 @@ static void zombiesNuke(void)
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		if (zombiesPlayerIsUp(i)) {
 			g_ZombiePoints[i] += ZOMBIE_NUKE_POINTS;
+			g_ZombieTeamEarned += ZOMBIE_NUKE_POINTS;
 			zombiesAddPopup(i, ZOMBIE_NUKE_POINTS);
 		}
 	}
@@ -14072,6 +14099,7 @@ static void zombiesCarpenter(void)
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		if (zombiesPlayerIsUp(i)) {
 			g_ZombiePoints[i] += ZOMBIE_CARPENTER_POINTS;
+			g_ZombieTeamEarned += ZOMBIE_CARPENTER_POINTS;
 			zombiesAddPopup(i, ZOMBIE_CARPENTER_POINTS);
 		}
 	}
@@ -16688,6 +16716,7 @@ static void zombiesTickBarriers(void)
 			if (g_ZombieRebuilt[i] < ZOMBIE_BARRIER_CAP) {
 				g_ZombieRebuilt[i] += ZOMBIE_BARRIER_POINTS;
 				g_ZombiePoints[i] += ZOMBIE_BARRIER_POINTS;
+				g_ZombieTeamEarned += ZOMBIE_BARRIER_POINTS;
 				zombiesAddPopup(i, ZOMBIE_BARRIER_POINTS);
 			}
 
