@@ -8354,6 +8354,13 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETFOGCOLOR:
                 gfx_dp_set_fog_color(C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
                 break;
+            case G_SETBLENDCOLOR:
+                // The RDP's blend colour: its alpha is what an alpha compare
+                // tests against, which the shaders take as fixed (a cutout's
+                // threshold). Accepted and passed over - unknown, it ended the
+                // list it was in, and a Black Ops II room (codmap.c) drew
+                // nothing after its first material
+                break;
             case G_SETFILLCOLOR:
                 gfx_dp_set_fill_color(cmd->words.w1);
                 break;

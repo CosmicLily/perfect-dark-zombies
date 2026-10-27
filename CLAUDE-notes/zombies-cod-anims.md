@@ -764,3 +764,15 @@ cards are; decals stay drawn (hidden, one left a hole in the bank's floor).
 codmaptex.py's codmap.txt has a third column, 1 when a picture is see-through
 in 2% or more of it; many of Black Ops II's opaque maps (bricks, cars) are,
 so only fence-like names may use it.
+**The renderer takes G_SETBLENDCOLOR, and Town has fog and cut-outs
+(2026-10-27).** `gfx_pc.cpp`'s interpreter had no case for 0xf9 and ended any
+list holding one (stock emits it only under DEBUG line mode); it is accepted
+and passed over now (the shaders' alpha test is fixed, not the blend
+colour's). With that out of the way the two-cycle room state works: each
+material sets `G_CYC_2CYCLE`, `G_RM_PASS` with `G_RM_AA_ZB_OPA_SURF2` (or
+`TEX_EDGE2` for a cut-out) and a `..., G_CC_PASS2` combine, as a ROM room
+does, and `gfxReplaceGbiCommands()` fogs it on a stage with fog. The earlier
+"two cycles drew nothing" was the 0xf9 in the same list, not the cycles.
+Cut-outs (fence, chain, barbed, `_holes`, leaf, branch, shrub, bush, grass but
+ground) draw under TEX_EDGE2: the shaders drop texels under 0.19 alpha. Only
+glass and gobo cards are hidden now.

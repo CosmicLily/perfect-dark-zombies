@@ -251,7 +251,9 @@ static s32 matFind(const char *name)
 			// (branches and leaves are not wholly clear between twigs, and with
 			// no blend colour to test against they stayed slabs: hidden below)
 			g_Mats[g_NumMats].cut = g_TexCut[i] && (strstr(name, "fence") || strstr(name, "chain")
-					|| strstr(name, "barbed") || strstr(name, "_holes"));
+					|| strstr(name, "barbed") || strstr(name, "_holes") || strstr(name, "leaf")
+					|| strstr(name, "branch") || strstr(name, "shrub") || strstr(name, "bush")
+					|| (strstr(name, "grass") && !strstr(name, "ground")));
 		}
 	}
 
@@ -272,10 +274,8 @@ static s32 matFind(const char *name)
 	// left holes)
 	// Chain-link mesh too: the alpha test does not cut it in the port's
 	// renderer, and drawn it was a black sheet; its posts and rails are props
-	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL || strstr(name, "chainlink") != NULL
-		|| strstr(name, "chain_link") != NULL || strstr(name, "barbedfence") != NULL
-		|| ((strstr(name, "foliage") || strstr(name, "_grass") || strstr(name, "gobo"))
-			&& !strstr(name, "bark") && !strstr(name, "ground"));
+	// (chain-link, branches, leaves and grass are cut out now: above)
+	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL || strstr(name, "gobo") != NULL;
 	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
@@ -916,16 +916,17 @@ static void roomWrite(struct croom *r, u32 baseptr)
 	s32 i = 0;
 	s32 c;
 
-	// The state that holds throughout: one cycle, the vertex colour, both
-	// faces (two cycles and a render mode of the room's own drew nothing at all)
+	// The state that holds throughout: both faces. Each material sets two
+	// cycles and a render mode as a ROM room's list does, so that the stage's
+	// fog takes it (gfxReplaceGbiCommands(), gfxreplace.c's group 1, turns
+	// G_RM_PASS into G_RM_FOG_SHADE_A on a stage with fog)
 	{
-		Gfx g[3];
+		Gfx g[2];
 
-		gDPSetCycleType(&g[0], G_CYC_1CYCLE);
-		gSPClearGeometryMode(&g[1], G_LIGHTING | G_TEXTURE_GEN | G_CULL_BOTH);
-		gSPSetGeometryMode(&g[2], G_SHADE | G_SHADING_SMOOTH);
+		gSPClearGeometryMode(&g[0], G_LIGHTING | G_TEXTURE_GEN | G_CULL_BOTH);
+		gSPSetGeometryMode(&g[1], G_SHADE | G_SHADING_SMOOTH);
 
-		for (c = 0; c < 3; c++) {
+		for (c = 0; c < 2; c++) {
 			gfxWords(&words, &g[c]);
 		}
 	}
@@ -950,15 +951,24 @@ static void roomWrite(struct croom *r, u32 baseptr)
 			// a cut-out (a fence's mesh, a branch's twigs): its picture's
 			// clear texels not drawn
 			const s32 cut = texnum >= 0 && g_Mats[g_Tris[r->tris[i]].mat].cut;
-			Gfx g[2];
+			Gfx g[4];
 
-			// (no blend colour: the port's renderer knows no G_SETBLENDCOLOR and
-			// ended the room's list there, drawing none of it; the threshold then
-			// passes every texel not wholly clear)
+			// a cut-out under G_RM_AA_ZB_TEX_EDGE2: the renderer drops its texels
+			// under a fifth alpha (gfx_opengl.cpp's texture edge)
 			gDPPipeSync(&g[0]);
-			gDPSetAlphaCompare(&g[1], cut ? G_AC_THRESHOLD : G_AC_NONE);
+			gDPSetCycleType(&g[1], G_CYC_2CYCLE);
+
+			if (cut) {
+				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_TEX_EDGE2);
+			} else {
+				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
+			}
+
+			gDPSetAlphaCompare(&g[3], G_AC_NONE);
 			gfxWords(&words, &g[0]);
 			gfxWords(&words, &g[1]);
+			gfxWords(&words, &g[2]);
+			gfxWords(&words, &g[3]);
 
 			if (texnum >= 0) {
 				gSPTexture(&g[0], 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
@@ -967,14 +977,14 @@ static void roomWrite(struct croom *r, u32 baseptr)
 				cbU32(&words, 0xc0000000u | 4);
 				cbU32(&words, (u32)texnum & 0xfff);
 				if (cut) {
-					gDPSetCombineMode(&g[1], G_CC_MODULATERGBA, G_CC_MODULATERGBA);
+					gDPSetCombineMode(&g[1], G_CC_MODULATERGBA, G_CC_PASS2);
 				} else {
-					gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_MODULATERGB);
+					gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_PASS2);
 				}
 				gfxWords(&words, &g[1]);
 			} else {
 				gSPTexture(&g[0], 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-				gDPSetCombineMode(&g[1], G_CC_SHADE, G_CC_SHADE);
+				gDPSetCombineMode(&g[1], G_CC_SHADE, G_CC_PASS2);
 				gfxWords(&words, &g[0]);
 				gfxWords(&words, &g[1]);
 			}
