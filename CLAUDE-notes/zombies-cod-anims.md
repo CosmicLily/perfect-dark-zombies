@@ -710,3 +710,11 @@ cornering in `zombiesCornerMachines()`; the box's pad in
 `ZOMBIE_BARRIER_MAX` is in the online scenario block, left alone. Not yet: wall
 buys (`weapon_upgrade`, `zombie_weapon_upgrade`), and zombies coming in at the
 zones' own spawners rather than the player spawns.
+**Town was the wrong size: C2M's map OBJ is centimetres (2026-10-27).** Its
+placements, entities and spawns are inches, and so is the row's box; the OBJ
+was read as inches, so the map was 2.54 times too big and the box cut out
+another patch, and every prop and entity floated or sank (props on the
+ground: 6% read as inches, 60% as cm/2.54, measured against the map's floors).
+Read now in cm/2.54; the box takes 136,701 triangles; rooms 1000 across (1500
+put two over 32767 vertices), 18x18; and a `zmin` of -200 inches leaves out
+Tranzit's lab under Town (map, props and nodes alike).

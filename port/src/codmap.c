@@ -36,7 +36,7 @@
 
 #define SEG_BG 0x0f000000u
 #define CODMAP_SCALE 2.54f    // our units an inch
-#define CODMAP_CELL  1500.0f  // a room's side
+#define CODMAP_CELL  1000.0f  // a room's side (1500 put over 32767 vertices in Town's busiest)
 #define CODMAP_REACH 60.0f    // a tile goes in every room it comes this near
 #define CODMAP_FLOOR_NY 0.6f  // a triangle facing up this much is a floor
 
@@ -48,11 +48,12 @@ struct codmaprow {
 	const char *name;   // the arena's
 	const char *map;    // C2M's folder and file stem
 	f32 box[4];         // x0 x1 y0 y1, the map's inches
+	f32 zmin;           // and nothing under this (Town: Tranzit's lab under it)
 	const char *spawns; // the targetname of its player spawns
 };
 
 static const struct codmaprow g_CodMapRows[] = {
-	{ "bo2town", "Town (BO2)", "zm_transit", { -2168, 4785, -4578, 2416 }, "town_standard_player_spawns" },
+	{ "bo2town", "Town (BO2)", "zm_transit", { -2168, 4785, -4578, 2416 }, -200, "town_standard_player_spawns" },
 };
 
 /* ------------------------------------------------------------------------ */
@@ -321,6 +322,13 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 			}
 
 			sscanf(line + 2, "%f %f %f", &verts[numverts * 3], &verts[numverts * 3 + 1], &verts[numverts * 3 + 2]);
+
+			// C2M writes the map in centimetres; its entities and placements,
+			// and the row's box, are inches (read as inches, Town was 2.54 times
+			// its size and the box cut out somewhere else)
+			verts[numverts * 3] /= 2.54f;
+			verts[numverts * 3 + 1] /= 2.54f;
+			verts[numverts * 3 + 2] /= 2.54f;
 			numverts++;
 		} else if (line[0] == 'v' && line[1] == 't' && line[2] == ' ') {
 			if (numuvs == maxuvs) {
@@ -344,7 +352,7 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 			s32 tidx[16];
 			s32 n = 0;
 			char *s = line + 2;
-			f32 cx = 0, cy = 0;
+			f32 cx = 0, cy = 0, cz = 0;
 			s32 k;
 
 			while (*s && n < 16) {
@@ -392,6 +400,7 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 				cx += verts[idx[k] * 3];
 				cy += verts[idx[k] * 3 + 1];
+				cz += verts[idx[k] * 3 + 2];
 			}
 
 			if (n < 3) {
@@ -400,8 +409,9 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 			cx /= n;
 			cy /= n;
+			cz /= n;
 
-			if (cx < row->box[0] || cx > row->box[1] || cy < row->box[2] || cy > row->box[3]) {
+			if (cx < row->box[0] || cx > row->box[1] || cy < row->box[2] || cy > row->box[3] || cz < row->zmin) {
 				continue;
 			}
 
@@ -683,7 +693,8 @@ static void readProps(const char *jsonpath, const char *modeldir, const struct c
 
 		*end = '}';
 
-		if (!name[0] || pos[0] < row->box[0] || pos[0] > row->box[1] || pos[1] < row->box[2] || pos[1] > row->box[3]) {
+		if (!name[0] || pos[0] < row->box[0] || pos[0] > row->box[1] || pos[1] < row->box[2] || pos[1] > row->box[3]
+				|| pos[2] < row->zmin) {
 			continue;
 		}
 
@@ -1493,7 +1504,8 @@ static void readNodes(const char *path, const struct codmaprow *row, const f32 *
 
 			sscanf(origin, "%f %f %f", &cod[0], &cod[1], &cod[2]);
 
-			if (cod[0] < row->box[0] || cod[0] > row->box[1] || cod[1] < row->box[2] || cod[1] > row->box[3]) {
+			if (cod[0] < row->box[0] || cod[0] > row->box[1] || cod[1] < row->box[2] || cod[1] > row->box[3]
+					|| cod[2] < row->zmin) {
 				continue;
 			}
 
