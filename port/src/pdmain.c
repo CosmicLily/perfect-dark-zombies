@@ -91,6 +91,7 @@
 #include "gexfront.h"
 #include "modmode.h"
 #include "simnav.h"
+void codmapConvertFromCommandLine(void); // codmap.c
 #include "net/net.h"
 
 extern u8 *g_MempHeap;
@@ -274,6 +275,7 @@ void mainInit(void)
 	xblaImportFromCommandLine(); // --xbla-import only; likewise
 	recordFetchFromCommandLine(); // --fetch-ffmpeg only; likewise
 	simnavBuildAllFromCommandLine(); // --simnav-build-all only; likewise
+	codmapConvertFromCommandLine(); // --codmap-convert only; likewise (codmap.c)
 	langInit();
 	lvInit();
 	cheatsInit();

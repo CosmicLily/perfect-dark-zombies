@@ -616,3 +616,32 @@ has one a zombie reaches at round 5; `--zombies-test-follow 0
 --zombies-follow-climb --screenshot-frame 99999 --zombies-shot-step 20`
 films the first jump from its start. Stock (waypoint) movement only: modern
 (navmesh) movement crosses its ladder links its own way.
+## Black Ops II's Town as an arena (2026-10-26)
+
+`port/src/codmap.c`: `--codmap-convert <C2M's exported_maps/black_ops_2/zm>`
+writes each `g_CodMapRows` map whose C2M export is there into
+`$E/mods/Black Ops II Maps/` as a Stage Loader map (bg, tiles, pads, mp setup,
+and a `modconfig.txt` maps block) and exits. C2M (github.com/vugi99/C2M, the
+maintained fork of Husky) reads the map out of the *running* Steam game, so the
+player loads it and exports; Plutonium is a different process C2M will not
+find. OpenAssetTools' dump has no level geometry, only `maps/mp/*.d3dbsp.ents`.
+
+The first cut, only to walk round: Town is the box x -2168..4785, y
+-4578..2416 inches of Tranzit's export (80,475 triangles), turned into our
+axes (x, z up as y, y as -z) at 2.54 an inch about the box's middle; a 12x12
+grid of 1500-unit rooms with a portal the level's height between every two
+neighbours, so the portal walk and `bgFindRoomsByPos()` need nothing from the
+map; each room's triangles in one flat colour a material, lit in the vertices,
+no texture (the state at the head of the leaf: G_TEXTURE off, G_CC_SHADE, no
+lighting, no culling); every triangle a collision tile (a floor at normal y
+0.6 and over, a wall otherwise, ceilings included) in every room it reaches
+within 60 of, but materials named as decals, foliage, leaves, grass, vines,
+fx or sky. The players start at `town_standard_player_spawns`, stood on the
+highest floor triangle under them. No waypoints yet (Zombies places its
+machines and box from pads and walls, and most found no wall). Load it with
+`Mod.MapMods=Black Ops II Maps` and `--boot-map "Town (BO2)"` (stage 0x51 here).
+
+Next: textures (Greyhound's export of the search string into `_images`; the
+rooms drawn at run time as `gebeanstage.c` draws an HD level, or the pictures
+as mod textures), waypoints from the entity file's 5,350 `node_pathnode`s,
+and Zombies' parts from its zones, spawners, barriers and box spots.
