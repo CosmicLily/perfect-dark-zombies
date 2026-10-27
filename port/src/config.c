@@ -24,7 +24,10 @@
  * pd.ini and not written back to it, and looks like one that will not stay
  * changed.
  */
-#define CONFIG_MAX_SETTINGS 512
+// 512 was full by 2026-10: every key registered after the 512th was dropped,
+// with a warning printed before the log was open (GE Plus's and Black Ops II's
+// "maps offered" markers among them, so neither was ever kept)
+#define CONFIG_MAX_SETTINGS 1024
 
 typedef enum {
 	CFG_NONE,

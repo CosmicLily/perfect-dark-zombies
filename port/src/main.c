@@ -214,6 +214,8 @@ static void mainApplySettingsRevision(void)
 	g_SettingsRevision = SETTINGS_REVISION;
 }
 
+void codmapEnableMapsAtStartup(void); // codmap.c
+
 int main(int argc, const char **argv)
 {
 	sysInitArgs(argc, argv);
@@ -260,6 +262,8 @@ int main(int argc, const char **argv)
 	// updater and has not turned it off (gebeance.c) - before the release's
 	// models are loaded, so the first start with the zip draws it at once
 	gebeanCePrepareAtStartup();
+	// and Black Ops II's maps on in the Stage Loader once they are converted (codmap.c)
+	codmapEnableMapsAtStartup();
 
 	// After the config, because that is where the chosen mod is written, and
 	// before romdataInit(), which is what goes looking for the files it holds.

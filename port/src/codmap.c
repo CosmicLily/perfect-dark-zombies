@@ -1153,6 +1153,46 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 	return 1;
 }
 
+#include "config.h"
+
+void modMapsEnableByName(const char *name);
+
+#define CODMAP_MODDIR "Black Ops II Maps"
+
+static s32 g_CodMapMapsOffered;
+
+PD_CONSTRUCTOR static void codmapConfigInit(void)
+{
+	configRegisterInt("Mod.BlackOps2MapsOffered", &g_CodMapMapsOffered, 0, 1);
+}
+
+/**
+ * Black Ops II's maps, once they are converted, on in the Stage Loader the
+ * first time they are found (as GE Plus turns on its arenas, gexplusrom.c):
+ * left to the Stage Loader's own checkbox they were never in the arena list.
+ * Asked once, so a player who turns them off keeps them off. Before the mods
+ * are mounted (main.c).
+ */
+void codmapEnableMapsAtStartup(void)
+{
+	char path[1024];
+
+	if (g_CodMapMapsOffered) {
+		return;
+	}
+
+	snprintf(path, sizeof(path), "%s", fsFullPath("$E/mods/" CODMAP_MODDIR "/modconfig.txt"));
+
+	if (fsFileSize(path) <= 0) {
+		return;
+	}
+
+	g_CodMapMapsOffered = 1;
+	modMapsEnableByName(CODMAP_MODDIR);
+	configSave(CONFIG_PATH);
+	sysLogPrintf(LOG_NOTE, "codmap: Black Ops II's maps turned on in the Stage Loader");
+}
+
 // --codmap-convert <dir>: every row whose map C2M exported into dir, then exit
 void codmapConvertFromCommandLine(void)
 {
@@ -1166,7 +1206,7 @@ void codmapConvertFromCommandLine(void)
 		return;
 	}
 
-	snprintf(outdir, sizeof(outdir), "%s", fsFullPath("$E/mods/Black Ops II Maps"));
+	snprintf(outdir, sizeof(outdir), "%s", fsFullPath("$E/mods/" CODMAP_MODDIR));
 	fsCreateDir(fsFullPath("$E/mods"));
 	fsCreateDir(outdir);
 

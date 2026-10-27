@@ -434,12 +434,33 @@ static bool mpArenaListed(s32 i)
 	return challengeIsFeatureUnlocked(g_MpArenas[i].requirefeature);
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Whether the list has a "Custom" group: the arenas after Perfect Dark's own
+ * seventeen (Random the last of them) that are listed - a mod's maps, the
+ * Stage Loader's (modloader.c), Black Ops II's Town among them (codmap.c)
+ */
+static bool mpArenaHasCustom(void)
+{
+	s32 i;
+
+	for (i = MP_NUM_STOCK_ARENAS; i < mpGetNumStages(); i++) {
+		if (mpArenaListed(i)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+#endif
+
 MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	struct optiongroup groups[] = {
 		{ 0,  L_MPMENU_116 }, // "Dark"
 		{ 13, L_MPMENU_117 }, // "Classic"
 		{ 16, L_MPMENU_118 }, // "Random"
+		{ MP_NUM_STOCK_ARENAS, 0 }, // "Custom", the port's (mpArenaHasCustom())
 	};
 
 	s32 i;
@@ -548,6 +569,12 @@ MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, u
 				&& !challengeIsFeatureUnlocked(MPFEATURE_STAGE_FELICITY)) {
 			data->list.value--;
 		}
+
+#ifndef PLATFORM_N64
+		if (mpArenaHasCustom()) {
+			data->list.value++;
+		}
+#endif
 		break;
 	case MENUOP_GETOPTGROUPTEXT:
 #ifndef PLATFORM_N64
@@ -564,6 +591,13 @@ MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, u
 				&& count > 0) {
 			count++;
 		}
+
+#ifndef PLATFORM_N64
+		if (count >= 3) {
+			return (uintptr_t)"Custom\n";
+		}
+#endif
+
 		return (uintptr_t)langGet(groups[count].name);
 	case MENUOP_GETGROUPSTARTINDEX:
 #ifndef PLATFORM_N64
