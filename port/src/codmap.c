@@ -1306,20 +1306,341 @@ static f32 floorUnder(const f32 pos[3])
 	return best > -1e29f ? best : pos[1];
 }
 
-// The pads (geconvert.c's writePads()): the spawn points and nothing else
-static cbuf writePads(const struct codspawn *spawns, s32 numspawns)
+/**
+ * The waypoints: Black Ops II's own path nodes (the entities' node_pathnode)
+ * in the row's box. A map's file has its nodes and not their links, which its
+ * compiler works out, so two nodes are linked here when they are within
+ * CODMAP_LINK_REACH of each other across, no more than CODMAP_LINK_RISE apart
+ * in height, nothing solid crosses the line between them at a knee's height
+ * or a head's, and there is floor under its middle near their height. The
+ * groups Perfect Dark routes through first are each room's nodes that link
+ * to each other (navFindRoute() walks a group's own links, so a group must be
+ * of a piece).
+ */
+#define CODMAP_LINK_REACH 380.0f // inches
+#define CODMAP_LINK_RISE  40.0f  // inches
+#define CODMAP_BLOCK_CELL 400.0f // our units: the grid the solid triangles are looked for in
+
+struct cnode {
+	f32 pos[3];
+	s32 *nb;
+	s32 numnb, maxnb;
+	s32 group;
+};
+
+static struct cnode *g_Nodes;
+static s32 g_NumNodes;
+static s32 g_NumGroups;
+
+static s32 **g_BlockCells;
+static s32 *g_BlockCounts;
+static s32 g_BlockX, g_BlockZ;
+
+static void blockGridBuild(void)
 {
-	cbuf head = {0}, body = {0}, out = {0}, z;
-	const size_t start = (0x14 + 2 * numspawns + 3) & ~3u;
-	size_t wpstart, wgstart, coverstart;
+	s32 *caps;
+	s32 t, ix, iz;
+
+	g_BlockX = (s32)ceilf(g_GridX * CODMAP_CELL / CODMAP_BLOCK_CELL);
+	g_BlockZ = (s32)ceilf(g_GridZ * CODMAP_CELL / CODMAP_BLOCK_CELL);
+	g_BlockCells = calloc(g_BlockX * g_BlockZ, sizeof(*g_BlockCells));
+	g_BlockCounts = calloc(g_BlockX * g_BlockZ, sizeof(*g_BlockCounts));
+	caps = calloc(g_BlockX * g_BlockZ, sizeof(*caps));
+
+	for (t = 0; t < g_NumTris; t++) {
+		const struct ctri *tri = &g_Tris[t];
+		f32 lo[2], hi[2];
+		s32 x0, x1, z0, z1;
+
+		if (!tri->solid) {
+			continue;
+		}
+
+		lo[0] = MIN(tri->p[0][0], MIN(tri->p[1][0], tri->p[2][0]));
+		hi[0] = MAX(tri->p[0][0], MAX(tri->p[1][0], tri->p[2][0]));
+		lo[1] = MIN(tri->p[0][2], MIN(tri->p[1][2], tri->p[2][2]));
+		hi[1] = MAX(tri->p[0][2], MAX(tri->p[1][2], tri->p[2][2]));
+		x0 = MAX(0, (s32)floorf((lo[0] - g_GridX0) / CODMAP_BLOCK_CELL));
+		x1 = MIN(g_BlockX - 1, (s32)floorf((hi[0] - g_GridX0) / CODMAP_BLOCK_CELL));
+		z0 = MAX(0, (s32)floorf((lo[1] - g_GridZ0) / CODMAP_BLOCK_CELL));
+		z1 = MIN(g_BlockZ - 1, (s32)floorf((hi[1] - g_GridZ0) / CODMAP_BLOCK_CELL));
+
+		for (ix = x0; ix <= x1; ix++) {
+			for (iz = z0; iz <= z1; iz++) {
+				const s32 c = ix * g_BlockZ + iz;
+
+				if (g_BlockCounts[c] == caps[c]) {
+					caps[c] = caps[c] ? caps[c] * 2 : 64;
+					g_BlockCells[c] = realloc(g_BlockCells[c], sizeof(s32) * caps[c]);
+				}
+
+				g_BlockCells[c][g_BlockCounts[c]++] = t;
+			}
+		}
+	}
+
+	free(caps);
+}
+
+static void blockGridFree(void)
+{
+	s32 c;
+
+	for (c = 0; c < g_BlockX * g_BlockZ; c++) {
+		free(g_BlockCells[c]);
+	}
+
+	free(g_BlockCells);
+	free(g_BlockCounts);
+	g_BlockCells = NULL;
+	g_BlockCounts = NULL;
+}
+
+// Whether a solid triangle crosses the segment a to b (Moller-Trumbore)
+static s32 segmentBlocked(const f32 a[3], const f32 b[3])
+{
+	const f32 d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+	s32 x0 = MAX(0, (s32)floorf((MIN(a[0], b[0]) - g_GridX0) / CODMAP_BLOCK_CELL));
+	s32 x1 = MIN(g_BlockX - 1, (s32)floorf((MAX(a[0], b[0]) - g_GridX0) / CODMAP_BLOCK_CELL));
+	s32 z0 = MAX(0, (s32)floorf((MIN(a[2], b[2]) - g_GridZ0) / CODMAP_BLOCK_CELL));
+	s32 z1 = MIN(g_BlockZ - 1, (s32)floorf((MAX(a[2], b[2]) - g_GridZ0) / CODMAP_BLOCK_CELL));
+	s32 ix, iz, k;
+
+	for (ix = x0; ix <= x1; ix++) {
+		for (iz = z0; iz <= z1; iz++) {
+			const s32 c = ix * g_BlockZ + iz;
+
+			for (k = 0; k < g_BlockCounts[c]; k++) {
+				const struct ctri *tri = &g_Tris[g_BlockCells[c][k]];
+				const f32 *p0 = tri->p[0], *p1 = tri->p[1], *p2 = tri->p[2];
+				const f32 e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+				const f32 e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+				const f32 h[3] = { d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0] };
+				const f32 det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+				f32 inv, s[3], u, q[3], v, tt;
+
+				if (fabsf(det) < 1e-6f) {
+					continue;
+				}
+
+				inv = 1.0f / det;
+				s[0] = a[0] - p0[0];
+				s[1] = a[1] - p0[1];
+				s[2] = a[2] - p0[2];
+				u = inv * (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]);
+
+				if (u < 0 || u > 1) {
+					continue;
+				}
+
+				q[0] = s[1] * e1[2] - s[2] * e1[1];
+				q[1] = s[2] * e1[0] - s[0] * e1[2];
+				q[2] = s[0] * e1[1] - s[1] * e1[0];
+				v = inv * (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]);
+
+				if (v < 0 || u + v > 1) {
+					continue;
+				}
+
+				tt = inv * (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]);
+
+				if (tt > 0.001f && tt < 0.999f) {
+					return 1;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+static void nodeLink(s32 a, s32 b)
+{
+	struct cnode *n = &g_Nodes[a];
+
+	if (n->numnb == n->maxnb) {
+		n->maxnb = n->maxnb ? n->maxnb * 2 : 8;
+		n->nb = realloc(n->nb, sizeof(s32) * n->maxnb);
+	}
+
+	n->nb[n->numnb++] = b;
+}
+
+static void readNodes(const char *path, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(path, "rb");
+	char line[512];
+	char origin[128] = "", classname[64] = "";
+	s32 max = 0, i, j, links = 0;
+	const f32 reach = CODMAP_LINK_REACH * CODMAP_SCALE, rise = CODMAP_LINK_RISE * CODMAP_SCALE;
+
+	g_NumNodes = 0;
+
+	if (!f) {
+		return;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		if (line[0] == '{') {
+			origin[0] = classname[0] = 0;
+		} else if (line[0] == '}') {
+			f32 cod[3] = { 0, 0, 0 };
+
+			if (strcmp(classname, "node_pathnode") != 0 || !origin[0]) {
+				continue;
+			}
+
+			sscanf(origin, "%f %f %f", &cod[0], &cod[1], &cod[2]);
+
+			if (cod[0] < row->box[0] || cod[0] > row->box[1] || cod[1] < row->box[2] || cod[1] > row->box[3]) {
+				continue;
+			}
+
+			if (g_NumNodes == max) {
+				max = max ? max * 2 : 1024;
+				g_Nodes = realloc(g_Nodes, sizeof(*g_Nodes) * max);
+			}
+
+			memset(&g_Nodes[g_NumNodes], 0, sizeof(g_Nodes[0]));
+			codToOurs(cod, centre, g_Nodes[g_NumNodes].pos);
+			g_Nodes[g_NumNodes].pos[1] += 20;
+			g_Nodes[g_NumNodes].pos[1] = floorUnder(g_Nodes[g_NumNodes].pos) + 1;
+			g_NumNodes++;
+		} else {
+			char key[64], value[256];
+
+			if (sscanf(line, " \"%63[^\"]\" \"%255[^\"]\"", key, value) == 2) {
+				if (strcmp(key, "origin") == 0) {
+					snprintf(origin, sizeof(origin), "%s", value);
+				} else if (strcmp(key, "classname") == 0) {
+					snprintf(classname, sizeof(classname), "%s", value);
+				}
+			}
+		}
+	}
+
+	fclose(f);
+	blockGridBuild();
+
+	for (i = 0; i < g_NumNodes; i++) {
+		for (j = i + 1; j < g_NumNodes; j++) {
+			const f32 *a = g_Nodes[i].pos, *b = g_Nodes[j].pos;
+			const f32 dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+			f32 knee[2][3], head[2][3], mid[3], fl;
+			s32 k;
+
+			if (dx * dx + dz * dz > reach * reach || dy > rise || dy < -rise) {
+				continue;
+			}
+
+			for (k = 0; k < 3; k++) {
+				knee[0][k] = a[k];
+				knee[1][k] = b[k];
+				head[0][k] = a[k];
+				head[1][k] = b[k];
+				mid[k] = (a[k] + b[k]) / 2;
+			}
+
+			knee[0][1] += 50;
+			knee[1][1] += 50;
+			head[0][1] += 150;
+			head[1][1] += 150;
+
+			if (segmentBlocked(knee[0], knee[1]) || segmentBlocked(head[0], head[1])) {
+				continue;
+			}
+
+			mid[1] += 40;
+			fl = floorUnder(mid);
+
+			if (fl < mid[1] - 40 - 80) {
+				continue;
+			}
+
+			nodeLink(i, j);
+			nodeLink(j, i);
+			links++;
+		}
+	}
+
+	blockGridFree();
+
+	// the groups: each room's nodes that link to each other
+	g_NumGroups = 0;
+
+	for (i = 0; i < g_NumNodes; i++) {
+		g_Nodes[i].group = -1;
+	}
+
+	for (i = 0; i < g_NumNodes; i++) {
+		s32 *stack;
+		s32 top = 0;
+		const s32 cell = cellOf(g_Nodes[i].pos[0], g_Nodes[i].pos[2]);
+
+		if (g_Nodes[i].group >= 0) {
+			continue;
+		}
+
+		stack = malloc(sizeof(s32) * g_NumNodes);
+		stack[top++] = i;
+		g_Nodes[i].group = g_NumGroups;
+
+		while (top > 0) {
+			const s32 n = stack[--top];
+
+			for (j = 0; j < g_Nodes[n].numnb; j++) {
+				const s32 m = g_Nodes[n].nb[j];
+
+				if (g_Nodes[m].group < 0 && cellOf(g_Nodes[m].pos[0], g_Nodes[m].pos[2]) == cell) {
+					g_Nodes[m].group = g_NumGroups;
+					stack[top++] = m;
+				}
+			}
+		}
+
+		free(stack);
+		g_NumGroups++;
+	}
+
+	sysLogPrintf(LOG_NOTE, "codmap: %d path nodes, %d links, %d groups", g_NumNodes, links, g_NumGroups);
+}
+
+static void cbS32List(cbuf *b, const s32 *v, s32 n)
+{
 	s32 i;
 
-	for (i = 0; i < numspawns; i++) {
-		f32 pos[3];
-		const s32 room = 1 + cellOf(spawns[i].pos[0], spawns[i].pos[2]);
+	for (i = 0; i < n; i++) {
+		cbU32(b, (u32)v[i]);
+	}
 
-		memcpy(pos, spawns[i].pos, sizeof(pos));
-		pos[1] = floorUnder(pos) + 1;
+	cbU32(b, 0xffffffff);
+}
+
+// The pads (geconvert.c's writePads()): the spawn points, then a pad for each
+// path node, its waypoint, and the groups
+static cbuf writePads(const struct codspawn *spawns, s32 numspawns)
+{
+	cbuf head = {0}, body = {0}, out = {0}, wprec = {0}, nbblob = {0}, rec = {0}, wlists = {0}, nlists = {0}, z;
+	const s32 numpads = numspawns + g_NumNodes;
+	const size_t start = (0x14 + 2 * numpads + 3) & ~3u;
+	size_t wpstart, wgstart, coverstart;
+	u32 npos, wpos;
+	s32 i, g;
+
+	for (i = 0; i < numpads; i++) {
+		f32 pos[3];
+		f32 yaw = 0;
+		s32 room;
+
+		if (i < numspawns) {
+			memcpy(pos, spawns[i].pos, sizeof(pos));
+			pos[1] = floorUnder(pos) + 1;
+			yaw = spawns[i].yaw;
+		} else {
+			memcpy(pos, g_Nodes[i - numspawns].pos, sizeof(pos));
+		}
+
+		room = 1 + cellOf(pos[0], pos[2]);
 
 		cbU16(&head, (u32)(start + body.n));
 		cbU32(&body, ((u32)room & 0x3ff) << 4);
@@ -1330,37 +1651,117 @@ static cbuf writePads(const struct codspawn *spawns, s32 numspawns)
 		cbF32(&body, 1);
 		cbF32(&body, 0);
 		// Call of Duty's yaw turns from +x towards +y, which is our -z
-		cbF32(&body, cosf(spawns[i].yaw));
+		cbF32(&body, cosf(yaw));
 		cbF32(&body, 0);
-		cbF32(&body, -sinf(spawns[i].yaw));
+		cbF32(&body, -sinf(yaw));
 		cbPad(&body, 4);
 	}
 
 	cbPad(&head, 4);
 	wpstart = 0x14 + head.n + body.n;
-	wgstart = wpstart + 16;
-	coverstart = wgstart + 12;
+	npos = (u32)(wpstart + 16 * g_NumNodes + 16);
 
-	cbU32(&out, (u32)numspawns);
+	for (i = 0; i < g_NumNodes; i++) {
+		const size_t before = nbblob.n;
+
+		cbU32(&wprec, (u32)(numspawns + i));
+		cbU32(&wprec, npos);
+		cbU32(&wprec, (u32)g_Nodes[i].group);
+		cbU32(&wprec, 0);
+		cbS32List(&nbblob, g_Nodes[i].nb, g_Nodes[i].numnb);
+		npos += (u32)(nbblob.n - before);
+	}
+
+	cbU32(&wprec, 0xffffffff);
+	cbZeros(&wprec, 12);
+
+	wgstart = wpstart + wprec.n + nbblob.n;
+
+	{
+		// each group's waypoints, and the groups next to it
+		s32 *members = malloc(sizeof(s32) * (g_NumNodes + 1));
+		s32 *near = malloc(sizeof(s32) * (g_NumGroups + 1));
+		u32 *nposes = malloc(sizeof(u32) * (g_NumGroups + 1));
+		u32 *wposes = malloc(sizeof(u32) * (g_NumGroups + 1));
+		cbuf nl = {0};
+
+		for (g = 0; g < g_NumGroups; g++) {
+			s32 n = 0, m = 0, k, j;
+
+			for (i = 0; i < g_NumNodes; i++) {
+				if (g_Nodes[i].group != g) {
+					continue;
+				}
+
+				members[n++] = i;
+
+				for (j = 0; j < g_Nodes[i].numnb; j++) {
+					const s32 og = g_Nodes[g_Nodes[i].nb[j]].group;
+
+					if (og == g) {
+						continue;
+					}
+
+					for (k = 0; k < m && near[k] != og; k++) {
+					}
+
+					if (k == m) {
+						near[m++] = og;
+					}
+				}
+			}
+
+			wposes[g] = (u32)wlists.n;
+			cbS32List(&wlists, members, n);
+			nposes[g] = (u32)nl.n;
+			cbS32List(&nl, near, m);
+		}
+
+		wpos = (u32)(wgstart + 12 * g_NumGroups + 12);
+		npos = wpos + (u32)wlists.n;
+
+		for (g = 0; g < g_NumGroups; g++) {
+			cbU32(&rec, npos + nposes[g]);
+			cbU32(&rec, wpos + wposes[g]);
+			cbU32(&rec, 0);
+		}
+
+		cbZeros(&rec, 12);
+		cbPut(&nlists, nl.v, nl.n);
+		free(nl.v);
+		free(members);
+		free(near);
+		free(nposes);
+		free(wposes);
+	}
+
+	coverstart = wgstart + rec.n + wlists.n + nlists.n;
+
+	cbU32(&out, (u32)numpads);
 	cbU32(&out, 0);
 	cbU32(&out, (u32)wpstart);
 	cbU32(&out, (u32)wgstart);
 	cbU32(&out, (u32)coverstart);
 	cbPut(&out, head.v, head.n);
 	cbPut(&out, body.v, body.n);
-	// no waypoints, no groups
-	cbU32(&out, 0xffffffff);
-	cbZeros(&out, 12);
-	cbZeros(&out, 12);
+	cbPut(&out, wprec.v, wprec.n);
+	cbPut(&out, nbblob.v, nbblob.n);
+	cbPut(&out, rec.v, rec.n);
+	cbPut(&out, wlists.v, wlists.n);
+	cbPut(&out, nlists.v, nlists.n);
 	cbPad(&out, 16);
 	z = rzip(out.v, out.n);
 	free(head.v);
 	free(body.v);
+	free(wprec.v);
+	free(nbblob.v);
+	free(rec.v);
+	free(wlists.v);
+	free(nlists.v);
 	free(out.v);
 
 	return z;
 }
-
 // The multiplayer setup (geconvert.c's writeMpSetup()): the spawns, no props
 static cbuf writeMpSetup(s32 numspawns)
 {
@@ -1548,6 +1949,8 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 	bg = writeBg(rooms, numrooms, portals, numportals);
 	tiles = writeTiles(rooms, numrooms, &floors, &walls);
+	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
+	readNodes(path, row, centre);
 	pads = writePads(spawns, numspawns);
 	setup = writeMpSetup(numspawns);
 

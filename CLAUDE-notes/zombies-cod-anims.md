@@ -675,3 +675,21 @@ over 24 inches across or high. Its materials' pictures are already PNG
 numbers them after the map's (0x0ea1 up, 289 in all). The placement JSON has
 a space after each colon. Breakable storefront windows stand alone in the
 street: their walls are likely script brushmodels, not in C2M's world export.
+**Town's waypoints (2026-10-26).** A map's entity file has its
+`node_pathnode`s and not their links (the compiler works those out), so
+codmap.c links two nodes within 380 inches across and 40 up or down when no
+solid triangle crosses the line between them at a knee's height or a head's
+(Moller-Trumbore against a 400-unit grid of the solid triangles) and there is
+floor under its middle; groups are each grid room's nodes that link to each
+other (`navFindRoute()` walks a group's own links). Town: 842 nodes, 6,029
+links, 171 groups; the pads file is the spawns, then a pad a node. Zombies
+reached a standing player in round 1. Next, Town's layout from the entities
+(Survival Town is script_string `zstandard_*`): perk machines are
+`script_struct` `zm_perk_machine` (model and `script_noteworthy` specialty),
+the box `zbarrier_zmcore_MagicBox` (`town_chest*`), windows
+`zbarrier_zmcore_BasicWoodBarrier` (`*_baricade*`; the `labs_` ones are under
+Town), wall buys `weapon_upgrade` (`zombie_weapon_upgrade`). Zombies mode
+places everything from the spawn pads (`zombiesPlaceBarriers()`,
+`zombiesReserveBoxPad()`, `zombiesPlacePerks()`, `zombiesPlaceWallBuys()`);
+`zombiesPlaceMachineObj()` takes a pad, a wall distance and a wall direction,
+so a pad on the spot with the facing passes straight through.
