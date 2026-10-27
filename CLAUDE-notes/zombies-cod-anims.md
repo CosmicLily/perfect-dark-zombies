@@ -785,3 +785,13 @@ and `_dec` (`blend` 2, G_RM_AA_ZB_XLU_DECAL2), both `G_CC_MODULATERGBA`; the
 opaque list ends at the first blended triangle. The bank's floor by its
 papers has no floor in C2M's export: the decal drawn opaque had hidden the
 hole, blended it shows the fog colour through.
+**Falling through Town (2026-10-27).** Two causes, two fixes. A flat decal is
+sometimes the only floor C2M exported (the bank's papers): `writeTiles()`
+makes any upward-facing decal (`blend` 2, normal y 0.6 and over) a floor tile
+(4,900 more in Town). And for holes the export left, `zombiesTickFallNet()`
+(Black Ops II stages only, `codmapStageIs()`) keeps each player's last place
+standing on real ground (not falling, `vv_ground` over -29999) and puts them
+back there once they have nothing under them (**`vv_ground` is held at
+exactly -30000 for none**) or have fallen for two seconds, before
+bondwalk.c's four-second fall death. `--zombies-test-under` with
+`--zombies-test-at` starts a player falling under the floor there.

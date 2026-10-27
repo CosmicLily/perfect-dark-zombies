@@ -1337,7 +1337,10 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 		s16 p[3][3];
 		u32 flags;
 
-		if (!tri->solid) {
+		// A decal lying flat is ground too: in places it is the only floor
+		// the export has (the bank's papers), and walked on as nothing it was
+		// a hole to fall through. One on a wall stays nothing
+		if (!tri->solid && !(tri->n[1] >= CODMAP_FLOOR_NY && !tri->hide && g_Mats[tri->mat].blend == 2)) {
 			continue;
 		}
 

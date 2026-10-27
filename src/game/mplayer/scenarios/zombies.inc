@@ -17395,6 +17395,52 @@ static void zombiesTickLava(s32 playernum)
 	g_ZombieReachThrough = false;
 }
 
+/**
+ * A Black Ops II map's holes (codmap.c's maps are what C2M exported, and a
+ * piece of floor it left out is a hole): a player falling for longer than
+ * ZOMBIE_FALLNET60 is put back where they last stood, as nowhere on such a
+ * map is a fall that long meant
+ */
+#define ZOMBIE_FALLNET60 120
+
+s32 codmapStageIs(s32 stagenum);
+
+static s32 g_ZombieFall60[MAX_PLAYERS];
+static struct coord g_ZombieSafePos[MAX_PLAYERS];
+static RoomNum g_ZombieSafeRooms[MAX_PLAYERS][8];
+static bool g_ZombieSafeHave[MAX_PLAYERS];
+
+static void zombiesTickFallNet(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+
+	if (!player || !player->prop || !player->prop->chr || !codmapStageIs(g_Vars.stagenum)) {
+		return;
+	}
+
+	// standing on real ground: the place to come back to
+	if (!player->isfalling && player->vv_ground > -29999.0f) {
+		g_ZombieFall60[playernum] = 0;
+		g_ZombieSafePos[playernum] = player->prop->pos;
+		g_ZombieSafePos[playernum].y = player->vv_manground;
+		roomsCopy(player->prop->rooms, g_ZombieSafeRooms[playernum]);
+		g_ZombieSafeHave[playernum] = true;
+		return;
+	}
+
+	g_ZombieFall60[playernum] += g_Vars.lvupdate60;
+
+	// at once with nothing under them at all; else after a long fall
+	if ((g_ZombieFall60[playernum] >= ZOMBIE_FALLNET60 || player->vv_ground <= -29999.0f) && g_ZombieSafeHave[playernum]) {
+		g_ZombieFall60[playernum] = 0;
+		chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
+				(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+		sysLogPrintf(LOG_NOTE, "zombies: player %d fell through the map at %.0f %.0f, put back at %.0f %.0f %.0f",
+				playernum, player->prop->pos.x, player->prop->pos.z,
+				g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
+	}
+}
+
 static void zombiesTickBarriers(void)
 {
 	s32 i;
@@ -19917,7 +19963,18 @@ void zombiesTick(void)
 			func0f065e74(&g_Vars.players[0]->prop->pos, g_Vars.players[0]->prop->rooms, &at, rooms);
 			bgFindRoomsByPos(&at, rooms, above, 20, NULL);
 			at.y = cdFindGroundAtCyl(&at, 20, rooms, NULL, NULL) + 1;
+
+			// --zombies-test-under: 400 under that floor, as through a hole
+			if (sysArgCheck("--zombies-test-under")) {
+				at.y -= 400;
+			}
 			chrMoveToPos(g_Vars.players[0]->prop->chr, &at, rooms, 0, true);
+
+			// and falling from there, with nothing under them, as through a hole
+			if (sysArgCheck("--zombies-test-under")) {
+				g_Vars.players[0]->vv_manground = at.y;
+				g_Vars.players[0]->vv_ground = -30000;
+			}
 			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-at: player at %.0f %.0f %.0f", at.x, at.y, at.z);
 		}
 	}
@@ -20224,6 +20281,7 @@ void zombiesTick(void)
 		g_ZombieSoundFor = i;
 		zombiesTickRegen(i);
 		zombiesTickLava(i);
+		zombiesTickFallNet(i);
 		zombiesTickJuggernog(i);
 		zombiesTickPerkMachines(i);
 		zombiesTickPap(i);
