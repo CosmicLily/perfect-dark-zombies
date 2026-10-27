@@ -776,3 +776,12 @@ does, and `gfxReplaceGbiCommands()` fogs it on a stage with fog. The earlier
 Cut-outs (fence, chain, barbed, `_holes`, leaf, branch, shrub, bush, grass but
 ground) draw under TEX_EDGE2: the shaders drop texels under 0.19 alpha. Only
 glass and gobo cards are hidden now.
+**Town's glass and decals, blended (2026-10-27).** A room now has a second
+leaf (the room header's +12, a 20-byte leaf after the first: list, and its
+own vertex and colour bases at its first vertex, so its G_VTX offsets count
+from there): the translucent one, which bg.c draws after the props. Triangles
+sort opaque first, then glass (`blend` 1, G_RM_AA_ZB_XLU_SURF2), then decals
+and `_dec` (`blend` 2, G_RM_AA_ZB_XLU_DECAL2), both `G_CC_MODULATERGBA`; the
+opaque list ends at the first blended triangle. The bank's floor by its
+papers has no floor in C2M's export: the decal drawn opaque had hidden the
+hole, blended it shows the fog colour through.

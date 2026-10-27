@@ -141,6 +141,7 @@ struct cmat {
 	u8 glow;       // lit by itself, whatever light it is in (molten lava)
 	u8 unseen;     // solid but not drawn: glass and decals, which the rooms cannot draw blended
 	u8 cut;        // its picture see-through in places: drawn cut out (an alpha test)
+	u8 blend;      // drawn blended by its picture's alpha, in the room's translucent leaf: 1 glass, 2 a decal
 };
 
 // codmaptex.py's textures/codmap.txt: a material's name and its texture number
@@ -274,8 +275,10 @@ static s32 matFind(const char *name)
 	// left holes)
 	// Chain-link mesh too: the alpha test does not cut it in the port's
 	// renderer, and drawn it was a black sheet; its posts and rails are props
-	// (chain-link, branches, leaves and grass are cut out now: above)
-	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL || strstr(name, "gobo") != NULL;
+	// (chain-link, branches, leaves and grass are cut out now: above; glass
+	// and decals are blended, below)
+	g_Mats[g_NumMats].unseen = strstr(name, "gobo") != NULL;
+	g_Mats[g_NumMats].blend = strstr(name, "glass") ? 1 : strstr(name, "decal") || strstr(name, "_dec") ? 2 : 0;
 	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
@@ -891,12 +894,18 @@ static s16 s16of(f32 v)
 	return i < -32768 ? -32768 : i > 32767 ? 32767 : i;
 }
 
+// The opaque materials first, then the blended (glass, then decals); a
+// texture's triangles together in each
 static int triTexCompare(const void *a, const void *b)
 {
-	const s32 ta = g_Mats[g_Tris[*(const s32 *)a].mat].texnum;
-	const s32 tb = g_Mats[g_Tris[*(const s32 *)b].mat].texnum;
+	const struct cmat *ma = &g_Mats[g_Tris[*(const s32 *)a].mat];
+	const struct cmat *mb = &g_Mats[g_Tris[*(const s32 *)b].mat];
 
-	return ta < tb ? -1 : ta > tb;
+	if (ma->blend != mb->blend) {
+		return ma->blend < mb->blend ? -1 : 1;
+	}
+
+	return ma->texnum < mb->texnum ? -1 : ma->texnum > mb->texnum;
 }
 
 /**
@@ -913,6 +922,8 @@ static void roomWrite(struct croom *r, u32 baseptr)
 	s32 numvtx = 0;
 	s32 mn[3] = { 32767, 32767, 32767 }, mx[3] = { -32768, -32768, -32768 };
 	size_t vtxat, colat, gdlat;
+	size_t xlugdl = 0;  // where the translucent leaf's list starts in words, 0 none
+	s32 xlubase = 0;    // and its first vertex
 	s32 i = 0;
 	s32 c;
 
@@ -940,14 +951,34 @@ static void roomWrite(struct croom *r, u32 baseptr)
 		u32 bcol[16];
 		u8 idx[64][3];
 		s32 nb = 0, nt = 0;
-		const s32 start = numvtx;
 		const s32 texnum = g_Mats[g_Tris[r->tris[i]].mat].texnum;
+		const s32 blend = g_Mats[g_Tris[r->tris[i]].mat].blend;
+		s32 start;
 		s32 k;
+
+		// the first blended triangle: the opaque list ends, and the
+		// translucent leaf's begins (bg.c draws it after the props, as a ROM
+		// room's second leaf), its vertex offsets from its own first
+		if (blend && !xlugdl) {
+			Gfx g[2];
+
+			cbU32(&words, 0xb8000000u);
+			cbU32(&words, 0);
+			xlugdl = words.n;
+			xlubase = numvtx;
+			gSPClearGeometryMode(&g[0], G_LIGHTING | G_TEXTURE_GEN | G_CULL_BOTH);
+			gSPSetGeometryMode(&g[1], G_SHADE | G_SHADING_SMOOTH);
+			gfxWords(&words, &g[0]);
+			gfxWords(&words, &g[1]);
+		}
+
+		start = numvtx - (xlugdl ? xlubase : 0);
 
 		// a new texture: the room's command for it (texLoadFromGdl() loads
 		// it there and patches the G_TEXTURE before it), the picture times
 		// the vertex colour; or none, the vertex colour alone
-		if (i == 0 || g_Mats[g_Tris[r->tris[i - 1]].mat].texnum != texnum) {
+		if (i == 0 || g_Mats[g_Tris[r->tris[i - 1]].mat].texnum != texnum
+				|| g_Mats[g_Tris[r->tris[i - 1]].mat].blend != blend) {
 			// a cut-out (a fence's mesh, a branch's twigs): its picture's
 			// clear texels not drawn
 			const s32 cut = texnum >= 0 && g_Mats[g_Tris[r->tris[i]].mat].cut;
@@ -958,7 +989,13 @@ static void roomWrite(struct croom *r, u32 baseptr)
 			gDPPipeSync(&g[0]);
 			gDPSetCycleType(&g[1], G_CYC_2CYCLE);
 
-			if (cut) {
+			// glass blended over what is behind it, a decal over the face it
+			// lies on (the decal mode keeps it off that face's depth)
+			if (blend == 1) {
+				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_XLU_SURF2);
+			} else if (blend == 2) {
+				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_XLU_DECAL2);
+			} else if (cut) {
 				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_TEX_EDGE2);
 			} else {
 				gDPSetRenderMode(&g[2], G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
@@ -976,7 +1013,7 @@ static void roomWrite(struct croom *r, u32 baseptr)
 				// subcmd 4: one tile, wrapping both ways
 				cbU32(&words, 0xc0000000u | 4);
 				cbU32(&words, (u32)texnum & 0xfff);
-				if (cut) {
+				if (cut || blend) {
 					gDPSetCombineMode(&g[1], G_CC_MODULATERGBA, G_CC_PASS2);
 				} else {
 					gDPSetCombineMode(&g[1], G_CC_MODULATERGB, G_CC_PASS2);
@@ -998,7 +1035,7 @@ static void roomWrite(struct croom *r, u32 baseptr)
 			s16 st[3][2];
 			f32 base[2];
 
-			if (g_Mats[t->mat].texnum != texnum) {
+			if (g_Mats[t->mat].texnum != texnum || g_Mats[t->mat].blend != blend) {
 				break;
 			}
 
@@ -1099,7 +1136,7 @@ static void roomWrite(struct croom *r, u32 baseptr)
 		numvtx++;
 	}
 
-	vtxat = (0x18 + 20 + 7) & ~7u;
+	vtxat = (0x18 + 20 * (xlugdl ? 2 : 1) + 7) & ~7u;
 	colat = vtxat + vtx.n;
 	gdlat = (colat + col.n + 7) & ~7u;
 
@@ -1107,7 +1144,16 @@ static void roomWrite(struct croom *r, u32 baseptr)
 	set32(r->data.v, 0, baseptr + (u32)vtxat);
 	set32(r->data.v, 4, baseptr + (u32)colat);
 	set32(r->data.v, 8, baseptr + 0x18);
-	set32(r->data.v, 12, 0);
+	set32(r->data.v, 12, xlugdl ? baseptr + 0x18 + 20 : 0);
+
+	// the translucent leaf: its list, and its vertices and colours from its own first
+	if (xlugdl) {
+		r->data.v[0x18 + 20] = 0;
+		set32(r->data.v, 0x18 + 20 + 4, 0);
+		set32(r->data.v, 0x18 + 20 + 8, baseptr + (u32)(gdlat + xlugdl));
+		set32(r->data.v, 0x18 + 20 + 12, baseptr + (u32)(vtxat + 12 * xlubase));
+		set32(r->data.v, 0x18 + 20 + 16, baseptr + (u32)(colat + 4 * xlubase));
+	}
 	set16(r->data.v, 0x10, 0xffff);
 	set16(r->data.v, 0x12, 0);
 	set16(r->data.v, 0x14, numvtx < 32767 ? numvtx : 32767);
