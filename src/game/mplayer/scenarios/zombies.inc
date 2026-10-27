@@ -17863,7 +17863,10 @@ char *zombiesMenuTextCareer(struct menuitem *item)
 // back.
 // Black Ops II's own (Tranzit's mus_zombie_round_over and _round_start,
 // zmsfx.c), each machine's own, with the level's music paused for as long
-#define ZOMBIE_ROUND_OVER240  TICKS(240 * 93 / 10)  // the round's end, 9.2 seconds
+// The level's music held off for the round's end (9.2 seconds) and the rest of
+// the break until the next round's start takes over: held only as long as the
+// piece, it came back for the break's last second before the round started
+#define ZOMBIE_ROUND_OVER240  TICKS(240 * (ZOMBIE_ROUND_BREAK / 60 + 2))
 #define ZOMBIE_ROUND_START240 TICKS(240 * 141 / 10) // and the next's start, 14 seconds
 
 static bool zombiesRoundMusic(s32 slot, s32 duration240)
@@ -17894,7 +17897,9 @@ static void zombiesRoundSting(void)
 // The game over's: Black Ops II's, Tranzit's (21 seconds, in the patch's bank,
 // zmb_patch.all.sabs: no alias names it), or Perfect Dark's failed mission's
 // when its file is not there
-#define ZOMBIE_GAME_OVER240 TICKS(240 * 21)
+// held past the song (21 seconds) to the end screens, or it came back for the
+// game over's last second
+#define ZOMBIE_GAME_OVER240 TICKS(240 * (ZOMBIE_GAMEOVER60 / 60 + 3))
 
 static void zombiesGameOverMusic(void)
 {
