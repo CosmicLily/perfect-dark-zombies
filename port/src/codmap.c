@@ -36,7 +36,8 @@
 
 #define SEG_BG 0x0f000000u
 #define CODMAP_SCALE 2.54f    // our units an inch
-#define CODMAP_CELL  1000.0f  // a room's side (1500 put over 32767 vertices in Town's busiest)
+#define CODMAP_CELL  1000.0f  // a room's side: 18x18 for Town, under bg.c's 350 rooms (750's 576 overran g_BgForceOnscreenRooms)
+#define CODMAP_PIECE_TRIS 9000 // a room's triangles at most; the rest go into pieces drawn with it (32767 vertices)
 #define CODMAP_REACH 60.0f    // a tile goes in every room it comes this near
 #define CODMAP_FLOOR_NY 0.6f  // a triangle facing up this much is a floor
 
@@ -128,6 +129,7 @@ struct ctri {
 	u32 colour;    // the vertices', lit
 	s32 mat;
 	u8 solid;
+	u8 hide;       // solid but not drawn: a prop's simplest model, its collision
 };
 
 struct cmat {
@@ -137,6 +139,7 @@ struct cmat {
 	u8 solid;
 	u8 nodraw;     // neither drawn nor solid
 	u8 glow;       // lit by itself, whatever light it is in (molten lava)
+	u8 unseen;     // solid but not drawn: glass, which the rooms cannot draw see-through
 };
 
 // codmaptex.py's textures/codmap.txt: a material's name and its texture number
@@ -196,7 +199,9 @@ static s32 matFind(const char *name)
 	static const char *const nosolid[] = { "decal", "_dec", "foliage", "fol_", "leaf", "leaves", "vine", "fx_", "atmos_", "sky" };
 	// Black Ops II's tools' own surfaces, which its renderer never draws: a
 	// shadow caster's caulk, written "SHADOW PRIMARY" in yellow
-	static const char *const nodraw[] = { "caulk", "shadow", "clip" };
+	// and its effect cards: atmos_glow_fire is a glow over a fire, drawn
+	// added, and opaque it was an orange slab
+	static const char *const nodraw[] = { "caulk", "shadow", "clip", "atmos_" };
 	static const u32 palette[] = {
 		0x8a7a66, 0x6f6a60, 0x7d6b55, 0x5f5a52, 0x8f8576, 0x6b5b4a, 0x777a74, 0x857060,
 		0x6a6f6a, 0x9a8c78, 0x5c5248, 0x807568,
@@ -234,6 +239,12 @@ static s32 matFind(const char *name)
 	}
 
 	g_Mats[g_NumMats].nodraw = 0;
+	// glass, and the cut-out cards of trees, bushes and grass (a branch is a
+	// picture with see-through between its twigs, and drawn opaque it was a
+	// grey slab): the rooms draw opaque alone. A tree keeps its bark
+	g_Mats[g_NumMats].unseen = strstr(name, "glass") != NULL
+		|| ((strstr(name, "foliage") || strstr(name, "_grass") || strstr(name, "gobo"))
+			&& !strstr(name, "bark") && !strstr(name, "ground"));
 	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
@@ -302,6 +313,7 @@ static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], const f32 *uv
 		| (u32)((rgb & 0xff) * lit) << 8 | 0xff;
 	t->mat = mat;
 	t->solid = g_Mats[mat].solid;
+	t->hide = 0;
 	g_NumTris++;
 }
 
@@ -474,6 +486,7 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 struct cmodel {
 	char name[96];
+	s32 detail;       // drawn (LOD1) or its collision (the least detailed)
 	s32 tried;
 	s32 numtris;
 	f32 (*p)[3][3];
@@ -485,7 +498,7 @@ struct cmodel {
 static struct cmodel *g_Models;
 static s32 g_NumModels, g_MaxModels;
 
-static struct cmodel *modelGet(const char *dir, const char *name)
+static struct cmodel *modelGet(const char *dir, const char *name, s32 detail)
 {
 	char path[1024];
 	struct cmodel *m;
@@ -498,7 +511,7 @@ static struct cmodel *modelGet(const char *dir, const char *name)
 	s32 i, lod;
 
 	for (i = 0; i < g_NumModels; i++) {
-		if (strcmp(g_Models[i].name, name) == 0) {
+		if (strcmp(g_Models[i].name, name) == 0 && g_Models[i].detail == detail) {
 			return g_Models[i].numtris ? &g_Models[i] : NULL;
 		}
 	}
@@ -511,8 +524,16 @@ static struct cmodel *modelGet(const char *dir, const char *name)
 	m = &g_Models[g_NumModels++];
 	memset(m, 0, sizeof(*m));
 	snprintf(m->name, sizeof(m->name), "%s", name);
+	m->detail = detail;
 
-	// the least detailed there is
+	// the second most detailed (LOD1: Town's props come to 337,000 triangles,
+	// against 146,000 at the least detailed, whose cars were boxes), else the
+	// least detailed there is
+	if (detail) {
+		snprintf(path, sizeof(path), "%s/%s/%s_LOD1.obj", dir, name, name);
+		f = fopen(path, "rb");
+	}
+
 	for (lod = 7; lod >= 0 && !f; lod--) {
 		snprintf(path, sizeof(path), "%s/%s/%s_LOD%d.obj", dir, name, name, lod);
 		f = fopen(path, "rb");
@@ -599,7 +620,7 @@ static struct cmodel *modelGet(const char *dir, const char *name)
 }
 
 // One placement's triangles into g_Tris
-static s32 propPlace(const struct cmodel *m, const f32 pos[3], const f32 rot[3], f32 scale, const f32 *centre)
+static s32 propPlace(const struct cmodel *m, const f32 pos[3], const f32 rot[3], f32 scale, const f32 *centre, s32 collision)
 {
 	f32 r[3][3];
 	f32 c[3], s[3];
@@ -638,8 +659,10 @@ static s32 propPlace(const struct cmodel *m, const f32 pos[3], const f32 rot[3],
 
 		triAdd(out[0], out[1], out[2], uv, m->mat[t]);
 
-		if (g_NumTris > 0 && !m->solid) {
-			g_Tris[g_NumTris - 1].solid = 0;
+		// drawn and not solid, or solid (if big enough) and not drawn
+		if (g_NumTris > 0) {
+			g_Tris[g_NumTris - 1].solid = collision && m->solid && g_Tris[g_NumTris - 1].solid;
+			g_Tris[g_NumTris - 1].hide = collision;
 		}
 	}
 
@@ -714,14 +737,20 @@ static void readProps(const char *jsonpath, const char *modeldir, const struct c
 			continue;
 		}
 
-		m = modelGet(modeldir, name);
+		m = modelGet(modeldir, name, 1);
 
 		if (!m) {
 			missing++;
 			continue;
 		}
 
-		tris += propPlace(m, pos, rot, scale, centre);
+		tris += propPlace(m, pos, rot, scale, centre, 0);
+
+		// its collision from its simplest model: LOD1's tiles were too many for
+		// the tiles file (convertTiles() overran)
+		if (m->solid && (m = modelGet(modeldir, name, 0)) != NULL) {
+			propPlace(m, pos, rot, scale, centre, 1);
+		}
 		placed++;
 	}
 
@@ -790,6 +819,7 @@ struct croom {
 	s32 numtris, maxtris;
 	cbuf data;          // as written, before compression
 	s32 bbox[6];        // about the centre
+	s32 drawnwith;      // a piece of this room (1-based), drawn whenever it is; 0 a room of the grid
 };
 
 static s32 g_GridX, g_GridZ;
@@ -1121,6 +1151,8 @@ static cbuf writeBg(struct croom *rooms, s32 numrooms, const struct cportal *por
 
 		primary.v[e + 16] = 128;
 		primary.v[e + 17] = 255;
+		// a piece: the room it is drawn with (the row's two bytes of padding)
+		set16(primary.v, e + 18, (u32)rooms[r].drawnwith);
 		cbPut(&roomsblob, z.v, z.n);
 		ptr += (u32)z.n;
 		free(z.v);
@@ -2171,6 +2203,10 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 	for (t = 0; t < g_NumTris; t++) {
 		const struct ctri *tri = &g_Tris[t];
 
+		if (g_Mats[tri->mat].unseen || tri->hide) {
+			continue;
+		}
+
 		roomAddTri(&rooms[cellOf((tri->p[0][0] + tri->p[1][0] + tri->p[2][0]) / 3,
 					(tri->p[0][2] + tri->p[1][2] + tri->p[2][2]) / 3)], t);
 	}
@@ -2207,6 +2243,38 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 	// the light under roofs, before the rooms are written with it
 	shadePass();
+	// A room with more triangles than its vertices can hold gives the rest to
+	// pieces after the grid's rooms, drawn whenever it is (bg.c's
+	// g_BgRoomPieces), each about the same centre with no portal and no tiles
+	{
+		const s32 numcells = numrooms;
+		s32 r;
+
+		for (r = 0; r < numcells; r++) {
+			while (rooms[r].numtris > CODMAP_PIECE_TRIS) {
+				struct croom *piece;
+				const s32 keep = rooms[r].numtris - CODMAP_PIECE_TRIS;
+				const s32 take = MIN(CODMAP_PIECE_TRIS, keep);
+
+				rooms = realloc(rooms, sizeof(*rooms) * (numrooms + 1));
+				piece = &rooms[numrooms++];
+				memset(piece, 0, sizeof(*piece));
+				piece->x0 = rooms[r].x0;
+				piece->z0 = rooms[r].z0;
+				memcpy(piece->centre, rooms[r].centre, sizeof(piece->centre));
+				piece->drawnwith = r + 1;
+				piece->tris = malloc(sizeof(s32) * take);
+				memcpy(piece->tris, rooms[r].tris + rooms[r].numtris - take, sizeof(s32) * take);
+				piece->numtris = piece->maxtris = take;
+				rooms[r].numtris -= take;
+			}
+		}
+
+		if (numrooms > numcells) {
+			sysLogPrintf(LOG_NOTE, "codmap: %d rooms cut into %d more pieces", numcells, numrooms - numcells);
+		}
+	}
+
 	bg = writeBg(rooms, numrooms, portals, numportals);
 	tiles = writeTiles(rooms, numrooms, &floors, &walls);
 	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
@@ -2305,6 +2373,15 @@ s32 mainGetStageNum(void);
  * is drawn whatever Mod.LoadTextures says - the placeholders under it are a
  * flat colour each
  */
+// bg.c asks: whether a stage is one of Black Ops II's, whose rooms may have
+// pieces drawn with them as a converted GoldenEye level's do
+s32 codmapStageIs(s32 stagenum)
+{
+	const char *dir = modloaderGetStageModDir(stagenum);
+
+	return dir && strstr(dir, CODMAP_MODDIR) != NULL;
+}
+
 s32 codmapStageWantsPack(void)
 {
 	const char *dir = modloaderGetStageModDir(mainGetStageNum());

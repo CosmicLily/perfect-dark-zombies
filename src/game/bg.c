@@ -409,6 +409,7 @@ void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
  * no portal, each drawn whenever the room it was cut from is. {room, piece}.
  */
 #define MAX_ROOM_PIECES 256
+s32 codmapStageIs(s32 stagenum); // codmap.c: Black Ops II's maps have pieces too
 static RoomNum g_BgRoomPieces[MAX_ROOM_PIECES][2];
 static s32 g_BgNumRoomPieces;
 #endif
@@ -1997,7 +1998,7 @@ void bgReset(s32 stagenum)
 #ifndef PLATFORM_N64
 		g_BgNumRoomPieces = 0;
 
-		if (modloaderStageIsRemake(stagenum)) {
+		if (modloaderStageIsRemake(stagenum) || codmapStageIs(stagenum)) {
 			for (j = 1; j <= g_Vars.roomcount; j++) {
 				if (g_BgRooms[j].drawnwith > 0 && g_BgRooms[j].drawnwith < j && g_BgNumRoomPieces < MAX_ROOM_PIECES) {
 					g_BgRoomPieces[g_BgNumRoomPieces][0] = g_BgRooms[j].drawnwith;

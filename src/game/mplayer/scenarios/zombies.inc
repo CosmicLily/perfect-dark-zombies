@@ -880,6 +880,11 @@ f32 zombiesChrSpeedScale(struct chrdata *chr)
 static s32 g_ZombieSpawnAt = -1;            // the barrier the zombie being sent in goes to, -1 a pad
 static s32 g_ZombieAtBarrier[MAX_BOTS];     // the barrier each zombie is held at, -1 none
 
+// Each zombie put down at the start and not sent in since: not drawn, so the
+// match does not open on the whole horde falling dead round the players
+// (zombiesRenderCodZombie(), zombiesHideCorpse())
+static bool g_ZombieHidden[MAX_BOTS];
+
 // Each zombie's jump up a ladder (zombiesTickClimb())
 static struct {
 	bool on;
@@ -913,6 +918,7 @@ static bool zombiesSpawnOne(void)
 			g_ZombieCrawler[i] = 0;
 			g_ZombieGib[i] = 0;
 			g_ZombieClimb[i].on = false;
+			g_ZombieHidden[i] = false;
 			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
 
@@ -951,8 +957,31 @@ void zombiesPutDownHorde(void)
 			struct coord zdir = {0, 0, 0};
 
 			chrDamageByMisc(zchr, 1000, &zdir, NULL, NULL);
+
+			if (i < MAX_BOTS) {
+				g_ZombieHidden[i] = true;
+			}
 		}
 	}
+}
+
+// chrRender() asks (via zombiesRenderCodZombie()): a zombie put down at the
+// start, still waiting to be sent in, is drawn as nothing at all
+bool zombiesHideCorpse(struct chrdata *chr)
+{
+	s32 i;
+
+	if (!zombiesIsActive() || !chr || !chr->aibot) {
+		return false;
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		if (g_MpBotChrPtrs[i] == chr) {
+			return g_ZombieHidden[i] && chrIsDead(chr);
+		}
+	}
+
+	return false;
 }
 
 u32 bodyGetRace(s32 bodynum);
@@ -7599,8 +7628,16 @@ bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *
 	s32 i;
 	u32 room;
 
-	if (!zombiesIsActive() || !chr || !chr->aibot || !chr->prop || chr->prop->type != PROPTYPE_CHR
-			|| !zmcharReady()) {
+	if (!zombiesIsActive() || !chr || !chr->aibot || !chr->prop || chr->prop->type != PROPTYPE_CHR) {
+		return false;
+	}
+
+	// put down at the start, not yet sent in: nothing to see
+	if (zombiesHideCorpse(chr)) {
+		return true;
+	}
+
+	if (!zmcharReady()) {
 		return false;
 	}
 

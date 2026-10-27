@@ -736,3 +736,19 @@ blow's way so Juggernog counts. Exposed lava is round Pack-a-Punch; the big
 lava triangles west of Town lie under the cooled crust and are never the
 floor. `--zombies-test-at X,Z` (one argument, its own word) puts player 1
 there at frame 150.
+**Town, second look pass, and the horde put down unseen (2026-10-27).** Props
+draw their LOD1 (335,000 triangles) and are solid from their least detailed
+model (a second placement, `hide`: solid, not drawn); LOD1's own tiles
+overran `convertTiles()` loading the tiles file. **bg.c holds at most 350
+rooms** (`g_BgForceOnscreenRooms[350]`): 750-unit rooms (576) smashed the
+stack, so rooms stay 1000 (18x18) and one over CODMAP_PIECE_TRIS (9000) gives
+the rest to pieces after the grid, drawn with it through bg.c's
+`g_BgRoomPieces` (row padding bytes = the room it is drawn with), which is
+turned on for `codmapStageIs()` as for a remake (9 pieces in Town). Not
+drawn but solid (`unseen`): glass, and foliage, grass and gobo cards but bark
+(cut-outs the opaque rooms cannot draw: grey slabs). Not drawn at all:
+`atmos_` effect cards (an orange slab). Zombies: `zombiesPutDownHorde()` kills
+every bot at the start; those are now flagged `g_ZombieHidden` until
+`zombiesSpawnOne()` sends them in, and `zombiesRenderCodZombie()` draws
+nothing for one (`zombiesHideCorpse()`), so the match no longer opens on the
+horde dropping dead round the players.
