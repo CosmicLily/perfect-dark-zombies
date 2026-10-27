@@ -1650,6 +1650,7 @@ static s32 g_ZombieNearPerk[MAX_PLAYERS];      // the machine (not Juggernog's) 
 static s32 g_ZombiePerkHeld60[MAX_PLAYERS];
 static bool g_ZombiePerkNeedsRelease[MAX_PLAYERS];
 static s32 g_ZombieQrSoloBuys = 0;
+static s32 g_ZombieTestDrive60 = 0;            // --zombies-test-gap: 60ths player 1 walks on, crouched
 static s32 g_ZombieQrLeave60 = -1;             // Quick Revive alone, its machine going (zombiesTickQrMachine()), -1 not
 #define ZOMBIE_QR_LEAVE_WAIT60 120
 #define ZOMBIE_QR_LEAVE_RISE60 180
@@ -18516,6 +18517,31 @@ static bool zombiesGameOverHidesHud(void)
 // bondmove.c's bmoveTick(): the game over is watched, not played - from the
 // fall to the scoreboard no looking round, aiming or firing. Aiming down the
 // sights is let go of with it.
+// bondmove.c, before a move is applied: --zombies-test-gap's walk, player 1
+// crouched and going straight on
+s32 bmoveGetCrouchPos(void);
+
+void zombiesTestDrive(struct movedata *data)
+{
+	if (g_ZombieTestDrive60 <= 0 || g_Vars.currentplayernum != 0) {
+		return;
+	}
+
+	g_ZombieTestDrive60 -= g_Vars.lvupdate60;
+
+	if (g_ZombieTestDrive60 % 60 < g_Vars.lvupdate60) {
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-gap: player at %.0f %.0f %.0f, crouch %d of %d",
+				g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->vv_manground, g_Vars.currentplayer->prop->pos.z,
+				bmoveGetCrouchPos(), g_Vars.currentplayer->crouchpos);
+	}
+	g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
+	data->digitalstepforward = true;
+	data->digitalstepback = false;
+	data->analogwalk = 0;
+	data->analogstrafe = 0;
+	data->analogturn = 0;
+}
+
 bool zombiesLocksControls(void)
 {
 	if (!zombiesIsActive() || !g_ZombieGameOver) {
@@ -19471,6 +19497,104 @@ void zombiesTick(void)
 		}
 	}
 
+	// --zombies-scan-gaps: at level frame 120, the spots of the arena under a
+	// ceiling a crouch does not fit and the full crouch does (bondwalk.c's
+	// bwalkZombiesLowGap()), logged a 25 unit cell at a time. With
+	// --zombies-test-gap N, player 1 is put at frame 150 beside the Nth one
+	// found, facing it, crouched, and walked forward (zombiesTestDrive());
+	// --zombies-shot-step S takes --screenshot-frame's picture every S frames
+	if (sysArgCheck("--zombies-scan-gaps") && !NET_CLIENT && g_Vars.players[0] && g_Vars.players[0]->prop) {
+		static struct coord gapat[64];
+		static RoomNum gaproom[64];
+		static s32 numgaps = 0;
+		extern s32 g_ShotFrame;
+		struct player *pl = g_Vars.players[0];
+		const f32 head = pl->vv_headheight;
+		const f32 duck = head - 45.0f * pl->vv_eyeheight / 159.0f;
+		const f32 squat = MAX(80.0f, head - 90.0f * pl->vv_eyeheight / 159.0f);
+
+		if (sysArgCheck("--zombies-test-gap")) {
+			g_PlayerInvincible = true;
+
+			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+				g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+			}
+		}
+
+		if (g_Vars.lvframenum == 120) {
+			s32 r;
+
+			for (r = 0; r < g_Vars.roomcount && numgaps < ARRAYCOUNT(gapat); r++) {
+				RoomNum rooms[2] = { r, -1 };
+				f32 x;
+				f32 z;
+
+				for (x = g_Rooms[r].bbmin[0]; x <= g_Rooms[r].bbmax[0] && numgaps < ARRAYCOUNT(gapat); x += 25) {
+					for (z = g_Rooms[r].bbmin[2]; z <= g_Rooms[r].bbmax[2] && numgaps < ARRAYCOUNT(gapat); z += 25) {
+						struct coord pos;
+						f32 top = g_Rooms[r].bbmax[1] + 10;
+						s32 k;
+
+						// each floor in the room at this spot, from the top down
+						for (k = 0; k < 4; k++) {
+							f32 g;
+
+							pos.x = x;
+							pos.y = top;
+							pos.z = z;
+							g = cdFindGroundAtCyl(&pos, 20, rooms, NULL, NULL);
+
+							if (g < g_Rooms[r].bbmin[1] - 10 || g < -30000) {
+								break;
+							}
+
+							pos.y = g + 60;
+
+							if (cdTestVolume(&pos, 20, rooms, CDTYPE_BG, CHECKVERTICAL_YES, duck - 60, -29.9f) != CDRESULT_NOCOLLISION
+									&& cdTestVolume(&pos, 20, rooms, CDTYPE_BG, CHECKVERTICAL_YES, squat - 60, -29.9f) == CDRESULT_NOCOLLISION) {
+								pos.y = g;
+								gapat[numgaps] = pos;
+								gaproom[numgaps] = r;
+								sysLogPrintf(LOG_NOTE, "zombies: gap %d at %.0f %.0f %.0f (room %d)", numgaps, pos.x, pos.y, pos.z, r);
+								numgaps++;
+								break;
+							}
+
+							top = g - 10;
+						}
+					}
+				}
+			}
+
+			sysLogPrintf(LOG_NOTE, "zombies: %d gap cells found", numgaps);
+		}
+
+		extern struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms);
+
+		// beside it: the waypoint nearest it, which is in the arena, facing it
+		if (g_Vars.lvframenum == 150 && sysArgCheck("--zombies-test-gap")) {
+			const s32 n = sysArgGetInt("--zombies-test-gap", 0);
+
+			if (n >= 0 && n < numgaps) {
+				RoomNum rooms[2] = { gaproom[n], -1 };
+				struct waypoint *wp = waypointFindClosestToPos(&gapat[n], rooms);
+				struct pad pad;
+
+				if (wp && wp->padnum >= 0) {
+					RoomNum atrooms[2];
+
+					padUnpack(wp->padnum, PADFIELD_POS | PADFIELD_ROOM, &pad);
+					atrooms[0] = pad.room;
+					atrooms[1] = -1;
+					chrMoveToPos(pl->prop->chr, &pad.pos, atrooms,
+							atan2f(gapat[n].x - pad.pos.x, gapat[n].z - pad.pos.z), true);
+					g_ZombieTestDrive60 = 600;
+					sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-gap: player at pad %d (%.0f %.0f %.0f), walking to gap %d",
+							wp->padnum, pad.pos.x, pad.pos.y, pad.pos.z, n);
+				}
+			}
+		}
+	}
 	// --zombies-test-qrleave F: Quick Revive's three solo bottles counted as
 	// bought at level frame F, so its machine goes (zombiesTickQrMachine());
 	// watch it with --zombies-test-perk 1

@@ -65,6 +65,7 @@ void zombiesSprintPress(void);
 void zombiesSprintTick(void);
 void zombiesGrenadePress(void);
 bool zombiesLocksControls(void);
+void zombiesTestDrive(struct movedata *data);
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -2332,6 +2333,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		playerTweenFovY(zoomfov);
 		playerUpdateZoom();
 	}
+
+#ifndef PLATFORM_N64
+	zombiesTestDrive(&movedata); // --zombies-test-gap
+#endif
 
 	bmoveApplyMoveData(&movedata);
 
