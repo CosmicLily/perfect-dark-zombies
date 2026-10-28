@@ -917,3 +917,42 @@ reached: a blow leaves 40%, the next downs.
 Testing Zombies on a stock arena: `--boot-stage 0x3c --mpsims 1 --mpscenario 6`
 (Warehouse). `--boot-map` knows only mod maps, and --mpscenario does nothing
 without --mpsims.
+
+## Windows in the walls (2026-10-27)
+
+A window is a hole in the wall with its pen behind, as Call of Duty's, on a
+renderer with a stencil (OpenGL; `bar->inwall`). Perfect Dark's walls are a
+surface with nothing behind, so the hole is cut on the screen each frame, not
+in the level:
+
+- **The cut** (`zombiesRenderWindowHoles()`, called from bgRenderScene() right
+  after a room's opaque pass, for the windows whose wall is in that room): the
+  opening, a unit in front of the wall, is drawn with `G_STENCIL_MARK_EXT`
+  (stencil set where it passes the depth test, no colour: whatever stands in
+  front still hides the window), then again with `G_STENCIL_PUNCH_EXT` (only
+  where marked, the mark cleared, the depth range squeezed to 1 so the far
+  plane's depth is written). gbiex.h's `gSPStencilEXT`, gfx_pc.cpp's
+  `G_STENCIL_EXT`, the API's `set_stencil_mode` (OpenGL only; Vulkan's is null
+  and its windows stand out from the wall as before). The depth clear clears
+  the stencil too. A frame that ends with the stencil on is logged and closed.
+- **Draw order**: rooms and props are drawn a room at a time, and most props
+  (zombies too) before their room's walls (RENDERPASS_OPA_PREBG). The window's
+  pen and a zombie at an in-wall window get PROPFLAG_RENDERPOSTBG
+  (zombiesTickBarriers()), so they come after the cut; the pen is a closed box
+  behind the opening, so the rooms drawn after cannot show in the hole.
+- **Where things are**: the window's origin, the sill, is `bar->origin`,
+  ZOMBIE_BARRIER_INWALL (28 inches behind the wall's face, the boards on it)
+  instead of ZOMBIE_BARRIER_ORIGIN (out in the room); ZB_INSIDE()/ZB_FRONT()
+  follow it. The zombie's bot still stands in front of the boards (its spot's
+  stand) and is drawn behind in the window's frame (zombiesCodBarrierPlace());
+  while it is there its perimeter is off (nothing to walk into). One killed
+  there is drawn where it fell, behind the wall (`g_ZombieDiedBehind`), until it
+  comes again.
+- **Shots**: bgTestHitInRoom() lets a shot through a wall where it meets an
+  in-wall window's opening (`zombiesWindowHoleAt()`), so the zombie behind is
+  hit; `--zombies-test-shoot` logs "through window N's hole". chrHit() no
+  longer bruises a zombie drawn as Black Ops II's (its Perfect Dark model is
+  not what is seen, and walking its lists crashed on such a shot).
+- Recesses the arena already has are still preferred for a window
+  (zombiesFindNiche()); without a stencil, a window on a plain wall is built out
+  with a block of wall round it.

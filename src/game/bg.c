@@ -410,6 +410,8 @@ void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
  */
 #define MAX_ROOM_PIECES 256
 s32 codmapStageIs(s32 stagenum); // codmap.c: Black Ops II's maps have pieces too
+Gfx *zombiesRenderWindowHoles(Gfx *gdl, s32 roomnum); // zombies.inc
+bool zombiesWindowHoleAt(struct coord *pos);
 static RoomNum g_BgRoomPieces[MAX_ROOM_PIECES][2];
 static s32 g_BgNumRoomPieces;
 #endif
@@ -1459,6 +1461,12 @@ Gfx *bgRenderScene(Gfx *gdl)
 				gdl = bgRenderRoomOpaque(gdl, thing->roomnum);
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Zombies: the holes its windows stand in, cut through this room's
+		// walls before the props drawn after it (zombies.inc)
+		gdl = zombiesRenderWindowHoles(gdl, thing->roomnum);
+#endif
 
 		// Render prop opaque components - post BG pass
 		gSPMatrix(gdl++, osVirtualToPhysical(camGetPerspectiveMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION | CAM_PROJ_MTX_FLAGS);
@@ -5874,6 +5882,15 @@ bool bgTestHitInRoom(struct coord *frompos, struct coord *topos, s32 roomnum, st
 				}
 			}
 
+#ifndef PLATFORM_N64
+			// Zombies: the wall is cut away where a window stands in it
+			// (zombiesRenderWindowHoles()), and a shot goes on through to
+			// the zombies tearing at its boards behind it
+			if (zombiesWindowHoleAt(&hitthing->pos)) {
+				return false;
+			}
+#endif
+
 			return true;
 		}
 	}
@@ -7705,6 +7722,14 @@ void bgTickPortals(void)
 				// see, which came and went as the player walked. Every room in
 				// the view's box and the fog's reach is drawn instead
 				bgTickPortalsSpectate(&box);
+
+				// A view of almost nothing, said once a second while it lasts
+				if (g_BgNumDrawSlots <= 2 && (g_Vars.lvframenum % 60) == 0) {
+					sysLogPrintf(LOG_WARNING, "bg: stage 0x%02x draws %d room(s) from %.0f %.0f %.0f, camera room %d of %d, far %.0f",
+							g_Vars.stagenum, g_BgNumDrawSlots, g_Vars.currentplayer->cam_pos.x,
+							g_Vars.currentplayer->cam_pos.y, g_Vars.currentplayer->cam_pos.z,
+							g_CamRoom, g_Vars.roomcount, g_BgSnake.zrange.far);
+				}
 			} else
 #endif
 			bgTickPortalsWalk(&box);

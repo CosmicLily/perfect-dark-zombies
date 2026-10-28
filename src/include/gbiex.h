@@ -212,6 +212,7 @@
 #define G_SETTILEOFFSET_EXT          0x4d
 #define G_MESH_EXT                   0x4e
 #define G_SETRECTSCALE_EXT           0x4f
+#define G_STENCIL_EXT                0x50
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -382,6 +383,26 @@
     _g->words.w0 = _SHIFTL(G_SETRECTSCALE_EXT, 24, 8)                                  \
         | _SHIFTL((s32)((x) * 4.0f), 12, 12) | _SHIFTL((s32)((y) * 4.0f), 0, 12);      \
     _g->words.w1 = (u32)(s32)((scale) * 65536.0f);                                     \
+}
+
+/*
+ * A hole cut through what has been drawn (a Zombies window in a wall,
+ * zombiesRenderWindowHoles()): G_STENCIL_MARK_EXT marks where the triangles
+ * after it pass the depth test and draws nothing; G_STENCIL_PUNCH_EXT draws
+ * the triangles after it only where marked, takes the mark off, and leaves the
+ * far plane's depth there, so what is drawn next shows through; mode 0 ends
+ * either. Nothing on a renderer without a stencil (gfxStencilSupported()).
+ */
+#define G_STENCIL_OFF_EXT   0
+#define G_STENCIL_MARK_EXT  1
+#define G_STENCIL_PUNCH_EXT 2
+
+#define gSPStencilEXT(pkt, mode)                                                       \
+{                                                                                      \
+    Gfx *_g = (Gfx*)(pkt);                                                             \
+                                                                                       \
+    _g->words.w0 = _SHIFTL(G_STENCIL_EXT, 24, 8);                                      \
+    _g->words.w1 = (u32)(mode);                                                        \
 }
 
 /*

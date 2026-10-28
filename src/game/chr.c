@@ -73,6 +73,8 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 Gfx *zombiesRenderBodyBottle(Gfx *gdl, struct chrdata *chr, struct model *model);
 bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *chr);
 bool zombiesCodTestHit(struct prop *prop, struct shotdata *shotdata);
+bool zombiesIsActive(void);
+bool zmcharReady(void);
 
 /**
  * The floor under a chr. On a level converted from GoldenEye it is asked of
@@ -6101,7 +6103,11 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 						darker = false;
 					}
 
-					if (!chrIsUsingPaintball(g_Vars.currentplayer->prop->chr)) {
+					// Not a Zombies zombie drawn as Black Ops II's (zmchar.c): the
+					// model bruised is one nobody sees, and its lists are not
+					// what this walks (a shot through a window crashed in it)
+					if (!chrIsUsingPaintball(g_Vars.currentplayer->prop->chr)
+							&& !(zombiesIsActive() && chr->aibot && zmcharReady())) {
 						chrBruise(hit->model, hit->hitpart, hit->bboxnode, &sp5c);
 					}
 

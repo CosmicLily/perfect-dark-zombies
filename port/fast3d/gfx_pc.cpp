@@ -1106,6 +1106,13 @@ extern "C" void gfx_trace_stats(struct GfxTraceStats *out) {
     out->cachefixed = g_GfxTexCacheFixed;
 }
 
+static int gfx_stencil_mode_now; // the mode G_STENCIL_EXT last set
+
+// Whether G_STENCIL_EXT cuts holes on this renderer (gbiex.h)
+extern "C" int gfx_stencil_supported(void) {
+    return gfx_rapi != NULL && gfx_rapi->set_stencil_mode != NULL;
+}
+
 extern "C" void gfx_texpack_poll(void) {
     int32_t ready[32];
     const int32_t count = texpackPollDecoded(ready, (int32_t)(sizeof(ready) / sizeof(ready[0])));
@@ -8391,6 +8398,17 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETDEPTHBIAS_EXT:
                 rdp.depth_bias = (int16_t)(int32_t)cmd->words.w1;
                 break;
+            case G_STENCIL_EXT:
+                // a hole cut through what is drawn (gbiex.h): what is batched
+                // goes out first, and the depth state is sent again after, as
+                // the punch leaves its own
+                if (gfx_rapi->set_stencil_mode) {
+                    gfx_flush_for(GFX_FLUSH_DEPTH);
+                    gfx_rapi->set_stencil_mode((int)cmd->words.w1);
+                    gfx_stencil_mode_now = (int)cmd->words.w1;
+                    rendering_state.depth_mode = 0xffffffff;
+                }
+                break;
             case G_SETRECTSCALE_EXT:
                 rdp.rect_scale = (int32_t)(uint32_t)cmd->words.w1 / 65536.0f;
                 rdp.rect_scale_on = rdp.rect_scale > 0.0f && rdp.rect_scale != 1.0f;
@@ -8859,6 +8877,19 @@ extern "C" void gfx_run(Gfx* commands) {
     gfx_mesh_flush();
     mesh_cur = NULL;
     gfx_flush_for(GFX_FLUSH_OTHER);
+
+    // a hole cut (G_STENCIL_EXT) left open would hide all the next frame drew
+    if (gfx_stencil_mode_now != 0 && gfx_rapi->set_stencil_mode) {
+        static bool reported = false;
+
+        if (!reported) {
+            reported = true;
+            sysLogPrintf(LOG_WARNING, "gfx: a frame ended with stencil mode %d still on", gfx_stencil_mode_now);
+        }
+
+        gfx_rapi->set_stencil_mode(0);
+        gfx_stencil_mode_now = 0;
+    }
     gfxFramebuffer = 0;
 
     if (game_renders_to_framebuffer) {

@@ -2613,6 +2613,36 @@ bool gfx_opengl_start_draw_to_framebuffer(int fb_id, float noise_scale) {
     }
 }
 
+// A hole cut through what is drawn: see set_stencil_mode in
+// gfx_rendering_api.h. The punch writes the far plane's depth by squeezing
+// the depth range to it, as nothing else here sets the range.
+static void gfx_opengl_set_stencil_mode(int mode) {
+    gl_mesh_leave();
+
+    switch (mode) {
+        case GFX_STENCIL_MARK:
+            glEnable(GL_STENCIL_TEST);
+            glStencilMask(0xff);
+            glStencilFunc(GL_ALWAYS, 1, 0xff);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            break;
+        case GFX_STENCIL_PUNCH:
+            glEnable(GL_STENCIL_TEST);
+            glStencilMask(0xff);
+            glStencilFunc(GL_EQUAL, 1, 0xff);
+            glStencilOp(GL_KEEP, GL_ZERO, GL_ZERO);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            gfx_opengl_set_depth_range(1.0f, 1.0f);
+            break;
+        default:
+            glDisable(GL_STENCIL_TEST);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            gfx_opengl_set_depth_range(0.0f, 1.0f);
+            break;
+    }
+}
+
 void gfx_opengl_clear_framebuffer(bool clear_color, bool clear_depth) {
     gl_mesh_leave();
     glDisable(GL_SCISSOR_TEST);
@@ -2624,7 +2654,9 @@ void gfx_opengl_clear_framebuffer(bool clear_color, bool clear_depth) {
     }
     if (clear_depth) {
         glDepthMask(GL_TRUE);
-        mask |= GL_DEPTH_BUFFER_BIT;
+        glStencilMask(0xff);
+        glClearStencil(0);
+        mask |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
     }
     glClear(mask);
     if (clear_depth) {
@@ -3442,4 +3474,5 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_mesh_draw,
     gfx_opengl_mesh_add_indices,
     gfx_opengl_mesh_update,
+    gfx_opengl_set_stencil_mode,
 };

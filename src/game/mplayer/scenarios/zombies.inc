@@ -963,6 +963,10 @@ static void zombiesTickSpeedUp(s32 alive)
 static s32 g_ZombieFailsafe60[MAX_BOTS];      // since the last look, -1 not out
 static struct coord g_ZombieFailsafePos[MAX_BOTS];
 static s32 g_ZombieTore60[MAX_BOTS];          // since it last tore at boards
+static bool g_ZombiePerimOff[MAX_BOTS];      // its bot walked through while at a window in a wall (zombiesTickBarriers())
+void chrSetPerimEnabled(struct chrdata *chr, bool enable);
+static s32 g_ZombieDiedBehind[MAX_BOTS];     // the window in a wall it died at, -1 none: drawn there till it comes again
+static Mtxf g_ZombieDiedPlace[MAX_BOTS];     // ... and where it was drawn there last
 
 f32 zombiesChrSpeedScale(struct chrdata *chr)
 {
@@ -1081,6 +1085,7 @@ static bool zombiesSpawnOne(void)
 			g_ZombieClimb[i].on = false;
 			g_ZombieHidden[i] = false;
 			g_ZombieFailsafe60[i] = -1;
+			g_ZombieDiedBehind[i] = -1;
 			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
 
@@ -7868,6 +7873,9 @@ bool zombiesRenderCodZombie(struct modelrenderdata *renderdata, struct chrdata *
 		zombiesCodBarrierPlace(i, &world);
 	} else if (g_ZombieClimb[i].on) {
 		zombiesCodClimbPlace(i, &world);
+	} else if (i < MAX_BOTS && g_ZombieDiedBehind[i] >= 0) {
+		// dead at a window in a wall: behind it, where it fell
+		world = g_ZombieDiedPlace[i];
 	}
 
 	// kept, for a shot's test against its bones (zombiesCodTestHit())
@@ -8459,7 +8467,7 @@ bool zombiesCodTestHit(struct prop *prop, struct shotdata *shotdata)
 	}
 
 	if (g_ZombieTestShooting) {
-		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-shoot: bot %d%s hit at part %d", i, crawler ? " (a crawler)" : "", hitpart);
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-shoot: bot %d%s at window %d hit at part %d", i, crawler ? " (a crawler)" : "", i < MAX_BOTS ? g_ZombieAtBarrier[i] : -1, hitpart);
 	}
 
 	if (hitpart > 0) {
@@ -15876,6 +15884,14 @@ static void zombiesTickWallBuys(void)
 #define ZOMBIE_BARRIER_ORIGIN (ZOMBIE_BARRIER_STAND + 23 * ZOMBIE_COD_INCH) // the origin out from the wall
 #define ZOMBIE_BARRIER_SILL   (31 * ZOMBIE_COD_INCH)
 #define ZOMBIE_BARRIER_INSIDE (ZOMBIE_BARRIER_ORIGIN + 28 * ZOMBIE_COD_INCH) // the boards' face of the wall
+// A window in the wall: its origin behind the wall's face by as much as its boards
+// stand out from it, so the boards are on the face and its pen is behind
+#define ZOMBIE_BARRIER_INWALL (-28 * ZOMBIE_COD_INCH)
+#define ZB_INSIDE(bar)        ((bar)->origin + 28 * ZOMBIE_COD_INCH)
+#define ZB_FRONT(bar)         ((bar)->origin + 52 * ZOMBIE_COD_INCH)
+// and its pen's back, behind the origin: past where its zombies wait (23 inches)
+#define ZOMBIE_BARRIER_PENBACK (23 * ZOMBIE_COD_INCH + 45)
+#define ZOMBIE_BARRIER_PENFRONT (-6.0f) // and its front, behind the wall's face
 #define ZOMBIE_BARRIER_FRONT  (ZOMBIE_BARRIER_ORIGIN + 52 * ZOMBIE_COD_INCH) // where a player rebuilds it
 #define ZOMBIE_BARRIER_OPEN   (32 * ZOMBIE_COD_INCH) // the opening, half its width
 #define ZOMBIE_BARRIER_TOP    (ZOMBIE_BARRIER_SILL + 60 * ZOMBIE_COD_INCH) // its top over the floor
@@ -15928,6 +15944,9 @@ struct zombiebarrier {
 	s16 anim60[ZOMBIE_BARRIER_BOARDS]; // since each board last went or came
 	bool torn[ZOMBIE_BARRIER_BOARDS];  // ... and which
 	bool placed;
+	bool niche;            // in a recess of the arena's own (zombiesFindNiche()), not built out from a wall
+	bool inwall;           // its pen behind a hole cut in the wall (zombiesRenderWindowHoles()), not built out
+	f32 origin;            // how far out from the wall its origin, the sill, stands: behind it when in the wall
 };
 
 static struct zombiedoor g_ZombieDoors[ZOMBIE_DOOR_MAX];
@@ -17020,6 +17039,10 @@ bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms
 /**
  * Barriers
  */
+// gfx_pc.cpp: whether the renderer cuts holes (G_STENCIL_EXT), which puts a
+// window in its wall
+int gfx_stencil_supported(void);
+
 /**
  * A barrier's attack spots, from where the middle one's zombie stands
  * (bar->stand): the middle first, then to the left and right of a zombie
@@ -17092,6 +17115,7 @@ static void zombiesResetBarriers(void)
 	for (i = 0; i < MAX_BOTS; i++) {
 		g_ZombieAtBarrier[i] = -1;
 		g_ZombieFailsafe60[i] = -1;
+		g_ZombieDiedBehind[i] = -1;
 	}
 }
 
@@ -17209,6 +17233,82 @@ static bool zombiesBarrierFits(struct coord *pad, RoomNum *padrooms, struct coor
 	return true;
 }
 
+/**
+ * Whether the window, so placed, stands in a recess the arena already has: a
+ * wall close in on both sides of it at the back of its pen and at its boards,
+ * so it reads as a hole in the wall, as Call of Duty's windows are, and not a
+ * frame standing out in the room. ZOMBIE_BARRIER_NICHE past the jambs at most.
+ */
+#define ZOMBIE_BARRIER_NICHE 90.0f
+// and when there is none, how far the wall built round the window runs past its
+// jambs and over it (zombiesRenderBarrier())
+#define ZOMBIE_BARRIER_WING  60.0f
+
+static bool zombiesBarrierEnclosed(struct coord *pad, RoomNum *padrooms, struct coord *wall, f32 walldist)
+{
+	static const f32 outs[2] = { 40.0f, ZOMBIE_BARRIER_INSIDE - 15 };
+	const f32 side = ZOMBIE_BARRIER_OPEN + 28 + ZOMBIE_BARRIER_NICHE;
+	s32 k;
+
+	for (k = 0; k < 2; k++) {
+		struct coord at;
+		RoomNum atrooms[8];
+		f32 left;
+		f32 right;
+
+		at.x = pad->x + wall->x * (walldist - outs[k]);
+		at.y = pad->y;
+		at.z = pad->z + wall->z * (walldist - outs[k]);
+		func0f065e74(pad, padrooms, &at, atrooms);
+
+		if (atrooms[0] <= 0) {
+			return false;
+		}
+
+		left = zombiesRayToWall(&at, atrooms, wall->z, -wall->x, side);
+		right = zombiesRayToWall(&at, atrooms, -wall->z, wall->x, side);
+
+		if (left < 0 || right < 0) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * A recess round a pad the window fits in (zombiesBarrierEnclosed()), the
+ * nearest: each of 16 ways to its wall, squared to it. False for none.
+ */
+static bool zombiesFindNiche(struct coord *pos, RoomNum *rooms, f32 *dist, struct coord *dir)
+{
+	const f32 reach = ZOMBIE_BARRIER_REACH + ZOMBIE_BARRIER_INSIDE;
+	struct coord eye = *pos;
+	f32 best = reach + 1;
+	s32 k;
+
+	eye.y += ZOMBIE_WALLBUY_HEIGHT;
+
+	for (k = 0; k < 16; k++) {
+		const f32 ang = k * (M_BADTAU / 16);
+		struct coord normal;
+		f32 perp;
+
+		if (!zombiesWallLine(&eye, rooms, ang, reach, &normal, &perp) || perp <= 0 || perp >= best) {
+			continue;
+		}
+
+		if (zombiesBarrierFits(pos, rooms, &normal, perp) && zombiesBarrierEnclosed(pos, rooms, &normal, perp)) {
+			best = perp;
+			*dir = normal;
+		}
+	}
+
+	*dist = best;
+
+	return best <= reach;
+}
+
 static void zombiesPlaceBarriers(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -17216,6 +17316,7 @@ static void zombiesPlaceBarriers(void)
 	struct coord walldir[MAX_SPAWNPOINTS];
 	f32 walldist[MAX_SPAWNPOINTS];
 	bool usable[MAX_SPAWNPOINTS];
+	bool niche[MAX_SPAWNPOINTS];
 	s32 ntaken = 0;
 	s32 pass;
 	s32 i;
@@ -17258,6 +17359,8 @@ static void zombiesPlaceBarriers(void)
 			bar->stand.y = pad.pos.y;
 			bar->stand.z = pad.pos.z + bar->wall.z * out;
 			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+			bar->inwall = gfx_stencil_supported() != 0;
+			bar->origin = bar->inwall ? ZOMBIE_BARRIER_INWALL : ZOMBIE_BARRIER_ORIGIN;
 			zombiesBarrierInitSpots(bar);
 
 			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
@@ -17298,11 +17401,14 @@ static void zombiesPlaceBarriers(void)
 		rooms[0] = pad.room;
 		rooms[1] = -1;
 
-		usable[i] = pad.room > 0 && zombiesFindWall(&pad.pos, rooms, ZOMBIE_BARRIER_REACH, &walldist[i], &walldir[i]);
+		// a recess round the pad first, else its nearest wall
+		niche[i] = pad.room > 0 && zombiesFindNiche(&pad.pos, rooms, &walldist[i], &walldir[i]);
+		usable[i] = niche[i] || (pad.room > 0 && zombiesFindWall(&pad.pos, rooms, ZOMBIE_BARRIER_REACH, &walldist[i], &walldir[i]));
 	}
 
-	// first one a zone (pass 0), then any (pass 1)
-	for (pass = 0; pass < 2; pass++) {
+	// first one a zone (passes 0 and 1), then any (2 and 3); in each the
+	// recesses first (0 and 2), then the walls
+	for (pass = 0; pass < 4; pass++) {
 		while (g_ZombieNumBarriers < ZOMBIE_BARRIER_MAX) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNumBarriers];
 			f32 bestscore = -1;
@@ -17316,14 +17422,14 @@ static void zombiesPlaceBarriers(void)
 				s32 comp;
 				s32 t;
 
-				if (!usable[i]) {
+				if (!usable[i] || (pass % 2 == 0 && !niche[i])) {
 					continue;
 				}
 
 				padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
 				comp = zombiesPadComp(g_SpawnPoints[i]);
 
-				if (pass == 0) {
+				if (pass < 2) {
 					for (k = 0; k < g_ZombieNumBarriers; k++) {
 						if (g_ZombieBarriers[k].comp == comp) {
 							break;
@@ -17382,6 +17488,7 @@ static void zombiesPlaceBarriers(void)
 			}
 
 			bar->comp = zombiesPadComp(g_SpawnPoints[best]);
+			bar->niche = niche[best];
 			bar->boards = ZOMBIE_BARRIER_BOARDS;
 
 			// the boards against the wall, on the floor under it
@@ -17402,6 +17509,8 @@ static void zombiesPlaceBarriers(void)
 			bar->stand.y = pad.pos.y;
 			bar->stand.z = pad.pos.z + bar->wall.z * out;
 			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+			bar->inwall = gfx_stencil_supported() != 0;
+			bar->origin = bar->inwall ? ZOMBIE_BARRIER_INWALL : ZOMBIE_BARRIER_ORIGIN;
 			zombiesBarrierInitSpots(bar);
 
 			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
@@ -17410,8 +17519,9 @@ static void zombiesPlaceBarriers(void)
 
 			bar->placed = true;
 			taken[ntaken++] = pad.pos;
-			sysLogPrintf(LOG_NOTE, "zombies: barrier %d on stage 0x%02x at %.0f %.0f %.0f (zone %d)",
-					g_ZombieNumBarriers, g_Vars.stagenum, bar->pos.x, bar->pos.y, bar->pos.z, bar->comp);
+			sysLogPrintf(LOG_NOTE, "zombies: barrier %d on stage 0x%02x at %.0f %.0f %.0f (zone %d)%s",
+					g_ZombieNumBarriers, g_Vars.stagenum, bar->pos.x, bar->pos.y, bar->pos.z, bar->comp,
+					bar->niche ? ", in a recess" : ", built out from the wall");
 			g_ZombieNumBarriers++;
 		}
 	}
@@ -17659,7 +17769,7 @@ static bool zombiesBarrierReaches(const struct zombiebarrier *bar, s32 playernum
 	out = -(rx * bar->wall.x + rz * bar->wall.z);
 	along = rx * bar->wall.z - rz * bar->wall.x;
 
-	return out > ZOMBIE_BARRIER_INSIDE && out < ZOMBIE_BARRIER_INSIDE + ZOMBIE_REACH_DEPTH
+	return out > ZB_INSIDE(bar) && out < ZB_INSIDE(bar) + ZOMBIE_REACH_DEPTH
 		&& along > -ZOMBIE_BARRIER_OPEN - 30 && along < ZOMBIE_BARRIER_OPEN + 30
 		&& pp->pos.y - bar->pos.y < 250 && pp->pos.y - bar->pos.y > -100;
 }
@@ -17903,6 +18013,44 @@ static void zombiesTickBarriers(void)
 
 	zombiesBarrierAnimate();
 
+	// A window in the wall, and a zombie at one, are drawn after their room's
+	// walls, past the hole cut in them (zombiesRenderWindowHoles()): before
+	// it, as props are, the hole would be cut over them
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		struct prop *prop = g_ZombieBarriers[b].obj.prop;
+
+		if (prop && g_ZombieBarriers[b].inwall) {
+			prop->flags |= PROPFLAG_RENDERPOSTBG;
+		}
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		const s32 at = g_ZombieAtBarrier[i];
+
+		// and while it is there it is behind the wall, though the bot it is
+		// stands out in front of the boards: nothing for a player to walk into
+		if (zchr && zchr->prop) {
+			if (g_ZombieDiedBehind[i] >= 0) {
+				zchr->prop->flags |= PROPFLAG_RENDERPOSTBG;
+			} else if (at >= 0 && at < g_ZombieNumBarriers && g_ZombieBarriers[at].inwall) {
+				zchr->prop->flags |= PROPFLAG_RENDERPOSTBG;
+
+				if (!g_ZombiePerimOff[i]) {
+					chrSetPerimEnabled(zchr, false);
+					g_ZombiePerimOff[i] = true;
+				}
+			} else {
+				zchr->prop->flags &= ~PROPFLAG_RENDERPOSTBG;
+
+				if (g_ZombiePerimOff[i]) {
+					chrSetPerimEnabled(zchr, true);
+					g_ZombiePerimOff[i] = false;
+				}
+			}
+		}
+	}
+
 	if (g_ZombieRebuiltRound != g_ZombieRound) {
 		g_ZombieRebuiltRound = g_ZombieRound;
 
@@ -17930,6 +18078,13 @@ static void zombiesTickBarriers(void)
 
 			if (zchr == NULL || zchr->prop == NULL || chrIsDead(zchr) || g_ZombieAtBarrier[spot->zombie] != b) {
 				if (spot->zombie < MAX_BOTS && g_ZombieAtBarrier[spot->zombie] == b) {
+					// killed at a window in a wall: it falls where it was,
+					// behind the wall, not out in front where its bot stands
+					if (zchr && zchr->prop && chrIsDead(zchr) && bar->inwall) {
+						g_ZombieDiedBehind[spot->zombie] = b;
+						g_ZombieDiedPlace[spot->zombie] = g_ZombieCodPlace[spot->zombie];
+					}
+
 					g_ZombieAtBarrier[spot->zombie] = -1;
 				}
 
@@ -17957,13 +18112,13 @@ static void zombiesTickBarriers(void)
 					struct coord to;
 					RoomNum torooms[8];
 					const s32 anim = zombiesBarrierAnim(spot, -1, 0);
-					f32 out = ZOMBIE_BARRIER_ORIGIN + ZOMBIE_BARRIER_CLIMB;
+					f32 out = bar->origin + ZOMBIE_BARRIER_CLIMB;
 					f32 root[3];
 					f32 q[4];
 
 					// where the climb's own root motion ends, a crawler's or not
 					if (zmcharAnimRoot(anim, zmcharAnimFrames(anim) - 1, root, q)) {
-						out = ZOMBIE_BARRIER_ORIGIN + root[0] * ZOMBIE_COD_INCH;
+						out = bar->origin + root[0] * ZOMBIE_COD_INCH;
 					}
 
 					to.x = bar->pos.x - bar->wall.x * out - bar->wall.z * spot->side * ZOMBIE_COD_INCH;
@@ -18119,9 +18274,9 @@ static void zombiesTickBarriers(void)
 		for (b = 0; b < g_ZombieNumBarriers; b++) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[b];
 			// before the boards, on the room's side
-			f32 dx = player->prop->pos.x - (bar->pos.x - bar->wall.x * ZOMBIE_BARRIER_FRONT);
+			f32 dx = player->prop->pos.x - (bar->pos.x - bar->wall.x * ZB_FRONT(bar));
 			f32 dy = player->prop->pos.y - bar->stand.y;
-			f32 dz = player->prop->pos.z - (bar->pos.z - bar->wall.z * ZOMBIE_BARRIER_FRONT);
+			f32 dz = player->prop->pos.z - (bar->pos.z - bar->wall.z * ZB_FRONT(bar));
 
 			if (bar->placed && bar->boards < ZOMBIE_BARRIER_BOARDS
 					&& dx * dx + dz * dz < bestdist && dy < 200 && dy > -200) {
@@ -18341,9 +18496,9 @@ static void zombiesBarrierToWorld(const struct zombiebarrier *bar, const f32 v[3
 	out[2] = (-bar->wall.z * v[0] + bar->wall.x * v[1]) * ZOMBIE_COD_INCH;
 
 	if (point) {
-		out[0] += bar->pos.x - bar->wall.x * ZOMBIE_BARRIER_ORIGIN;
+		out[0] += bar->pos.x - bar->wall.x * bar->origin;
 		out[1] += bar->pos.y + ZOMBIE_BARRIER_SILL;
-		out[2] += bar->pos.z - bar->wall.z * ZOMBIE_BARRIER_ORIGIN;
+		out[2] += bar->pos.z - bar->wall.z * bar->origin;
 	}
 }
 
@@ -18457,7 +18612,36 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 	gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
 
 	// the window: dark, a hair off the wall, and its posts
-	if (zombiesBoardMesh(0)) {
+	if (bar->inwall) {
+		// In the wall, as Call of Duty's: the hole is cut through the wall
+		// (zombiesRenderWindowHoles()), and behind it is the pen its zombies
+		// wait in - its back, sides, floor and ceiling, seen only through the
+		// hole - and on the wall's face a frame round the hole
+		static const u8 wall[3] = { 0x5c, 0x56, 0x4e };
+		const f32 hw = ZOMBIE_BARRIER_OPEN;
+		const f32 jamb = 14;
+		const f32 back = bar->origin - ZOMBIE_BARRIER_PENBACK;
+		const f32 penhw = hw + ZOMBIE_BARRIER_SPOTSIDE * ZOMBIE_COD_INCH + 30;
+		const f32 high = ZOMBIE_BARRIER_TOP + 20;
+
+		// all of it behind the wall's face (bar->pos is 2 in front of it), so
+		// nothing of it shows but through the hole
+		const f32 mid = (back + ZOMBIE_BARRIER_PENFRONT) / 2;
+		const f32 half = (ZOMBIE_BARRIER_PENFRONT - back) / 2;
+
+		gdl = zombiesBoardBox(gdl, bar, 0, high / 2, back, penhw, high / 2, 2, 0, hole, 1.0f);
+		gdl = zombiesBoardBox(gdl, bar, -penhw, high / 2, mid, 2, high / 2, half, 0, wall, light * 0.45f);
+		gdl = zombiesBoardBox(gdl, bar, penhw, high / 2, mid, 2, high / 2, half, 0, wall, light * 0.45f);
+		gdl = zombiesBoardBox(gdl, bar, 0, 1, mid, penhw, 2, half, 0, wall, light * 0.3f);
+		gdl = zombiesBoardBox(gdl, bar, 0, high, mid, penhw, 2, half, 0, hole, 1.0f);
+
+		gdl = zombiesBoardBox(gdl, bar, -hw - jamb, (ZOMBIE_BARRIER_SILL + ZOMBIE_BARRIER_TOP) / 2, 4,
+				jamb, (ZOMBIE_BARRIER_TOP - ZOMBIE_BARRIER_SILL) / 2 + jamb, 4, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, hw + jamb, (ZOMBIE_BARRIER_SILL + ZOMBIE_BARRIER_TOP) / 2, 4,
+				jamb, (ZOMBIE_BARRIER_TOP - ZOMBIE_BARRIER_SILL) / 2 + jamb, 4, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, 0, ZOMBIE_BARRIER_TOP + jamb / 2, 4, hw, jamb / 2, 4, 0, post, light);
+		gdl = zombiesBoardBox(gdl, bar, 0, ZOMBIE_BARRIER_SILL - jamb / 2, 4, hw, jamb / 2, 4, 0, post, light);
+	} else if (zombiesBoardMesh(0)) {
 		// Call of Duty's window at its own size, standing out from the wall:
 		// the pen behind it dark at the back and walled at the sides, then
 		// the wall's thickness about the opening - the sill under it, a jamb
@@ -18480,6 +18664,24 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 		gdl = zombiesBoardBox(gdl, bar, hw + jamb, top / 2, thick, jamb, top / 2, depth, 0, post, light);
 		gdl = zombiesBoardBox(gdl, bar, 0, (ZOMBIE_BARRIER_TOP + top) / 2, thick,
 				hw, (top - ZOMBIE_BARRIER_TOP) / 2, depth, 0, post, light);
+
+		// Out from a plain wall: a thick piece of wall round it, either side
+		// and over it, back to the arena's wall, so it is a hole in a wall and
+		// not a frame standing in the room. In a recess the arena's own walls
+		// are round it (zombiesFindNiche()).
+		if (!bar->niche) {
+			const f32 outer = hw + jamb * 2;
+			const f32 wing = ZOMBIE_BARRIER_WING;
+			const f32 high = top + ZOMBIE_BARRIER_WING;
+			const f32 front = thick + depth;
+
+			gdl = zombiesBoardBox(gdl, bar, -outer - wing / 2, high / 2, front / 2,
+					wing / 2, high / 2, front / 2, 0, wall, light * 0.9f);
+			gdl = zombiesBoardBox(gdl, bar, outer + wing / 2, high / 2, front / 2,
+					wing / 2, high / 2, front / 2, 0, wall, light * 0.9f);
+			gdl = zombiesBoardBox(gdl, bar, 0, (top + high) / 2, front / 2,
+					outer + wing, (high - top) / 2, front / 2, 0, wall, light * 0.9f);
+		}
 	} else {
 		gdl = zombiesBoardBox(gdl, bar, 0, 108, 0.8f, 52, 70, 0.6f, 0, hole, 1.0f);
 		gdl = zombiesBoardBox(gdl, bar, -58, 108, 3, 5, 78, 3, 0, post, light);
@@ -18574,6 +18776,131 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 	renderdata->gdl = gdl;
 
 	return true;
+}
+
+/**
+ * The holes the windows in the walls stand in, cut through the wall each
+ * frame (bgRenderScene(), just after the opaque room roomnum is drawn, for the
+ * windows whose wall is in it): the opening, a hair in front of the wall,
+ * marks the stencil where it is the nearest thing (G_STENCIL_MARK_EXT, so
+ * whatever stands in front of the window still hides it), and is drawn again
+ * dark where marked with the far plane's depth (G_STENCIL_PUNCH_EXT). What is
+ * drawn after - the window's pen and its zombies, both put after the room
+ * (PROPFLAG_RENDERPOSTBG, zombiesTickBarriers()) - shows through the wall
+ * there. Nothing on a renderer without a stencil, whose windows stand out
+ * from the wall instead (bar->inwall).
+ */
+/**
+ * Whether pos, where a shot met a room's wall (bgTestHitInRoom()), is in the
+ * hole a window stands in: then the wall is not there, and the shot goes on
+ */
+bool zombiesWindowHoleAt(struct coord *pos)
+{
+	s32 b;
+
+	if (!zombiesIsActive()) {
+		return false;
+	}
+
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		const struct zombiebarrier *bar = &g_ZombieBarriers[b];
+		f32 rx;
+		f32 rz;
+		f32 out;
+		f32 along;
+		f32 up;
+
+		if (!bar->placed || !bar->inwall) {
+			continue;
+		}
+
+		rx = pos->x - bar->pos.x;
+		rz = pos->z - bar->pos.z;
+		out = -(rx * bar->wall.x + rz * bar->wall.z);
+		along = rx * bar->wall.z - rz * bar->wall.x;
+		up = pos->y - bar->pos.y;
+
+		if (out > -15 && out < 15 && along > -ZOMBIE_BARRIER_OPEN && along < ZOMBIE_BARRIER_OPEN
+				&& up > ZOMBIE_BARRIER_SILL && up < ZOMBIE_BARRIER_TOP) {
+			if (g_ZombieTestShooting) {
+				sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-shoot: through window %d's hole", b);
+			}
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+Gfx *zombiesRenderWindowHoles(Gfx *gdl, s32 roomnum)
+{
+	static const u8 dark[3] = { 0x0c, 0x0a, 0x08 };
+	s32 b;
+
+	if (!zombiesIsActive() || g_ZombieNumBarriers == 0 || !gfx_stencil_supported()) {
+		return gdl;
+	}
+
+	for (b = 0; b < g_ZombieNumBarriers; b++) {
+		struct zombiebarrier *bar = &g_ZombieBarriers[b];
+		const f32 hw = ZOMBIE_BARRIER_OPEN;
+		const f32 ax = bar->wall.z;  // along the wall
+		const f32 az = -bar->wall.x;
+		const f32 ox = -bar->wall.x; // out of it
+		const f32 oz = -bar->wall.z;
+		const f32 out = -1;          // bar->pos is 2 in front of the wall's face
+		f32 c[4][3];
+		Mtxf world;
+		Mtxf *mtx;
+		s32 i;
+
+		if (!bar->placed || !bar->inwall) {
+			continue;
+		}
+
+		for (i = 0; i < 8 && bar->rooms[i] != -1 && bar->rooms[i] != roomnum; i++);
+
+		if (i >= 8 || bar->rooms[i] != roomnum) {
+			continue;
+		}
+
+		c[0][0] = -ax * hw + ox * out; c[0][1] = ZOMBIE_BARRIER_SILL; c[0][2] = -az * hw + oz * out;
+		c[1][0] = ax * hw + ox * out;  c[1][1] = ZOMBIE_BARRIER_SILL; c[1][2] = az * hw + oz * out;
+		c[2][0] = ax * hw + ox * out;  c[2][1] = ZOMBIE_BARRIER_TOP;  c[2][2] = az * hw + oz * out;
+		c[3][0] = -ax * hw + ox * out; c[3][1] = ZOMBIE_BARRIER_TOP;  c[3][2] = -az * hw + oz * out;
+
+		mtx = gfxAllocateMatrix();
+		mtx4LoadIdentity(&world);
+		world.m[3][0] = bar->pos.x;
+		world.m[3][1] = bar->pos.y;
+		world.m[3][2] = bar->pos.z;
+		mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+		gSPMatrix(gdl++, osVirtualToPhysical(camGetPerspectiveMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION | CAM_PROJ_MTX_FLAGS);
+		gDPPipeSync(gdl++);
+		gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+		gDPSetCombineMode(gdl++, G_CC_SHADE, G_CC_SHADE);
+		gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_OFF);
+		gSPClearGeometryMode(gdl++, G_LIGHTING | G_TEXTURE_GEN | G_FOG | G_CULL_BOTH);
+		gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH);
+		gSPMatrix(gdl++, mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW | G_MTX_FLOATS);
+
+		// where the wall is what is seen
+		gDPSetRenderMode(gdl++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+		gSPStencilEXT(gdl++, G_STENCIL_MARK_EXT);
+		gdl = zombiesBoardFace(gdl, c, dark[0], dark[1], dark[2]);
+
+		// ... cut through: dark, and as far off as can be
+		gDPPipeSync(gdl++);
+		gDPSetRenderMode(gdl++, G_RM_OPA_SURF | Z_UPD, G_RM_OPA_SURF2 | Z_UPD);
+		gSPStencilEXT(gdl++, G_STENCIL_PUNCH_EXT);
+		gdl = zombiesBoardFace(gdl, c, dark[0], dark[1], dark[2]);
+		gSPStencilEXT(gdl++, G_STENCIL_OFF_EXT);
+		gDPPipeSync(gdl++);
+	}
+
+	return gdl;
 }
 
 /**

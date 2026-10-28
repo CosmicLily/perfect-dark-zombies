@@ -179,7 +179,17 @@ struct GfxRenderingAPI {
     // draw has read yet (a room's, as its runs teach their colours), so a
     // frame still in flight never sees the change.
     void (*mesh_update)(uint32_t mesh, uint32_t first, const struct GfxMeshVertex* verts, uint32_t count);
+    // A hole cut through what is drawn (G_STENCIL_EXT, gfx_pc.cpp):
+    // GFX_STENCIL_MARK marks in the stencil where what follows passes the
+    // depth test, and draws nothing; GFX_STENCIL_PUNCH draws only where marked,
+    // takes the mark off, and writes the far plane's depth there;
+    // GFX_STENCIL_OFF is neither. Null when the backend has no stencil.
+    void (*set_stencil_mode)(int mode);
 };
+
+#define GFX_STENCIL_OFF   0
+#define GFX_STENCIL_MARK  1
+#define GFX_STENCIL_PUNCH 2
 
 // Occlusion query slots a backend provides
 #define GFX_OCCLUSION_SLOTS 512
