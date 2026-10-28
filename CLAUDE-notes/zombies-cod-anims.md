@@ -1032,3 +1032,14 @@ over the box and nothing at it) and fading to its top, while the box is at its
 place; and with the lid up a warm glow at its mouth and a short shaft. The "?"
 marks have no glow map of their own (the box's generic_objective material is a
 black placeholder for Black Ops II's objective outline).
+
+**The box's other places are taken after the windows** (2026-10-28):
+zombiesReserveBoxSpots(), called after zombiesPlaceBarriers(), not inside
+zombiesReserveBoxPad(). Taken first, the three pads furthest apart were the
+ones the windows stand beside, and Warehouse came up with no window at all.
+They now also keep 350 off any window or wall buy. Checks done the same day:
+a spin landing on a gun (`--zombies-test-boxspin F`) floats it 39.4 inches over
+the floor at the end of weapon_rise, as BO2's 40; windows in walls on Carpark
+and Villa; windows per arena 3, 2, 5, 3, 3 (Warehouse, Carpark, Complex, Villa,
+Skedar). `--zombies-shot-step` now works with --zombies-test-barrier and
+--zombies-test-zombie too.

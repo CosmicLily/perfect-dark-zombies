@@ -1726,63 +1726,6 @@ static void zombiesReserveBoxPad(void)
 	g_ZombieBoxPads[0] = g_ZombieBoxPad;
 	g_ZombieBoxNumPads = 1;
 
-	// The other places it can move to: each the pad furthest from the places
-	// taken so far, while the zombies keep ZOMBIE_BOX_SPAREPADS to come in at
-	while (g_ZombieBoxNumPads < ZOMBIE_BOX_SPOTS && n > ZOMBIE_BOX_SPAREPADS) {
-		f32 farthest = -1;
-		s32 far = -1;
-		s32 k;
-
-		for (i = 0; i < n; i++) {
-			struct pad pad;
-			f32 nearest = 1e30f;
-
-			padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
-
-			for (k = 0; k < g_ZombieBoxNumPads; k++) {
-				struct pad taken;
-				f32 dx;
-				f32 dy;
-				f32 dz;
-				f32 d;
-
-				padUnpack(g_ZombieBoxPads[k], PADFIELD_POS, &taken);
-				dx = pad.pos.x - taken.pos.x;
-				dy = pad.pos.y - taken.pos.y;
-				dz = pad.pos.z - taken.pos.z;
-				d = dx * dx + dy * dy * 4 + dz * dz;
-
-				if (d < nearest) {
-					nearest = d;
-				}
-			}
-
-			if (havejugg) {
-				f32 jx = pad.pos.x - jugg.x;
-				f32 jz = pad.pos.z - jugg.z;
-
-				if (jx * jx + jz * jz < ZOMBIE_BOX_JUGG_APART * ZOMBIE_BOX_JUGG_APART) {
-					continue;
-				}
-			}
-
-			if (nearest > farthest || (nearest == farthest && g_SpawnPoints[i] < g_SpawnPoints[far])) {
-				farthest = nearest;
-				far = i;
-			}
-		}
-
-		if (far < 0) {
-			break;
-		}
-
-		g_ZombieBoxPads[g_ZombieBoxNumPads++] = g_SpawnPoints[far];
-		g_SpawnPoints[far] = g_SpawnPoints[n - 1];
-		g_NumSpawnPoints = n - 1;
-		n--;
-	}
-
-	sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box has %d place(s) on stage 0x%02x, %d spawn pads left", g_ZombieBoxNumPads, g_Vars.stagenum, n);
 }
 
 void zombiesReserveJuggPad(void)
@@ -14523,9 +14466,11 @@ static void zombiesTickBox(void)
 
 	// --zombies-test-teddy F: at level frame F player 1 spins the box after
 	// eight guns and no move, which Black Ops II's rule makes the teddy bear
-	if (sysArgCheck("--zombies-test-teddy") && g_ZombieBoxState == ZOMBIEBOX_IDLE
-			&& g_Vars.lvframenum == sysArgGetInt("--zombies-test-teddy", 300)) {
-		g_ZombieBoxAccessed = 8;
+	// --zombies-test-boxspin F: the same, after no guns, so it lands on one
+	if ((sysArgCheck("--zombies-test-teddy") || sysArgCheck("--zombies-test-boxspin")) && g_ZombieBoxState == ZOMBIEBOX_IDLE
+			&& g_Vars.lvframenum == (sysArgCheck("--zombies-test-teddy") ? sysArgGetInt("--zombies-test-teddy", 300)
+				: sysArgGetInt("--zombies-test-boxspin", 300))) {
+		g_ZombieBoxAccessed = sysArgCheck("--zombies-test-teddy") ? 8 : 0;
 		g_ZombieBoxMoves = 0;
 		g_ZombieBoxPaid = zombiesBoxCost();
 		g_ZombieBoxBySale = false;
@@ -18310,6 +18255,101 @@ static void zombiesPlaceBarriers(void)
 	}
 }
 
+/**
+ * The Mystery Box's other places (g_ZombieBoxPads after its first), once the
+ * windows and wall buys are up: each the spawn pad furthest from the places
+ * taken so far, none beside a window, a wall buy or Juggernog, while the
+ * zombies keep ZOMBIE_BOX_SPAREPADS to come in at. Taken before the windows,
+ * they had the pads the windows stand beside, and Warehouse had no window.
+ */
+static void zombiesReserveBoxSpots(void)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	s32 i;
+	s32 k;
+
+	if (g_ZombieBoxNumPads != 1 || zombiesLayout()) {
+		return;
+	}
+
+	while (g_ZombieBoxNumPads < ZOMBIE_BOX_SPOTS && n > ZOMBIE_BOX_SPAREPADS) {
+		f32 farthest = -1;
+		s32 far = -1;
+
+		for (i = 0; i < n; i++) {
+			struct pad pad;
+			f32 nearest = 1e30f;
+			bool beside = false;
+
+			padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+
+			for (k = 0; k < g_ZombieNumBarriers && !beside; k++) {
+				f32 dx = pad.pos.x - g_ZombieBarriers[k].pos.x;
+				f32 dz = pad.pos.z - g_ZombieBarriers[k].pos.z;
+
+				beside = dx * dx + dz * dz < ZOMBIE_BARRIER_APART * ZOMBIE_BARRIER_APART;
+			}
+
+			for (k = 0; k < g_ZombieNumWallBuys && !beside; k++) {
+				f32 dx = pad.pos.x - g_ZombieWallBuys[k].pos.x;
+				f32 dz = pad.pos.z - g_ZombieWallBuys[k].pos.z;
+
+				beside = g_ZombieWallBuys[k].placed && dx * dx + dz * dz < ZOMBIE_BARRIER_APART * ZOMBIE_BARRIER_APART;
+			}
+
+			if (g_ZombieJuggPad >= 0 && !beside) {
+				struct pad jugg;
+				f32 dx;
+				f32 dz;
+
+				padUnpack(g_ZombieJuggPad, PADFIELD_POS, &jugg);
+				dx = pad.pos.x - jugg.pos.x;
+				dz = pad.pos.z - jugg.pos.z;
+				beside = dx * dx + dz * dz < ZOMBIE_BOX_JUGG_APART * ZOMBIE_BOX_JUGG_APART;
+			}
+
+			if (beside) {
+				continue;
+			}
+
+			for (k = 0; k < g_ZombieBoxNumPads; k++) {
+				struct pad taken;
+				f32 dx;
+				f32 dy;
+				f32 dz;
+				f32 d;
+
+				padUnpack(g_ZombieBoxPads[k], PADFIELD_POS, &taken);
+				dx = pad.pos.x - taken.pos.x;
+				dy = pad.pos.y - taken.pos.y;
+				dz = pad.pos.z - taken.pos.z;
+				d = dx * dx + dy * dy * 4 + dz * dz;
+
+				if (d < nearest) {
+					nearest = d;
+				}
+			}
+
+			if (nearest > farthest || (nearest == farthest && g_SpawnPoints[i] < g_SpawnPoints[far])) {
+				farthest = nearest;
+				far = i;
+			}
+		}
+
+		if (far < 0) {
+			break;
+		}
+
+		g_ZombieBoxPads[g_ZombieBoxNumPads++] = g_SpawnPoints[far];
+		g_SpawnPoints[far] = g_SpawnPoints[n - 1];
+		g_NumSpawnPoints = n - 1;
+		n--;
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box has %d place(s) on stage 0x%02x, %d spawn pads left",
+			g_ZombieBoxNumPads, g_Vars.stagenum, n);
+}
+
 // Its boards to count, the one that went or came set going
 static void zombiesBarrierSet(s32 b, s32 boards)
 {
@@ -20795,6 +20835,14 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 
 				g_PlayerInvincible = true;
 
+				{
+					extern s32 g_ShotFrame;
+
+					if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+						g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+					}
+				}
+
 				for (b = 0; b < g_BotCount; b++) {
 					struct chrdata *zchr = g_MpBotChrPtrs[b];
 
@@ -20823,6 +20871,13 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 
 		if (testbar >= 0 && testbar < g_ZombieNumBarriers && g_ZombieBarriers[testbar].placed) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[testbar];
+			extern s32 g_ShotFrame;
+
+			// --zombies-shot-step S: a picture every S frames from --screenshot-frame on
+			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+				g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+			}
+
 
 			pos->x = bar->pos.x - bar->wall.x * 560 + bar->wall.z * 120;
 			pos->y = bar->pos.y + 170;
@@ -21797,6 +21852,7 @@ void zombiesTick(void)
 		zombiesCornerMachines();
 		zombiesPlaceWallBuys();
 		zombiesPlaceBarriers();
+		zombiesReserveBoxSpots();
 	}
 
 	zombiesRayGunSounds();
@@ -24938,6 +24994,7 @@ void zombiesClientTick(void)
 		zombiesCornerMachines();
 		zombiesPlaceWallBuys();
 		zombiesPlaceBarriers();
+		zombiesReserveBoxSpots();
 	}
 
 	// the sides, as the host's (the radar's and the names' colours)
