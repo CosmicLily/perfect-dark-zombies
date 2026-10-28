@@ -13511,10 +13511,12 @@ static void zombiesReturnMuleGun(s32 playernum)
  */
 #define ZOMBIE_PAP_COST     5000
 #define ZOMBIE_PAP_DOWN60   18   // the gun goes down out of the hands
-#define ZOMBIE_PAP_WORK60   180  // in the machine
+#define ZOMBIE_PAP_WORK60   261  // from the gun put out in front to it ready: third_person_weapon_upgrade()'s 4.35 seconds
+#define ZOMBIE_PAP_HOLD60   30   // held out in front first (pap_weapon_move_in()'s wait 0.5)
 #define ZOMBIE_PAP_OFFER60  900  // out of it, upgraded, to be taken: Black Ops II's fifteen seconds
 #define ZOMBIE_PAP_SLIDE60  30   // sliding in or out
 #define ZOMBIE_PAP_OFFERAT  (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_WORK60)
+#define ZOMBIE_PAP_INAT     (ZOMBIE_PAP_DOWN60 + ZOMBIE_PAP_HOLD60 + ZOMBIE_PAP_SLIDE60) // in
 #define ZOMBIE_PAP_TOTAL60  (ZOMBIE_PAP_OFFERAT + ZOMBIE_PAP_OFFER60)
 #define ZOMBIE_PAP_DAMAGE   2.0f
 #define ZOMBIE_PAP_CLIPMULT 2
@@ -13635,7 +13637,7 @@ static void zombiesPapPlaceGun(s32 t)
 	// Buried's machine: its middle drum's mouth, a metre up, and the gun out
 	// in front of it (the OBJ's centimetres, the front -y), clear of the tray
 	static const f32 inside[3] = { 0, -5, 106 };
-	static const f32 outside[3] = { 0, -52, 106 };
+	static const f32 outside[3] = { 0, -5 - 25 * 2.54f, 106 }; // interact_offset's 25 inches out
 	struct defaultobj *obj = &g_ZombiePapGunObj;
 	struct coord pos;
 	struct coord front;
@@ -13649,16 +13651,17 @@ static void zombiesPapPlaceGun(s32 t)
 	}
 
 	if (t < ZOMBIE_PAP_OFFERAT) {
-		f32 f = (f32)(t - ZOMBIE_PAP_DOWN60) / ZOMBIE_PAP_SLIDE60;
+		f32 f = (f32)(t - ZOMBIE_PAP_DOWN60 - ZOMBIE_PAP_HOLD60) / ZOMBIE_PAP_SLIDE60;
 
-		out = f >= 1 ? 0 : 1 - f;
+		out = f <= 0 ? 1 : f >= 1 ? 0 : 1 - f;
 	} else {
 		s32 u = t - ZOMBIE_PAP_OFFERAT;
 
 		if (u < ZOMBIE_PAP_SLIDE60) {
 			out = (f32)u / ZOMBIE_PAP_SLIDE60;
 		} else {
-			out = 1 - 0.75f * (u - ZOMBIE_PAP_SLIDE60) / (f32)(ZOMBIE_PAP_OFFER60 - ZOMBIE_PAP_SLIDE60);
+			// all the way back in over the time to take it (pap_weapon_move_out())
+			out = 1 - (u - ZOMBIE_PAP_SLIDE60) / (f32)(ZOMBIE_PAP_OFFER60 - ZOMBIE_PAP_SLIDE60);
 		}
 	}
 
@@ -14123,6 +14126,15 @@ static void zombiesTickPap(s32 playernum)
 	held = zombiesHeldGun(playernum);
 	setCurrentPlayerNum(prevplayernum);
 
+	// --zombies-test-pap F: at level frame F player 1's gun goes into the
+	// machine, wherever they are (watch it with --zombies-test-perk 9)
+	if (playernum == 0 && g_ZombiePap60[0] < 0 && machine && zombiesIsSlotGun(held)
+			&& sysArgCheck("--zombies-test-pap") && g_Vars.lvframenum == sysArgGetInt("--zombies-test-pap", 300)) {
+		g_ZombiePapGun[0] = held;
+		g_ZombiePap60[0] = 0;
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-pap: the gun goes in at frame %d", g_Vars.lvframenum);
+	}
+
 	g_ZombieNearPap[playernum] = false;
 
 	// in the machine
@@ -14138,8 +14150,11 @@ static void zombiesTickPap(s32 playernum)
 
 		if (prev < ZOMBIE_PAP_DOWN60 && now >= ZOMBIE_PAP_DOWN60) {
 			zombiesPapTakeGun(playernum);
+		}
 
-			// in: the machine at work (zmb_perks_packa_upgrade, its crunch)
+		// in: the machine at work (zmb_perks_packa_upgrade, its crunch), as
+		// the gun gets inside (third_person_weapon_upgrade())
+		if (prev < ZOMBIE_PAP_INAT && now >= ZOMBIE_PAP_INAT) {
 			zombiesPlayCodSound(ZMSFX_PAP_UPGRADE, machine);
 			zombiesPlayCodSound(ZMSFX_PAP_CRUNCH, machine);
 		}

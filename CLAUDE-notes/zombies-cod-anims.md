@@ -1043,3 +1043,17 @@ the floor at the end of weapon_rise, as BO2's 40; windows in walls on Carpark
 and Villa; windows per arena 3, 2, 5, 3, 3 (Warehouse, Carpark, Complex, Villa,
 Skedar). `--zombies-shot-step` now works with --zombies-test-barrier and
 --zombies-test-zombie too.
+
+## Pack-a-Punch as Black Ops II's script has it (2026-10-28)
+
+Our machine is the buildable one (p6_anim_zm_buildable_pap_on, TranZit and
+Buried); the dump has no animation of its own for it (the PaP clips there,
+fxanim_zom_tomb_packapunch_pc*, are Origins' machine's). What Black Ops II
+moves is the gun (_zm_perks.gsc's third_person_weapon_upgrade(),
+pap_weapon_move_in() and _out()): out in front 25 inches (interact_offset) and
+held half a second, in over half a second, the upgrade sound as it gets in,
+ready 4.35 s after it came out, out again over half a second, then all the way
+back in over the 15 s to take it. ZOMBIE_PAP_HOLD60 30, ZOMBIE_PAP_WORK60 261
+(was 180), ZOMBIE_PAP_INAT for the sound (it played as the gun set off), the
+offer's creep to fully in (it stopped a quarter out). `--zombies-test-pap F`
+puts player 1's gun in at frame F; watch with `--zombies-test-perk 9`.
