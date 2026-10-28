@@ -180,3 +180,38 @@ Two pieces to use them:
 Unplaced doors need a door definition (sound, speed, portal) that no setup
 gives them; vehicles need GoldenEye's vehicle handling (getank.c,
 gexplusveh.c) or stay static.
+
+## Zombies: what Black Ops II has that ours does not (added 2026-10-27, not started)
+
+The user's goal for Zombies is one to one with Black Ops II. Checked against
+zombies.inc on 2026-10-27: it already has Juggernog, Quick Revive, Speed Cola,
+Double Tap, Stamin-Up, Mule Kick, Deadshot, PhD Flopper and Electric Cherry;
+Max Ammo, Insta-Kill, Double Points, Nuke, Carpenter and Fire Sale; wall buys,
+a Mystery Box that moves, Pack-a-Punch, boarded windows, sprinters and
+crawlers, two grenades a round, points per hit and kill, the Ray Gun. What is
+missing, smallest first. **The user asked for these to be listed, not
+started: start one only when they ask for it.**
+
+1. **Claymores**: a wall buy; planted, tripped by a zombie, two more each
+   round. Perfect Dark's proximity mines are the start of it.
+2. **Semtex**: the sticky grenade, a wall buy that replaces the frags. The
+   grenade throw (the quick throw, zombies-cod-anims.md) is already there.
+3. **Bowie Knife / Galvaknuckles**: a melee upgrade off a wall, a faster and
+   stronger knife with its own swing animations.
+4. **The Bank and the Weapon Locker** (Town, TranZit): points deposited and one
+   gun stored, both kept between games, so they need saving.
+5. **Tombstone Soda**: down, and the guns and perks are picked back up from
+   the tombstone; in solo, a second life of sorts.
+6. **Who's Who**: solo's second life on some maps; needs a ghost copy of the
+   player, the largest of these.
+7. **Perma-perks**: BO2's hidden rewards (for reviving, headshots and the like),
+   kept between games: many small rules and their tracking saved.
+8. **Vulture Aid** (Buried): perk machines and the box outlined through walls,
+   extra drops. The most map-specific.
+
+Left off on purpose: Monkey Bombs and hellhound rounds, which Town and TranZit
+do not have in Black Ops II.
+
+The list came from searching the code for each feature, not from playing each
+one: something that already works under another name will show when it is
+started.
