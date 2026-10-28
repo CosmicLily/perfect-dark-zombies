@@ -1482,6 +1482,23 @@ static struct defaultobj g_ZombieBoxObj;
 static struct defaultobj *g_ZombieBox = NULL;
 
 /**
+ * The places the Mystery Box can be, as Black Ops II's chests: where it starts
+ * (g_ZombieBoxPad) and up to ZOMBIE_BOX_SPOTS - 1 more, each as far from the
+ * others as can be, kept back from the spawn list like the first
+ * (zombiesReserveBoxPad()). With one place it never moves.
+ */
+#define ZOMBIE_BOX_SPOTS     4
+#define ZOMBIE_BOX_SPAREPADS 6  // spawn pads left to the zombies at the least, for the box to take more (most come in at the windows)
+
+static s32 g_ZombieBoxPads[ZOMBIE_BOX_SPOTS];
+static s32 g_ZombieBoxNumPads = 0;
+static s32 g_ZombieBoxAt = 0;       // which of them it is at
+static s32 g_ZombieBoxAccessed = 0; // level.chest_accessed: guns it has offered since it last moved
+static s32 g_ZombieBoxMoves = 0;    // level.chest_moves
+static s32 g_ZombieBoxPaid = 0;     // what the spin now going cost, given back if the teddy bear comes
+static bool g_ZombieBoxBySale = false; // ... and whether Fire Sale opened it: then it never moves, and is not counted
+
+/**
  * Called from playerReset() once the arena's spawn list is built and before
  * anyone is put on it: picks the machine's pad and takes it off the list, so
  * nobody spawns inside the machine. The pick is the arena's alone - the spawn
@@ -1614,10 +1631,14 @@ static void zombiesReserveBoxPad(void)
 	s32 i;
 
 	g_ZombieBoxPad = -1;
+	g_ZombieBoxNumPads = 0;
+	g_ZombieBoxAt = 0;
 
 	// the arena's own spot, which is no spawn pad
 	if (zombiesLayout() && zombiesLayout()->boxpad >= 0) {
 		g_ZombieBoxPad = zombiesLayout()->boxpad;
+		g_ZombieBoxPads[0] = g_ZombieBoxPad;
+		g_ZombieBoxNumPads = 1;
 		return;
 	}
 
@@ -1688,6 +1709,68 @@ static void zombiesReserveBoxPad(void)
 
 	g_SpawnPoints[best] = g_SpawnPoints[n - 1];
 	g_NumSpawnPoints = n - 1;
+	n--;
+
+	g_ZombieBoxPads[0] = g_ZombieBoxPad;
+	g_ZombieBoxNumPads = 1;
+
+	// The other places it can move to: each the pad furthest from the places
+	// taken so far, while the zombies keep ZOMBIE_BOX_SPAREPADS to come in at
+	while (g_ZombieBoxNumPads < ZOMBIE_BOX_SPOTS && n > ZOMBIE_BOX_SPAREPADS) {
+		f32 farthest = -1;
+		s32 far = -1;
+		s32 k;
+
+		for (i = 0; i < n; i++) {
+			struct pad pad;
+			f32 nearest = 1e30f;
+
+			padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+
+			for (k = 0; k < g_ZombieBoxNumPads; k++) {
+				struct pad taken;
+				f32 dx;
+				f32 dy;
+				f32 dz;
+				f32 d;
+
+				padUnpack(g_ZombieBoxPads[k], PADFIELD_POS, &taken);
+				dx = pad.pos.x - taken.pos.x;
+				dy = pad.pos.y - taken.pos.y;
+				dz = pad.pos.z - taken.pos.z;
+				d = dx * dx + dy * dy * 4 + dz * dz;
+
+				if (d < nearest) {
+					nearest = d;
+				}
+			}
+
+			if (havejugg) {
+				f32 jx = pad.pos.x - jugg.x;
+				f32 jz = pad.pos.z - jugg.z;
+
+				if (jx * jx + jz * jz < ZOMBIE_BOX_JUGG_APART * ZOMBIE_BOX_JUGG_APART) {
+					continue;
+				}
+			}
+
+			if (nearest > farthest || (nearest == farthest && g_SpawnPoints[i] < g_SpawnPoints[far])) {
+				farthest = nearest;
+				far = i;
+			}
+		}
+
+		if (far < 0) {
+			break;
+		}
+
+		g_ZombieBoxPads[g_ZombieBoxNumPads++] = g_SpawnPoints[far];
+		g_SpawnPoints[far] = g_SpawnPoints[n - 1];
+		g_NumSpawnPoints = n - 1;
+		n--;
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box has %d place(s) on stage 0x%02x, %d spawn pads left", g_ZombieBoxNumPads, g_Vars.stagenum, n);
 }
 
 void zombiesReserveJuggPad(void)
@@ -3908,6 +3991,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defaultobj *obj);
+static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaultobj *obj);
 
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
@@ -4009,6 +4093,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// a power-up, as Black Ops II's own model
 	if (zombiesRenderPowerup(renderdata, obj)) {
+		return true;
+	}
+
+	// the Mystery Box's teddy bear, in place of the gun over it
+	if (zombiesRenderTeddy(renderdata, obj)) {
 		return true;
 	}
 
@@ -12521,9 +12610,9 @@ s32 zombiesStartAmmo(s32 weaponnum)
 static s32 zombiesBoxCost(void); // ZOMBIE_BOX_COST, or Fire Sale's
 #define ZOMBIE_BOX_RANGE      140.0f  // how near the box buying and taking work
 #define ZOMBIE_BOX_HOLD60     15      // how long B is held to buy or take
-#define ZOMBIE_BOX_SPIN60     210     // the guns going round (3.5 seconds)
+#define ZOMBIE_BOX_SPIN60     240     // the guns going round: treasure_chest_weapon_spawn()'s 40 cycles, 4 seconds
 #define ZOMBIE_BOX_WALLREACH  160.0f  // how far from its pad the box looks for a wall to stand against
-#define ZOMBIE_BOX_OFFER60    600     // the one it landed on, waiting to be taken
+#define ZOMBIE_BOX_OFFER60    720     // the one it landed on, waiting to be taken: treasure_chest_timeout()'s 12 seconds
 #define ZOMBIE_BOX_RISE       40.0f   // how far over the lid a gun rises
 #define ZOMBIE_BOX_GUNSCALE   1.8f    // the guns bigger than lying on a floor, for the box's size
 #define ZOMBIE_BOX_POOLFLOOR  0x40000 // stage pool left alone when loading the guns
@@ -12531,6 +12620,17 @@ static s32 zombiesBoxCost(void); // ZOMBIE_BOX_COST, or Fire Sale's
 #define ZOMBIEBOX_IDLE  0
 #define ZOMBIEBOX_SPIN  1
 #define ZOMBIEBOX_OFFER 2
+#define ZOMBIEBOX_TEDDY 3 // the teddy bear over it, then going up (zombiesTickBox())
+#define ZOMBIEBOX_AWAY  4 // gone, to come back at another of its places
+
+// Black Ops II's move (_zm_magicbox.gsc): the teddy bear half a second over the
+// box and two more before it goes, 500 inches up over four seconds
+// (moveto(..., 4, 3): three gathering speed, one at it), the box gone seven
+#define ZOMBIE_BOX_TEDDYWAIT60 150
+#define ZOMBIE_BOX_TEDDYFLY60  240
+#define ZOMBIE_BOX_TEDDYUP     (500 * 2.54f)
+#define ZOMBIE_BOX_AWAY60      420
+#define ZOMBIE_BOX_MINUSES     4   // chest_min_move_usage
 
 static s32 g_ZombieBoxGuns[NUM_MPWEAPONS];   // g_MpWeapons indexes
 static s32 g_ZombieBoxNumGuns = 0;
@@ -12769,58 +12869,15 @@ static void zombiesBoxLoadGuns(void)
 	}
 }
 
-static void zombiesPlaceBox(void)
+/**
+ * The Mystery Box put at spawn pad padnum (one of g_ZombieBoxPads): backed
+ * onto the wall nearest it and facing the room, and the lid's height noted
+ */
+static void zombiesBoxPutAt(s32 padnum)
 {
 	struct defaultobj *obj = &g_ZombieBoxObj;
-	struct prop *prop;
 	struct coord min;
 	struct coord max;
-
-	if (g_ZombieBoxPad < 0) {
-		sysLogPrintf(LOG_WARNING, "zombies: no Mystery Box on stage 0x%02x (too few spawn pads)", g_Vars.stagenum);
-		return;
-	}
-
-	bzero(obj, sizeof(*obj));
-	obj->extrascale = 256;
-	obj->type = OBJTYPE_BASIC;
-	obj->modelnum = ZOMBIE_BOX_MODEL;
-	// solid, as the perk machines are (zombiesNewJuggObj())
-	obj->flags = OBJFLAG_INVINCIBLE | OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_00000100;
-	obj->flags2 = OBJFLAG2_IMMUNETOGUNFIRE | OBJFLAG2_IMMUNETOEXPLOSIONS;
-	obj->realrot[0][0] = obj->realrot[1][1] = obj->realrot[2][2] = 1;
-	obj->maxdamage = 1000;
-	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
-	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
-	obj->floorcol = 0x0fff;
-	obj->pad = -1;
-
-	setupLoadModeldef(obj->modelnum);
-
-	if (g_ModelStates[obj->modelnum].modeldef == NULL) {
-		sysLogPrintf(LOG_WARNING, "zombies: the Mystery Box's model would not load on stage 0x%02x", g_Vars.stagenum);
-		return;
-	}
-
-	prop = objInitWithAutoModel(obj);
-
-	if (prop == NULL || obj->model == NULL) {
-		sysLogPrintf(LOG_WARNING, "zombies: the Mystery Box would not go up on stage 0x%02x", g_Vars.stagenum);
-		return;
-	}
-
-	// as long as ZOMBIE_BOX_LENGTH, whatever the crate's own size
-	{
-		struct modelrodata_bbox *bbox = objFindBboxRodata(obj);
-
-		if (bbox) {
-			f32 len = bbox->xmax - bbox->xmin > bbox->zmax - bbox->zmin ? bbox->xmax - bbox->xmin : bbox->zmax - bbox->zmin;
-
-			if (len * obj->model->scale > 0.01f) {
-				modelSetScale(obj->model, obj->model->scale * ZOMBIE_BOX_LENGTH / (len * obj->model->scale));
-			}
-		}
-	}
 
 	// Backed onto the nearest wall, as Call of Duty's stands, its long side
 	// along the wall and its front to the room; on the pad as the pad looks
@@ -12840,7 +12897,7 @@ static void zombiesPlaceBox(void)
 		f32 len;
 		s32 k;
 
-		padUnpack(g_ZombieBoxPad, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
+		padUnpack(padnum, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
 
 		pos = pad.pos;
 		rooms[0] = pad.room;
@@ -12942,17 +12999,71 @@ static void zombiesPlaceBox(void)
 		sysLogPrintf(LOG_NOTE, "zombies: Mystery Box %s", walldist <= ZOMBIE_BOX_WALLREACH ? "backed onto a wall" : "on its pad, no wall near");
 	}
 
-	propActivate(prop);
-	propEnable(prop);
-
-	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
-	g_ZombieBox = obj;
-
 	g_ZombieBoxTop = obj->prop->pos.y + 20;
 
 	if (setupGetObjBbox(obj, &obj->prop->pos, obj->realrot, &min, &max)) {
 		g_ZombieBoxTop = max.y;
 	}
+}
+
+static void zombiesPlaceBox(void)
+{
+	struct defaultobj *obj = &g_ZombieBoxObj;
+	struct prop *prop;
+
+	if (g_ZombieBoxPad < 0) {
+		sysLogPrintf(LOG_WARNING, "zombies: no Mystery Box on stage 0x%02x (too few spawn pads)", g_Vars.stagenum);
+		return;
+	}
+
+	bzero(obj, sizeof(*obj));
+	obj->extrascale = 256;
+	obj->type = OBJTYPE_BASIC;
+	obj->modelnum = ZOMBIE_BOX_MODEL;
+	// solid, as the perk machines are (zombiesNewJuggObj())
+	obj->flags = OBJFLAG_INVINCIBLE | OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_00000100;
+	obj->flags2 = OBJFLAG2_IMMUNETOGUNFIRE | OBJFLAG2_IMMUNETOEXPLOSIONS;
+	obj->realrot[0][0] = obj->realrot[1][1] = obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+	obj->pad = -1;
+
+	setupLoadModeldef(obj->modelnum);
+
+	if (g_ModelStates[obj->modelnum].modeldef == NULL) {
+		sysLogPrintf(LOG_WARNING, "zombies: the Mystery Box's model would not load on stage 0x%02x", g_Vars.stagenum);
+		return;
+	}
+
+	prop = objInitWithAutoModel(obj);
+
+	if (prop == NULL || obj->model == NULL) {
+		sysLogPrintf(LOG_WARNING, "zombies: the Mystery Box would not go up on stage 0x%02x", g_Vars.stagenum);
+		return;
+	}
+
+	// as long as ZOMBIE_BOX_LENGTH, whatever the crate's own size
+	{
+		struct modelrodata_bbox *bbox = objFindBboxRodata(obj);
+
+		if (bbox) {
+			f32 len = bbox->xmax - bbox->xmin > bbox->zmax - bbox->zmin ? bbox->xmax - bbox->xmin : bbox->zmax - bbox->zmin;
+
+			if (len * obj->model->scale > 0.01f) {
+				modelSetScale(obj->model, obj->model->scale * ZOMBIE_BOX_LENGTH / (len * obj->model->scale));
+			}
+		}
+	}
+
+	zombiesBoxPutAt(g_ZombieBoxPad);
+
+	propActivate(prop);
+	propEnable(prop);
+
+	obj->hidden2 &= ~OBJH2FLAG_CANREGEN;
+	g_ZombieBox = obj;
 
 	zombiesBoxLoadGuns();
 
@@ -12990,6 +13101,19 @@ static void zombiesBoxPlaceGun(void)
 		f32 frac = g_ZombieBoxTime60 / 60.0f;
 
 		rise = ZOMBIE_BOX_RISE * (frac > 1 ? 1 : frac);
+	} else if (g_ZombieBoxState == ZOMBIEBOX_TEDDY) {
+		// where the gun would be, then up: three seconds gathering speed and
+		// one at it, ZOMBIE_BOX_TEDDYUP in all (moveto(..., 4, 3))
+		const f32 s = (g_ZombieBoxTime60 - ZOMBIE_BOX_TEDDYWAIT60) / 60.0f;
+		const f32 a = ZOMBIE_BOX_TEDDYUP / 7.5f;
+
+		rise = ZOMBIE_BOX_RISE;
+
+		if (s > 3) {
+			rise += 4.5f * a + 3 * a * (s - 3);
+		} else if (s > 0) {
+			rise += 0.5f * a * s * s;
+		}
 	} else {
 		rise = ZOMBIE_BOX_RISE * (1.0f - 0.85f * g_ZombieBoxTime60 / (f32)ZOMBIE_BOX_OFFER60);
 	}
@@ -14264,6 +14388,50 @@ static void zombiesBoxGive(s32 playernum, s32 index)
 	setCurrentPlayerNum(prevplayernum);
 }
 
+/**
+ * Whether this spin ends on the teddy bear, as treasure_chest_weapon_spawn()
+ * decides it: never before ZOMBIE_BOX_MINUSES guns since it last moved, nor on
+ * a Fire Sale, nor with nowhere else to go; then 15 in 100 to its eighth gun;
+ * at the eighth for sure if it has never moved; once it has, 30 in 100 to its
+ * thirteenth and 50 in 100 after
+ */
+static bool zombiesBoxRollsTeddy(void)
+{
+	const s32 random = rngRandom() % 100;
+	const s32 accessed = g_ZombieBoxAccessed;
+	s32 chance;
+
+	if (g_ZombieBoxNumPads < 2 || g_ZombieBoxBySale || g_ZombieFireSale60 > 0) {
+		return false;
+	}
+
+	if (accessed < ZOMBIE_BOX_MINUSES) {
+		chance = -1;
+	} else {
+		chance = accessed + 20;
+
+		if (g_ZombieBoxMoves == 0 && accessed >= 8) {
+			chance = 100;
+		}
+
+		if (accessed >= 4 && accessed < 8) {
+			chance = random < 15 ? 100 : -1;
+		}
+
+		if (g_ZombieBoxMoves > 0) {
+			if (accessed >= 8 && accessed < 13) {
+				chance = random < 30 ? 100 : -1;
+			}
+
+			if (accessed >= 13) {
+				chance = random < 50 ? 100 : -1;
+			}
+		}
+	}
+
+	return chance > random;
+}
+
 static void zombiesTickBox(void)
 {
 	s32 numplayers = PLAYERCOUNT();
@@ -14274,6 +14442,22 @@ static void zombiesTickBox(void)
 		return;
 	}
 
+	// --zombies-test-teddy F: at level frame F player 1 spins the box after
+	// eight guns and no move, which Black Ops II's rule makes the teddy bear
+	if (sysArgCheck("--zombies-test-teddy") && g_ZombieBoxState == ZOMBIEBOX_IDLE
+			&& g_Vars.lvframenum == sysArgGetInt("--zombies-test-teddy", 300)) {
+		g_ZombieBoxAccessed = 8;
+		g_ZombieBoxMoves = 0;
+		g_ZombieBoxPaid = zombiesBoxCost();
+		g_ZombieBoxBySale = false;
+		g_ZombiePoints[0] -= g_ZombieBoxPaid;
+		g_ZombieBoxState = ZOMBIEBOX_SPIN;
+		g_ZombieBoxUser = 0;
+		g_ZombieBoxTime60 = 0;
+		g_ZombieBoxNextSwap60 = 0;
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-teddy: the box spun at frame %d, %d places", g_Vars.lvframenum, g_ZombieBoxNumPads);
+	}
+
 	// who is near enough, and holding B for it
 	for (i = 0; i < numplayers; i++) {
 		struct player *player = g_Vars.players[i];
@@ -14281,7 +14465,8 @@ static void zombiesTickBox(void)
 
 		g_ZombieNearBox[i] = false;
 
-		if (zombiesPlayerIsUp(i) && g_ZombieDrink60[i] < 0 && g_ZombieNearDowned[i] < 0) {
+		if (zombiesPlayerIsUp(i) && g_ZombieDrink60[i] < 0 && g_ZombieNearDowned[i] < 0
+				&& g_ZombieBoxState != ZOMBIEBOX_AWAY) {
 			f32 dx = player->prop->pos.x - box->pos.x;
 			f32 dy = player->prop->pos.y - box->pos.y;
 			f32 dz = player->prop->pos.z - box->pos.z;
@@ -14319,6 +14504,8 @@ static void zombiesTickBox(void)
 				continue;
 			}
 
+			g_ZombieBoxPaid = zombiesBoxCost();
+			g_ZombieBoxBySale = g_ZombieFireSale60 > 0;
 			g_ZombiePoints[i] -= zombiesBoxCost();
 			zombiesAddPopup(i, -zombiesBoxCost());
 			zombiesCodOr(ZMSFX_PERK_BUY, NULL, SFX_MENU_SELECT, 0.8f);
@@ -14346,6 +14533,30 @@ static void zombiesTickBox(void)
 
 			if (index >= 0) {
 				zombiesBoxShowGun(index);
+			}
+
+			// or the teddy bear, and the box goes somewhere else
+			if (zombiesBoxRollsTeddy()) {
+				const s32 user = g_ZombieBoxUser;
+
+				// what the spin cost, back (treasure_chest_think())
+				if (user >= 0 && user < numplayers && g_ZombieBoxPaid > 0) {
+					g_ZombiePoints[user] += g_ZombieBoxPaid;
+					zombiesAddPopup(user, g_ZombieBoxPaid);
+				}
+
+				g_ZombieBoxPaid = 0;
+				g_ZombieBoxAccessed = 0;
+				g_ZombieBoxMoves++;
+				g_ZombieBoxState = ZOMBIEBOX_TEDDY;
+				g_ZombieBoxTime60 = 0;
+				sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box's teddy bear (move %d)", g_ZombieBoxMoves);
+				break;
+			}
+
+			// a gun offered, counted toward the next move (not on a Fire Sale)
+			if (!g_ZombieBoxBySale) {
+				g_ZombieBoxAccessed++;
 			}
 
 			// landed: Black Ops II's music box has its own end
@@ -14391,6 +14602,47 @@ static void zombiesTickBox(void)
 			zombiesBoxHideGun();
 			g_ZombieBoxState = ZOMBIEBOX_IDLE;
 			g_ZombieBoxUser = -1;
+		}
+		break;
+	case ZOMBIEBOX_TEDDY: {
+		const s32 before = g_ZombieBoxTime60;
+
+		g_ZombieBoxTime60 += g_Vars.lvupdate60;
+
+		// weapon_fly_away_start: it goes up, the box with it
+		if (before < ZOMBIE_BOX_TEDDYWAIT60 && g_ZombieBoxTime60 >= ZOMBIE_BOX_TEDDYWAIT60) {
+			zombiesPlayCodSound(ZMSFX_BOX_MOVE, box);
+		}
+
+		if (g_ZombieBoxTime60 >= ZOMBIE_BOX_TEDDYWAIT60 + ZOMBIE_BOX_TEDDYFLY60) {
+			// gone in a puff, to come back at another of its places
+			zombiesPlayCodSound(ZMSFX_BOX_POOF, box);
+			zombiesBoxHideGun();
+			propDisable(box);
+
+			if (g_ZombieBoxNumPads > 1) {
+				s32 next = rngRandom() % (g_ZombieBoxNumPads - 1);
+
+				g_ZombieBoxAt = next >= g_ZombieBoxAt ? next + 1 : next;
+			}
+
+			g_ZombieBoxState = ZOMBIEBOX_AWAY;
+			g_ZombieBoxTime60 = 0;
+			g_ZombieBoxUser = -1;
+		}
+		break;
+	}
+	case ZOMBIEBOX_AWAY:
+		g_ZombieBoxTime60 += g_Vars.lvupdate60;
+
+		if (g_ZombieBoxTime60 >= ZOMBIE_BOX_AWAY60) {
+			zombiesBoxPutAt(g_ZombieBoxPads[g_ZombieBoxAt]);
+			propEnable(box);
+			zombiesPlayCodSound(ZMSFX_BOX_LAND, box);
+			g_ZombieBoxState = ZOMBIEBOX_IDLE;
+			g_ZombieBoxTime60 = 0;
+			sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box is back, at its place %d (pad %d) at %.0f %.0f %.0f",
+					g_ZombieBoxAt, g_ZombieBoxPads[g_ZombieBoxAt], box->pos.x, box->pos.y, box->pos.z);
 		}
 		break;
 	}
@@ -14798,6 +15050,69 @@ static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defa
 	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
 
 	// its own gold, whatever light it is in, as Black Ops II's shine
+	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
+
+	return true;
+}
+
+/**
+ * The Mystery Box's teddy bear (zombie_teddybear, Buried's zone, through
+ * tools/zombies/glb2obj.py into zombies/models/teddybear/), at its own size,
+ * drawn where the gun over the box is while the box is leaving
+ * (ZOMBIEBOX_TEDDY, zombiesBoxPlaceGun()), its feet there, turned a quarter
+ * from the gun as Black Ops II turns it. Without the OBJ the gun is drawn.
+ */
+static struct zombiemesh g_ZombieTeddyMesh;
+
+static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	struct zombiemesh *zm = &g_ZombieTeddyMesh;
+	f32 centre[3];
+	f32 pos[3];
+	Mtxf world;
+	Mtxf *mtx;
+	s32 i;
+	s32 j;
+
+	if (obj != g_ZombieBoxGun || g_ZombieBoxState != ZOMBIEBOX_TEDDY || obj->prop == NULL) {
+		return false;
+	}
+
+	if (!zm->tried) {
+		zombiesMeshBuildFrom(zm, "$E/zombies/models/teddybear/teddybear.obj", "the Mystery Box's teddy bear");
+	}
+
+	if (zm->gdl == NULL) {
+		return false;
+	}
+
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
+	centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
+	centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
+
+	pos[0] = obj->prop->pos.x;
+	pos[1] = obj->prop->pos.y;
+	pos[2] = obj->prop->pos.z;
+
+	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &world);
+
+	for (i = 0; i < 3; i++) {
+		for (j = 0; j < 3; j++) {
+			world.m[i][j] /= ZOMBIE_MESH_FIXED;
+		}
+	}
+
+	for (i = 0; i < 3; i++) {
+		world.m[3][i] = pos[i] - (world.m[0][i] * centre[0] + world.m[1][i] * centre[1] + world.m[2][i] * centre[2]);
+	}
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
 	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
 
 	return true;
@@ -19938,10 +20253,12 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 
 		// --zombies-test-perk N: the camera round machine N (a perk's id,
 		// Pack-a-Punch's after them), an eighth of the way round every 40
-		// frames, --zombies-perk-dist away (200); --zombies-shot-step as above
-		if (sysArgCheck("--zombies-test-perk")) {
+		// frames, --zombies-perk-dist away (200); --zombies-shot-step as above.
+		// --zombies-test-box: the same round the Mystery Box, wherever it is
+		if (sysArgCheck("--zombies-test-perk") || sysArgCheck("--zombies-test-box")) {
 			extern s32 g_ShotFrame;
-			struct defaultobj *mobj = zombiesMachineObjAt(sysArgGetInt("--zombies-test-perk", 0));
+			struct defaultobj *mobj = sysArgCheck("--zombies-test-box") ? g_ZombieBox
+				: zombiesMachineObjAt(sysArgGetInt("--zombies-test-perk", 0));
 
 			g_PlayerInvincible = true;
 

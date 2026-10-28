@@ -975,3 +975,23 @@ black over coloured noise, from frames the game drew correctly. Today's chase
 of "black frames" near the in-wall windows was only that: the same runs in a
 normal window are fine, and `--zombies-no-holes` (no window cut) was as black
 minimized. Start screenshot runs in a normal window.
+
+## The Mystery Box moves, as Black Ops II's (2026-10-28)
+
+From _zm_magicbox.gsc: the spin is 4 s (40 cycles), a gun waits 12 s
+(treasure_chest_timeout()). The box has up to ZOMBIE_BOX_SPOTS places
+(zombiesReserveBoxPad(): its first, then each pad furthest from those taken,
+while 6 spawn pads stay for the zombies). A spin ends on the teddy bear by
+treasure_chest_weapon_spawn()'s odds (zombiesBoxRollsTeddy(): not before 4
+guns since the last move, 15% to the 8th, sure at the 8th before any move,
+then 30%/50%); never on a Fire Sale. The player gets the cost back; the bear
+(zombies/models/teddybear, Buried's zombie_teddybear via glb2obj.py, drawn in
+place of the gun object) waits 2.5 s and rises 500 inches over 4 s; the box
+goes for 7 s (propDisable) and comes back at another place (zombiesBoxPutAt()).
+Guns offered off a Fire Sale count toward the move. Checked against the
+scripts and already the same: perk prices and limit, Quick Revive's solo 500,
+Pack-a-Punch 5000 and its ammo, the box's 950 and Fire Sale's 10, power-up
+timers and 4 drops a round, kill points. Kept on purpose: the Ray Gun's 1 in 8
+(BO2 picks evenly; our pool is larger and a tester never saw one). Not synced
+online: a client keeps the box where it started. Test: `--zombies-test-box`
+(camera on it), `--zombies-test-teddy F` (a spin at frame F that must move it).
