@@ -959,10 +959,14 @@ static void zombiesTickSpeedUp(s32 alive)
 #define ZOMBIE_FAILSAFE_CRAWL60  (40 * 60)
 #define ZOMBIE_FAILSAFE_MOVED    (24.0f * 2.54f)
 #define ZOMBIE_FAILSAFE_TORE60   (8 * 60)
+#define ZOMBIE_FAILSAFE_FIGHT    330.0f // near enough a player to be swiping at them (twice the reach)
+#define ZOMBIE_UNSTICK60         (10 * 60) // stuck away from every player this long: sent back
 
 static s32 g_ZombieFailsafe60[MAX_BOTS];      // since the last look, -1 not out
 static struct coord g_ZombieFailsafePos[MAX_BOTS];
 static s32 g_ZombieTore60[MAX_BOTS];          // since it last tore at boards
+static s32 g_ZombieUnstick60[MAX_BOTS];      // ... and the quicker look away from the players
+static struct coord g_ZombieUnstickPos[MAX_BOTS];
 static bool g_ZombiePerimOff[MAX_BOTS];      // its bot walked through while at a window in a wall (zombiesTickBarriers())
 void chrSetPerimEnabled(struct chrdata *chr, bool enable);
 static s32 g_ZombieDiedBehind[MAX_BOTS];     // the window in a wall it died at, -1 none: drawn there till it comes again
@@ -1004,11 +1008,98 @@ static struct {
 } g_ZombieClimb[MAX_BOTS];
 static s32 zombiesBarrierPick(void);
 
+/**
+ * --zombies-test-stuck: player 1 cannot be hurt, and any zombie that has gone
+ * under 2 feet in 5 seconds, away from a window and from player 1, is logged
+ * with where it is, what it was told to do and how far player 1 is, once a
+ * spot - where the AI gets stuck in play, which the 30 second failsafe only
+ * clears up after
+ */
+static void zombiesTickStuckLog(void)
+{
+	static s32 since60[MAX_BOTS];
+	static struct coord from[MAX_BOTS];
+	static struct coord logged[64];
+	static s32 numlogged = 0;
+	struct prop *pp = g_Vars.players[0] ? g_Vars.players[0]->prop : NULL;
+	s32 i;
+	s32 k;
+
+	if (!sysArgCheck("--zombies-test-stuck") || pp == NULL) {
+		return;
+	}
+
+	g_PlayerInvincible = true;
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		f32 dx;
+		f32 dz;
+		f32 px;
+		f32 pz;
+
+		if (!zchr || !zchr->prop || chrIsDead(zchr) || g_ZombieHidden[i] || g_ZombieAtBarrier[i] >= 0) {
+			since60[i] = -1;
+			continue;
+		}
+
+		px = pp->pos.x - zchr->prop->pos.x;
+		pz = pp->pos.z - zchr->prop->pos.z;
+
+		if (since60[i] < 0 || px * px + pz * pz < 250 * 250) {
+			since60[i] = 0;
+			from[i] = zchr->prop->pos;
+			continue;
+		}
+
+		since60[i] += g_Vars.lvupdate60;
+
+		if (since60[i] < 300) {
+			continue;
+		}
+
+		dx = zchr->prop->pos.x - from[i].x;
+		dz = zchr->prop->pos.z - from[i].z;
+		since60[i] = 0;
+		from[i] = zchr->prop->pos;
+
+		if (dx * dx + dz * dz >= 61 * 61) {
+			continue;
+		}
+
+		for (k = 0; k < numlogged; k++) {
+			f32 lx = logged[k].x - zchr->prop->pos.x;
+			f32 lz = logged[k].z - zchr->prop->pos.z;
+
+			if (lx * lx + lz * lz < 150 * 150) {
+				break;
+			}
+		}
+
+		if (k < numlogged) {
+			continue;
+		}
+
+		if (numlogged < ARRAYCOUNT(logged)) {
+			logged[numlogged++] = zchr->prop->pos;
+		}
+
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-stuck: zombie %d stuck at %.0f %.0f %.0f (room %d), command %d, %.0f from player 1, frame %d",
+				i, zchr->prop->pos.x, zchr->prop->pos.y, zchr->prop->pos.z, zchr->prop->rooms[0],
+				zchr->aibot->command, sqrtf(px * px + pz * pz), g_Vars.lvframenum);
+	}
+}
+
+static void zombiesBarrierWhere(s32 botnum, s32 *b, s32 *s, f32 *off);
+static bool zombiesPlayerIsUp(s32 playernum);
+
 // round_spawn_failsafe()'s look, each tick (above)
 static void zombiesTickFailsafe(void)
 {
 	struct coord none = {0, 0, 0};
 	s32 i;
+
+	zombiesTickStuckLog();
 
 	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
 		struct chrdata *zchr = g_MpBotChrPtrs[i];
@@ -1033,6 +1124,55 @@ static void zombiesTickFailsafe(void)
 			g_ZombieTore60[i] += g_Vars.lvupdate60;
 		}
 
+		// Swiping at a player is no being stuck: a player who stands their
+		// ground has the zombies at them standing still too, and they were sent
+		// back from the fight. Away from every player, one that has gone nowhere
+		// in ZOMBIE_UNSTICK60 is sent back then, not after the 30 seconds
+		{
+			f32 nearest = 1e30f;
+			s32 p;
+
+			for (p = 0; p < PLAYERCOUNT(); p++) {
+				struct prop *pp = g_Vars.players[p] ? g_Vars.players[p]->prop : NULL;
+
+				if (pp && zombiesPlayerIsUp(p)) {
+					f32 px = pp->pos.x - zchr->prop->pos.x;
+					f32 pz = pp->pos.z - zchr->prop->pos.z;
+
+					nearest = MIN(nearest, px * px + pz * pz);
+				}
+			}
+
+			if (nearest < ZOMBIE_FAILSAFE_FIGHT * ZOMBIE_FAILSAFE_FIGHT) {
+				g_ZombieFailsafe60[i] = 0;
+				g_ZombieFailsafePos[i] = zchr->prop->pos;
+				g_ZombieUnstick60[i] = 0;
+				g_ZombieUnstickPos[i] = zchr->prop->pos;
+				continue;
+			}
+
+			if (g_ZombieAtBarrier[i] < 0 && !g_ZombieClimb[i].on) {
+				g_ZombieUnstick60[i] += g_Vars.lvupdate60;
+
+				if (g_ZombieUnstick60[i] >= ZOMBIE_UNSTICK60) {
+					f32 ux = zchr->prop->pos.x - g_ZombieUnstickPos[i].x;
+					f32 uz = zchr->prop->pos.z - g_ZombieUnstickPos[i].z;
+
+					g_ZombieUnstick60[i] = 0;
+					g_ZombieUnstickPos[i] = zchr->prop->pos;
+
+					if (ux * ux + uz * uz < ZOMBIE_FAILSAFE_MOVED * ZOMBIE_FAILSAFE_MOVED) {
+						g_ZombieFailsafe60[i] = 100000;
+						g_ZombieFailsafePos[i] = zchr->prop->pos;
+						g_ZombieTore60[i] = ZOMBIE_FAILSAFE_TORE60;
+					}
+				}
+			} else {
+				g_ZombieUnstick60[i] = 0;
+				g_ZombieUnstickPos[i] = zchr->prop->pos;
+			}
+		}
+
 		g_ZombieFailsafe60[i] += g_Vars.lvupdate60;
 
 		if (g_ZombieFailsafe60[i] < (zombiesChrIsCrawler(zchr) ? ZOMBIE_FAILSAFE_CRAWL60 : ZOMBIE_FAILSAFE60)) {
@@ -1049,9 +1189,16 @@ static void zombiesTickFailsafe(void)
 			continue;
 		}
 
-		sysLogPrintf(LOG_NOTE, "zombies: zombie %d stuck at %.0f %.0f %.0f for %d seconds, sent back to come again",
-				i, zchr->prop->pos.x, zchr->prop->pos.y, zchr->prop->pos.z,
-				(zombiesChrIsCrawler(zchr) ? ZOMBIE_FAILSAFE_CRAWL60 : ZOMBIE_FAILSAFE60) / 60);
+		{
+			s32 b;
+			s32 s;
+			f32 off;
+
+			zombiesBarrierWhere(i, &b, &s, &off);
+
+			sysLogPrintf(LOG_NOTE, "zombies: zombie %d stuck at %.0f %.0f %.0f, sent back to come again (window %d spot %d, %.0f from it)",
+					i, zchr->prop->pos.x, zchr->prop->pos.y, zchr->prop->pos.z, b, s, off);
+		}
 
 		// no attacker: no points and no drop, as the Nuke's
 		chrDamageByMisc(zchr, 10000, &none, NULL, NULL);
@@ -17836,6 +17983,25 @@ static s32 zombiesBarrierSpotOf(const struct zombiebarrier *bar, s32 botnum)
 	}
 
 	return -1;
+}
+
+// The window a zombie is held at, its spot there and how far it is from the
+// spot's stand (-1 each when at none), for the logs
+static void zombiesBarrierWhere(s32 botnum, s32 *b, s32 *s, f32 *off)
+{
+	struct chrdata *zchr = botnum >= 0 && botnum < g_BotCount ? g_MpBotChrPtrs[botnum] : NULL;
+
+	*b = botnum >= 0 && botnum < MAX_BOTS ? g_ZombieAtBarrier[botnum] : -1;
+	*s = *b >= 0 && *b < g_ZombieNumBarriers ? zombiesBarrierSpotOf(&g_ZombieBarriers[*b], botnum) : -1;
+	*off = -1;
+
+	if (*s >= 0 && zchr && zchr->prop) {
+		const struct coord *at = &g_ZombieBarriers[*b].spots[*s].stand;
+		f32 dx = at->x - zchr->prop->pos.x;
+		f32 dz = at->z - zchr->prop->pos.z;
+
+		*off = sqrtf(dx * dx + dz * dz);
+	}
 }
 
 static void zombiesResetBarriers(void)

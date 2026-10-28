@@ -1057,3 +1057,18 @@ back in over the 15 s to take it. ZOMBIE_PAP_HOLD60 30, ZOMBIE_PAP_WORK60 261
 (was 180), ZOMBIE_PAP_INAT for the sound (it played as the gun set off), the
 offer's creep to fully in (it stopped a quarter out). `--zombies-test-pap F`
 puts player 1's gun in at frame F; watch with `--zombies-test-perk 9`.
+
+## Stuck zombies (2026-10-28)
+
+`--zombies-test-stuck` (player 1 unhurt; a zombie away from windows and player
+1 that has gone under 2 feet in 5 s is logged once a spot, with its room and
+command) over 90 s on five arenas. What it found: round_spawn_failsafe()'s 30
+second look sent back zombies swiping at a player who stood still - all six on
+Carpark - so a zombie within ZOMBIE_FAILSAFE_FIGHT (330) of a player who is up
+is never counted stuck; and the zombies really stuck, away from every player,
+stood there the whole 30 s, so ZOMBIE_UNSTICK60 (10 s) sends one back sooner
+(killed with no points, put back in the count, as the failsafe). Snags seen
+again and again, for a fix to the arenas' paths some day: Warehouse 3842 95 -727
+(room 45) and 4145 296 1242 (room 44); Complex -2394 107 -1462 (room 31) and
+-4434 67 -1022 (room 20). The failsafe's log names the window and spot a zombie
+was held at, -1 when none.
