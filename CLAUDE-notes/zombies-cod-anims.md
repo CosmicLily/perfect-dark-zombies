@@ -816,3 +816,31 @@ pointer of -1. roomMeshBegin() now leaves a room on the CPU path when its record
 is scratch (gfxAllocationIsScratch()), and a codmap stage starts with three
 times the pool. Any new record the renderer follows a pointer out of, taken
 from gfxAllocate(), needs the same check.
+
+## A mod map's pictures preloaded, a player off the map, and the names (2026-10-27)
+
+**Preload (port/src/mappreload.c).** Choosing a mod map (the arena list, or
+--boot-map) queues its mod's every texture-pack picture for decoding
+(texpackPreloadStage()); they land in texpack's kept store through the frame's
+poll, the same as when first drawn. A box at the bottom right (drawn at the end
+of lvRender(), over menus and matches) shows the map's name and the share kept;
+mappreloadFinish(), at the stage load in pdmain.c, waits for the rest (at most
+30 s). Town: 291 pictures, 190 MB kept, 0.7 s from a cold start - the kept
+store's 512 MB budget (Mod.TexturePackCacheMB) holds it. `--mappreload-show`
+holds the box at half to look at it. The mod's index is built by
+texpackModUse() at the preload: a stage load that mounted the mod's directory
+at another index would rebuild it and drop the kept pictures.
+
+**Off the map.** A player who went through a floor onto something under it, or
+off the map's edge, stands on ground, so the fall net (ground -30000 or a long
+fall) never caught them: from there nothing of the map is drawn (its faces
+point up, or it is past the fog) and the zombies, whose rooms are not in view,
+vanish too - just the sky and the fog colour. zombiesPlayerInBounds() asks the
+waypoints (Black Ops II's path nodes cover every floor a zombie walks): more
+than 300 under the lowest within 1000 of the player, or none within 2500, is
+out; a second out puts them back where they last stood in bounds, and a spot
+out of bounds is never recorded as the one to come back to.
+
+**Names.** The arena tab is "Custom Maps" (arenatabs.c TABKEY_MODS; the flat
+list's group too, setup.c), and an arena whose map name already ends in ")"
+- "Town (BO2)" - is not given its mod's name after it (modloader.c).

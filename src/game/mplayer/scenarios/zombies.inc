@@ -17410,16 +17410,92 @@ static struct coord g_ZombieSafePos[MAX_PLAYERS];
 static RoomNum g_ZombieSafeRooms[MAX_PLAYERS][8];
 static bool g_ZombieSafeHave[MAX_PLAYERS];
 
+/**
+ * Whether a player stands where the map is: the waypoints (Black Ops II's
+ * path nodes, codmap.c) cover every floor a zombie walks, so a player well
+ * below all of those around them has gone through a floor onto something
+ * under it, and one far from any has gone off the map's edge. Either way
+ * nothing of the map is drawn from there (it faces up, or is past the fog).
+ */
+#define ZOMBIE_BOUNDS_NEAR   1000.0f // the waypoints looked at around a player
+#define ZOMBIE_BOUNDS_BELOW  300.0f  // how far under the lowest of them is out
+#define ZOMBIE_BOUNDS_FAR    2500.0f // no waypoint nearer than this is out
+#define ZOMBIE_BOUNDS60      60
+
+static s32 g_ZombieOutOfBounds60[MAX_PLAYERS];
+
+static bool zombiesPlayerInBounds(struct player *player)
+{
+	const struct coord *pos = &player->prop->pos;
+	f32 lowest = 1e30f;
+	f32 nearest2 = 1e30f;
+	s32 i;
+
+	if (!g_PadsFile || g_PadsFile->numpads <= 0) {
+		return true;
+	}
+
+	for (i = 0; i < g_PadsFile->numpads; i++) {
+		struct pad pad;
+		f32 dx;
+		f32 dz;
+		f32 d2;
+
+		padUnpack(i, PADFIELD_POS, &pad);
+		dx = pad.pos.x - pos->x;
+		dz = pad.pos.z - pos->z;
+		d2 = dx * dx + dz * dz;
+
+		if (d2 < nearest2) {
+			nearest2 = d2;
+		}
+
+		if (d2 < ZOMBIE_BOUNDS_NEAR * ZOMBIE_BOUNDS_NEAR && pad.pos.y < lowest) {
+			lowest = pad.pos.y;
+		}
+	}
+
+	if (nearest2 > ZOMBIE_BOUNDS_FAR * ZOMBIE_BOUNDS_FAR) {
+		return false;
+	}
+
+	return lowest > 1e29f || player->vv_manground > lowest - ZOMBIE_BOUNDS_BELOW;
+}
+
 static void zombiesTickFallNet(s32 playernum)
 {
 	struct player *player = g_Vars.players[playernum];
+	bool inbounds;
 
 	if (!player || !player->prop || !player->prop->chr || !codmapStageIs(g_Vars.stagenum)) {
 		return;
 	}
 
-	// standing on real ground: the place to come back to
-	if (!player->isfalling && player->vv_ground > -29999.0f) {
+	// under the map or off its edge for a second: back where they last stood
+	// in it
+	inbounds = zombiesPlayerInBounds(player);
+
+	if (inbounds) {
+		g_ZombieOutOfBounds60[playernum] = 0;
+	} else {
+		g_ZombieOutOfBounds60[playernum] += g_Vars.lvupdate60;
+
+		if (g_ZombieOutOfBounds60[playernum] >= ZOMBIE_BOUNDS60 && g_ZombieSafeHave[playernum]) {
+			sysLogPrintf(LOG_NOTE, "zombies: player %d out of the map at %.0f %.0f %.0f, put back at %.0f %.0f %.0f",
+					playernum, player->prop->pos.x, player->prop->pos.y, player->prop->pos.z,
+					g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
+			g_ZombieOutOfBounds60[playernum] = 0;
+			g_ZombieFall60[playernum] = 0;
+			chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
+					(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+			player->isfalling = false;
+			player->bdeltapos.y = 0;
+			return;
+		}
+	}
+
+	// standing on real ground in the map: the place to come back to
+	if (inbounds && !player->isfalling && player->vv_ground > -29999.0f) {
 		g_ZombieFall60[playernum] = 0;
 		g_ZombieSafePos[playernum] = player->prop->pos;
 		g_ZombieSafePos[playernum].y = player->vv_manground;

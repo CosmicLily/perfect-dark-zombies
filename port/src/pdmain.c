@@ -91,6 +91,7 @@
 #include "gexfront.h"
 #include "modmode.h"
 #include "simnav.h"
+#include "mappreload.h"
 void codmapConvertFromCommandLine(void); // codmap.c
 #include "net/net.h"
 
@@ -659,6 +660,8 @@ void mainLoop(void)
 			}
 		}
 
+		// a mod map's pictures, the rest of what its preload has not done
+		mappreloadFinish(g_StageNum);
 		gfxReset();
 		joyReset();
 		dhudReset();

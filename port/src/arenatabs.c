@@ -267,8 +267,8 @@ static void arenaTabsNameTab(struct arenatab *tab)
 		shortname = LANG_N("GE-X");
 		break;
 	case TABKEY_MODS:
-		full = LANG_N("Mods");
-		shortname = LANG_N("Mods");
+		full = LANG_N("Custom Maps");
+		shortname = LANG_N("Custom");
 		break;
 	default: {
 		// a conversion: its name, or its tag where the name is long

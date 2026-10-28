@@ -306,6 +306,14 @@ void texpackTrace(FILE *f);
 s32 texpackPollDecoded(s32 *out, s32 max);
 
 /**
+ * A mod map's pictures decoded before its match (mappreload.c): queue them all,
+ * and how many of them are in so far. Progress is false with none in hand.
+ */
+s32 texpackPreloadStage(s32 stagenum);
+s32 texpackPreloadProgress(s32 *done, s32 *total);
+void texpackPreloadStop(void);
+
+/**
  * The replacement for one font glyph, named by gDPSetFontGlyphEXT.
  *
  * A glyph is uploaded straight out of the font and has no texture number, so it

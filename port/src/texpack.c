@@ -4281,6 +4281,114 @@ s32 texpackPollDecoded(s32 *out, s32 max)
 	return count;
 }
 
+/**
+ * A mod map's pictures decoded ahead of the match (mappreload.c): every
+ * texture its mod's index has is queued, and they land in the kept store
+ * through the frame's poll as they would when first drawn, so the map does not
+ * open on the game's placeholders and swap them in one by one as the player
+ * looks round. Black Ops II's Town is 291 pictures.
+ */
+static s32 preloadDir = -1;
+
+s32 codmapStageIs(s32 stagenum); // codmap.c
+
+s32 texpackPreloadStage(s32 stagenum)
+{
+	const s32 dir = modloaderGetStageModDirIndex(stagenum);
+	s32 queued = 0;
+	s32 i;
+
+	preloadDir = -1;
+
+	if (dir < 0 || (!loadTextures && !codmapStageIs(stagenum))) {
+		return 0;
+	}
+
+	if (!replaceScanned) {
+		texpackScan();
+	}
+
+	texpackModUse(dir);
+
+	if (modIndexDir != dir || !modReplacePaths) {
+		return 0;
+	}
+
+	texpackAsyncStart();
+
+	if (!jobThread) {
+		return 0;
+	}
+
+	preloadDir = dir;
+
+	SDL_LockMutex(jobLock);
+
+	for (i = 0; i < TEXPACK_MOD_TEXTURES; i++) {
+		const s32 id = TEXPACK_MOD_ID_BASE + i;
+		const s32 keepIndex = texpackKeptIndex(id);
+		s32 j;
+
+		if (!modReplacePaths[i] || (kept && keepIndex >= 0 && kept[keepIndex].rgba)) {
+			continue;
+		}
+
+		for (j = 0; j < TEXPACK_MAX_PENDING; j++) {
+			if (jobs[j].state != TEXPACK_JOB_FREE && jobs[j].texturenum == id) {
+				break;
+			}
+		}
+
+		if (j == TEXPACK_MAX_PENDING) {
+			texpackBacklogAdd(id);
+			queued++;
+		}
+	}
+
+	texpackBacklogRefill();
+	SDL_UnlockMutex(jobLock);
+
+	sysLogPrintf(LOG_NOTE, "texpack: preloading %d picture(s) of %s", queued, fsGetModDirAt(dir));
+
+	return 1;
+}
+
+/**
+ * How far the preload has come: pictures kept of those the mod has. False
+ * when there is none in hand (finished ones included: the caller stops asking).
+ */
+s32 texpackPreloadProgress(s32 *done, s32 *total)
+{
+	s32 i;
+
+	*done = *total = 0;
+
+	if (preloadDir < 0 || modIndexDir != preloadDir || !modReplacePaths) {
+		return 0;
+	}
+
+	for (i = 0; i < TEXPACK_MOD_TEXTURES; i++) {
+		const s32 keepIndex = texpackKeptIndex(TEXPACK_MOD_ID_BASE + i);
+
+		if (!modReplacePaths[i]) {
+			continue;
+		}
+
+		(*total)++;
+
+		if (kept && keepIndex >= 0 && kept[keepIndex].rgba) {
+			(*done)++;
+		}
+	}
+
+	return 1;
+}
+
+void texpackPreloadStop(void)
+{
+	preloadDir = -1;
+}
+
 u8 *texpackLoadReplacement(const void *data, s32 *outWidth, s32 *outHeight)
 {
 	const struct texpackslot *slot;

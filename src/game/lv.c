@@ -145,6 +145,7 @@
 #include "gbiex.h"
 #include "hdpreload.h"
 #include "killfeed.h"
+#include "mappreload.h"
 #endif
 
 extern s32 g_ExitFrame;
@@ -2181,6 +2182,9 @@ Gfx *lvRender(Gfx *gdl)
 	if (recordShowsIndicator()) {
 		gdl = lvRenderRecording(gdl);
 	}
+
+	// A mod map's pictures loading, at the bottom right (mappreload.c)
+	gdl = mappreloadRender(gdl);
 #endif
 
 #if VERSION < VERSION_NTSC_1_0

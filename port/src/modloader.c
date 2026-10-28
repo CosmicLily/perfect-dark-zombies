@@ -673,7 +673,11 @@ static bool modloaderAddStage(s32 modIndex, const char *mapName, const char *mod
 	char label[32];
 	const char *labelName = shown ? shown : mapName;
 	const s32 room = 30 - (s32)strlen(labelName) - 3;
-	if (room >= 4) {
+	const size_t labelLen = strlen(labelName);
+	// a name that already says where it is from, "Town (BO2)", is left as it is
+	if (labelLen > 0 && labelName[labelLen - 1] == ')') {
+		snprintf(label, sizeof(label), "%.30s", labelName);
+	} else if (room >= 4) {
 		snprintf(label, sizeof(label), "%s (%.*s)", labelName, room, modLabel);
 	} else {
 		snprintf(label, sizeof(label), "%.30s", labelName);

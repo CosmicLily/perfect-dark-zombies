@@ -594,7 +594,7 @@ MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, u
 
 #ifndef PLATFORM_N64
 		if (count >= 3) {
-			return (uintptr_t)"Custom\n";
+			return (uintptr_t)"Custom Maps\n";
 		}
 #endif
 
