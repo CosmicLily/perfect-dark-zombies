@@ -43,7 +43,19 @@ enum {
 	ZMCHAR_BOARD_REPAIR = ZMCHAR_BOARD_PULL + 6,   // + board: and coming back
 	ZMCHAR_JUMPUP = ZMCHAR_BOARD_REPAIR + 6,       // + one of 4: up a ledge, by its height (zmcharJumpUp())
 	ZMCHAR_CRAWL_JUMPUP = ZMCHAR_JUMPUP + 4,       // + one of 4: a crawler's
-	ZMCHAR_ANIMCOUNT = ZMCHAR_CRAWL_JUMPUP + 4
+	ZMCHAR_BOX = ZMCHAR_CRAWL_JUMPUP + 4,          // + one of ZMCHAR_BOX_*: the Mystery Box's own (o_zombie_magic_box_*)
+	ZMCHAR_ANIMCOUNT = ZMCHAR_BOX + 6
+};
+
+// The Mystery Box's: its lid up and down, the box going and coming, and the
+// gun's and the teddy bear's rise out of it (their notes the guns' switches)
+enum {
+	ZMCHAR_BOX_OPEN,
+	ZMCHAR_BOX_CLOSE,
+	ZMCHAR_BOX_LEAVE,
+	ZMCHAR_BOX_ARRIVE,
+	ZMCHAR_BOX_WEAPON_RISE,
+	ZMCHAR_BOX_TEDDY_RISE
 };
 
 enum {
@@ -90,6 +102,12 @@ f32 zmcharAnimSpeed(s32 anim);
  * window's sill.
  */
 bool zmcharAnimRoot(s32 anim, f32 frame, f32 pos[3], f32 q[4]);
+
+// A Mystery Box clip's bone at a frame, in the box's own space (inches): its
+// body (lid false: tag_animate and the root's motion) or its lid (j_hinge,
+// local to the body). False when the clip does not move it, pos and q then
+// the rest (0, and no turn)
+bool zmcharAnimBox(s32 anim, f32 frame, bool lid, f32 pos[3], f32 q[4]);
 
 /**
  * The jump down a ledge nearest a drop of inches, a crawler's or not (an

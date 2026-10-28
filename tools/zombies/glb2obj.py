@@ -117,8 +117,15 @@ def main():
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
 
-    src, outdir = sys.argv[1], sys.argv[2]
-    name = sys.argv[3] if len(sys.argv) > 3 else os.path.basename(os.path.normpath(outdir))
+    # --joint NAME: only the triangles that bone carries (each vertex's
+    # heaviest bone), posed as the rest are: a rigid piece of a skinned model
+    # for the game to move by that bone's animation track (the Mystery Box's
+    # lid on j_hinge, its body on tag_animate)
+    args = [a for a in sys.argv[1:] if not a.startswith("--joint=")]
+    only = [a[len("--joint="):] for a in sys.argv[1:] if a.startswith("--joint=")]
+    only = only[0] if only else None
+    src, outdir = args[0], args[1]
+    name = args[2] if len(args) > 2 else os.path.basename(os.path.normpath(outdir))
     glbs = [f for f in os.listdir(src) if f.lower().endswith(".glb")]
 
     if len(glbs) != 1:
@@ -133,6 +140,7 @@ def main():
     identity = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]
     world = {}
     placed = []
+    placednames = {}
 
     def walk(index, parent):
         node = doc["nodes"][index]
@@ -158,7 +166,9 @@ def main():
             ibms = accessor(doc, blob, skin["inverseBindMatrices"]) if "inverseBindMatrices" in skin \
                 else [(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)] * len(skin["joints"])
             joints = [mul(world[j], mat4_rows(ibm)) for j, ibm in zip(skin["joints"], ibms)]
+            jointnames = [doc["nodes"][j].get("name", "") for j in skin["joints"]]
             placed.append((node["mesh"], identity, joints))
+            placednames[len(placed) - 1] = jointnames
         else:
             placed.append((node["mesh"], world[index], None))
 
@@ -219,11 +229,21 @@ def main():
             uvs = accessor(doc, blob, attrs["TEXCOORD_0"]) if "TEXCOORD_0" in attrs else [(0, 0)] * len(pos)
             idx = accessor(doc, blob, prim["indices"]) if "indices" in prim else list(range(len(pos)))
 
+            keep = None
+
             if joints and "JOINTS_0" in attrs and "WEIGHTS_0" in attrs:
                 # each vertex's own matrix: its bones' blended by its weights
                 jids = accessor(doc, blob, attrs["JOINTS_0"])
                 wts = accessor(doc, blob, attrs["WEIGHTS_0"])
                 vmats = []
+
+                if only is not None:
+                    names = placednames.get(mi, [])
+                    keep = []
+
+                    for js, ws in zip(jids, wts):
+                        heaviest = js[max(range(len(ws)), key=lambda k: ws[k])]
+                        keep.append(heaviest < len(names) and names[heaviest] == only)
 
                 for js, ws in zip(jids, wts):
                     total = sum(ws) or 1.0
@@ -262,6 +282,9 @@ def main():
                 out.append("usemtl %s" % mats[prim["material"]][0])
 
             for t in range(0, len(idx) - 2, 3):
+                if only is not None and (keep is None or not keep[idx[t]]):
+                    continue
+
                 # clockwise, as Call of Duty winds them
                 a, c, b = idx[t] + base, idx[t + 1] + base, idx[t + 2] + base
                 out.append("f %d/%d/%d %d/%d/%d %d/%d/%d" % (a, a, a, b, b, b, c, c, c))

@@ -1002,3 +1002,19 @@ Buried's images/) through glb2obj.py into zombies/models/magicbox/: 243 x 67 x
 49 cm. zombiesRenderBoxMesh() draws it over the crate, which stays for
 collision at ZOMBIE_BOX_LENGTH 243; its floor is g_ZombieBoxFloor, and with the
 model the gun floats 40 inches over the floor as Black Ops II floats it.
+
+**The box's own animations** (2026-10-28): its skeleton is tag_origin,
+tag_animate (the body, 794 triangles) and j_hinge (the lid, 519, hinged 17.34
+inches up and 12.26 back). glb2obj.py `--joint=NAME` writes one bone's
+triangles (zombies/models/magicbox_body, magicbox_lid); vmconv.py `anim` writes
+o_zombie_magic_box_{open,close,leave,arrive,weapon_rise,teddy_rise}.zan into
+zombies/characters/, loaded as ZMCHAR_BOX + ZMCHAR_BOX_*. zmchar.c keeps a
+j_hinge track beside tag_animate's; zmcharAnimBox() reads the body's or the
+lid's. zombiesRenderBoxMesh() draws the two pieces rigidly (no skinning: each
+vertex is one bone's), the lid turned about the hinge by j_hinge, both moved by
+tag_animate. Played: open on a buy, close on a take or a timeout, leave after
+the teddy bear (7.5 s, then the poof and the box put at its next place), arrive
+there (5 s, the thud on its box_impact note at frame 140). The guns switch on
+o_zombie_magic_box_weapon_rise's 40 "switch" notes (g_ZombieBoxSwitches). Not
+used: weapon_rise's and teddy_rise's own motion (the gun and the bear keep
+their rise; Black Ops II's script moves the bear with moveto()).

@@ -106,6 +106,7 @@ struct zcanim {
 	struct zctrack tracks[ZMCHAR_MAXBONES]; // by joint
 	struct zctrack delta;   // "@delta": the root's own motion
 	struct zctrack animate; // tag_animate: a board's
+	struct zctrack hinge;   // j_hinge: the Mystery Box's lid
 };
 
 // the joined skeleton: each joint's parent and rest, from whichever model has it first
@@ -193,6 +194,13 @@ static void zmcharAnimName(s32 anim, char *out, s32 size)
 	} else if (anim < ZMCHAR_CRAWL_JUMPUP) {
 		snprintf(out, size, "ai_zombie_jump_up_%d", (s32)g_ZmcharJumpUpHeight[anim - ZMCHAR_JUMPUP]);
 	} else {
+		if (anim >= ZMCHAR_BOX) {
+			static const char *const box[6] = { "open", "close", "leave", "arrive", "weapon_rise", "teddy_rise" };
+
+			snprintf(out, size, "o_zombie_magic_box_%s", box[anim - ZMCHAR_BOX]);
+			return;
+		}
+
 		snprintf(out, size, "ai_zombie_crawl_jump_up_%d", (s32)g_ZmcharJumpUpHeight[anim - ZMCHAR_CRAWL_JUMPUP]);
 	}
 }
@@ -535,6 +543,8 @@ static bool zmcharLoadAnim(struct zcanim *a, s32 anim)
 			track = &a->delta;
 		} else if (strcmp(bone, "tag_animate") == 0) {
 			track = &a->animate;
+		} else if (strcmp(bone, "j_hinge") == 0) {
+			track = &a->hinge;
 		} else {
 			j = zmcharJointByName(bone);
 			track = j >= 0 ? &a->tracks[j] : NULL;
@@ -781,6 +791,39 @@ bool zmcharAnimRoot(s32 anim, f32 frame, f32 pos[3], f32 q[4])
 	}
 
 	if (zmcharSample(a->animate.rot, a->animate.numrot, frame, true, v)) {
+		memcpy(q, v, sizeof(f32) * 4);
+		any = true;
+	}
+
+	return any;
+}
+
+bool zmcharAnimBox(s32 anim, f32 frame, bool lid, f32 pos[3], f32 q[4])
+{
+	const struct zcanim *a;
+	f32 v[4];
+	bool any = false;
+
+	if (!lid) {
+		return zmcharAnimRoot(anim, frame, pos, q);
+	}
+
+	pos[0] = pos[1] = pos[2] = 0;
+	q[0] = q[1] = q[2] = 0;
+	q[3] = 1;
+
+	if (!zmcharReady() || anim < 0 || anim >= ZMCHAR_ANIMCOUNT || !g_ZmcharAnims[anim].ok) {
+		return false;
+	}
+
+	a = &g_ZmcharAnims[anim];
+
+	if (zmcharSample(a->hinge.trans, a->hinge.numtrans, frame, false, v)) {
+		memcpy(pos, v, sizeof(f32) * 3);
+		any = true;
+	}
+
+	if (zmcharSample(a->hinge.rot, a->hinge.numrot, frame, true, v)) {
 		memcpy(q, v, sizeof(f32) * 4);
 		any = true;
 	}

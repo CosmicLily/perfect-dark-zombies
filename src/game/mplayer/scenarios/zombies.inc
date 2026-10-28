@@ -1497,6 +1497,14 @@ static s32 g_ZombieBoxAccessed = 0; // level.chest_accessed: guns it has offered
 static s32 g_ZombieBoxMoves = 0;    // level.chest_moves
 static s32 g_ZombieBoxPaid = 0;     // what the spin now going cost, given back if the teddy bear comes
 static f32 g_ZombieBoxFloor = 0;  // the floor under it (zombiesBoxPutAt())
+
+// The box's own clips playing (zombiesRenderBoxMesh()): its lid's (ZMCHAR_BOX_OPEN or
+// _CLOSE, -1 shut) and its body's (_LEAVE or _ARRIVE, -1 at rest, the lid then
+// the body clip's too), each from when it began
+static s32 g_ZombieBoxLidAnim = -1;
+static s32 g_ZombieBoxLid60 = 0;
+static s32 g_ZombieBoxBodyAnim = -1;
+static s32 g_ZombieBoxBody60 = 0;
 struct zombiemesh;
 static struct zombiemesh *zombiesBoxMesh(void);
 static bool g_ZombieBoxBySale = false; // ... and whether Fire Sale opened it: then it never moves, and is not counted
@@ -12631,6 +12639,7 @@ static s32 zombiesBoxCost(void); // ZOMBIE_BOX_COST, or Fire Sale's
 #define ZOMBIEBOX_OFFER 2
 #define ZOMBIEBOX_TEDDY 3 // the teddy bear over it, then going up (zombiesTickBox())
 #define ZOMBIEBOX_AWAY  4 // gone, to come back at another of its places
+#define ZOMBIEBOX_ARRIVE 5 // come down at its new place (o_zombie_magic_box_arrive)
 
 // Black Ops II's move (_zm_magicbox.gsc): the teddy bear half a second over the
 // box and two more before it goes, 500 inches up over four seconds
@@ -14410,6 +14419,36 @@ static void zombiesBoxGive(s32 playernum, s32 index)
 	setCurrentPlayerNum(prevplayernum);
 }
 
+// The gun over the box changes on o_zombie_magic_box_weapon_rise's "switch"
+// notes (frames at 30 a second): every frame, then every two, three, five...
+static const u8 g_ZombieBoxSwitches[] = {
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20,
+	22, 24, 26, 28, 31, 34, 37, 40, 43, 46, 49, 52, 57, 63, 69, 75, 81, 89, 99, 109,
+};
+
+// The next switch after t60 (60ths into the spin), in 60ths; past the last, never
+static s32 zombiesBoxNextSwitch60(s32 t60)
+{
+	s32 i;
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieBoxSwitches); i++) {
+		if (g_ZombieBoxSwitches[i] * 2 > t60) {
+			return g_ZombieBoxSwitches[i] * 2;
+		}
+	}
+
+	return 0x7fffffff;
+}
+
+// A box clip's length in 60ths (ZMCHAR_BOX_*), 0 when its file is not there
+static s32 zombiesBoxClip60(s32 clip)
+{
+	const s32 anim = ZMCHAR_BOX + clip;
+	const f32 frames = zmcharAnimFrames(anim);
+
+	return frames > 0 ? (s32)(frames * 60 / zmcharAnimRate(anim)) : 0;
+}
+
 /**
  * Whether this spin ends on the teddy bear, as treasure_chest_weapon_spawn()
  * decides it: never before ZOMBIE_BOX_MINUSES guns since it last moved, nor on
@@ -14464,6 +14503,10 @@ static void zombiesTickBox(void)
 		return;
 	}
 
+	// its clips going on
+	g_ZombieBoxLid60 += g_Vars.lvupdate60;
+	g_ZombieBoxBody60 += g_Vars.lvupdate60;
+
 	// --zombies-test-teddy F: at level frame F player 1 spins the box after
 	// eight guns and no move, which Black Ops II's rule makes the teddy bear
 	if (sysArgCheck("--zombies-test-teddy") && g_ZombieBoxState == ZOMBIEBOX_IDLE
@@ -14475,6 +14518,8 @@ static void zombiesTickBox(void)
 		g_ZombiePoints[0] -= g_ZombieBoxPaid;
 		g_ZombieBoxState = ZOMBIEBOX_SPIN;
 		g_ZombieBoxUser = 0;
+		g_ZombieBoxLidAnim = ZMCHAR_BOX + ZMCHAR_BOX_OPEN;
+		g_ZombieBoxLid60 = 0;
 		g_ZombieBoxTime60 = 0;
 		g_ZombieBoxNextSwap60 = 0;
 		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-teddy: the box spun at frame %d, %d places", g_Vars.lvframenum, g_ZombieBoxNumPads);
@@ -14488,7 +14533,7 @@ static void zombiesTickBox(void)
 		g_ZombieNearBox[i] = false;
 
 		if (zombiesPlayerIsUp(i) && g_ZombieDrink60[i] < 0 && g_ZombieNearDowned[i] < 0
-				&& g_ZombieBoxState != ZOMBIEBOX_AWAY) {
+				&& g_ZombieBoxState != ZOMBIEBOX_AWAY && g_ZombieBoxState != ZOMBIEBOX_ARRIVE) {
 			f32 dx = player->prop->pos.x - box->pos.x;
 			f32 dy = player->prop->pos.y - box->pos.y;
 			f32 dz = player->prop->pos.z - box->pos.z;
@@ -14539,6 +14584,9 @@ static void zombiesTickBox(void)
 			zombiesPlayCodSound(ZMSFX_BOX_MUSIC, box);
 			zombiesPlayCodSound(ZMSFX_BOX_SPIN, box);
 
+			// the lid up (o_zombie_magic_box_open)
+			g_ZombieBoxLidAnim = ZMCHAR_BOX + ZMCHAR_BOX_OPEN;
+			g_ZombieBoxLid60 = 0;
 			g_ZombieBoxState = ZOMBIEBOX_SPIN;
 			g_ZombieBoxUser = i;
 			g_ZombieBoxTime60 = 0;
@@ -14589,7 +14637,8 @@ static void zombiesTickBox(void)
 			g_ZombieBoxState = ZOMBIEBOX_OFFER;
 			g_ZombieBoxTime60 = 0;
 		} else if (g_ZombieBoxTime60 >= g_ZombieBoxNextSwap60) {
-			// round they go, slowing: every 4 60ths at first, every 20 at the end
+			// round they go, slowing, on o_zombie_magic_box_weapon_rise's 40
+			// "switch" notes
 			s32 index = zombiesBoxPick(-1, false);
 
 			if (index >= 0) {
@@ -14601,7 +14650,7 @@ static void zombiesTickBox(void)
 				zombiesPlaySound(SFX_PICKUP_AMMO, 1.6f);
 			}
 
-			g_ZombieBoxNextSwap60 = g_ZombieBoxTime60 + 4 + 16 * g_ZombieBoxTime60 / ZOMBIE_BOX_SPIN60;
+			g_ZombieBoxNextSwap60 = zombiesBoxNextSwitch60(g_ZombieBoxTime60);
 		}
 		break;
 	case ZOMBIEBOX_OFFER:
@@ -14614,6 +14663,8 @@ static void zombiesTickBox(void)
 
 			zombiesBoxGive(g_ZombieBoxUser, g_ZombieBoxShown);
 			zombiesCodOr(ZMSFX_BOX_CLOSE, box, SFX_PICKUP_AMMO, 1.0f);
+			g_ZombieBoxLidAnim = ZMCHAR_BOX + ZMCHAR_BOX_CLOSE;
+			g_ZombieBoxLid60 = 0;
 
 			zombiesBoxHideGun();
 			g_ZombieBoxState = ZOMBIEBOX_IDLE;
@@ -14621,6 +14672,8 @@ static void zombiesTickBox(void)
 		} else if (g_ZombieBoxTime60 >= ZOMBIE_BOX_OFFER60) {
 			// not taken: back into the box, the lid down
 			zombiesPlayCodSound(ZMSFX_BOX_CLOSE, box);
+			g_ZombieBoxLidAnim = ZMCHAR_BOX + ZMCHAR_BOX_CLOSE;
+			g_ZombieBoxLid60 = 0;
 			zombiesBoxHideGun();
 			g_ZombieBoxState = ZOMBIEBOX_IDLE;
 			g_ZombieBoxUser = -1;
@@ -14637,10 +14690,8 @@ static void zombiesTickBox(void)
 		}
 
 		if (g_ZombieBoxTime60 >= ZOMBIE_BOX_TEDDYWAIT60 + ZOMBIE_BOX_TEDDYFLY60) {
-			// gone in a puff, to come back at another of its places
-			zombiesPlayCodSound(ZMSFX_BOX_POOF, box);
+			// the bear gone: the box leaves, its own clip (o_zombie_magic_box_leave)
 			zombiesBoxHideGun();
-			propDisable(box);
 
 			if (g_ZombieBoxNumPads > 1) {
 				s32 next = rngRandom() % (g_ZombieBoxNumPads - 1);
@@ -14648,25 +14699,56 @@ static void zombiesTickBox(void)
 				g_ZombieBoxAt = next >= g_ZombieBoxAt ? next + 1 : next;
 			}
 
+			g_ZombieBoxBodyAnim = ZMCHAR_BOX + ZMCHAR_BOX_LEAVE;
+			g_ZombieBoxBody60 = 0;
 			g_ZombieBoxState = ZOMBIEBOX_AWAY;
 			g_ZombieBoxTime60 = 0;
 			g_ZombieBoxUser = -1;
 		}
 		break;
 	}
-	case ZOMBIEBOX_AWAY:
+	case ZOMBIEBOX_AWAY: {
+		const s32 leave60 = zombiesBoxClip60(ZMCHAR_BOX_LEAVE);
+
 		g_ZombieBoxTime60 += g_Vars.lvupdate60;
 
-		if (g_ZombieBoxTime60 >= ZOMBIE_BOX_AWAY60) {
+		// its leaving played out (or Black Ops II's seven seconds without
+		// it): gone in a puff, and coming down at its next place
+		if (g_ZombieBoxTime60 >= (leave60 > 0 ? leave60 : ZOMBIE_BOX_AWAY60)) {
+			zombiesPlayCodSound(ZMSFX_BOX_POOF, box);
 			zombiesBoxPutAt(g_ZombieBoxPads[g_ZombieBoxAt]);
-			propEnable(box);
-			zombiesPlayCodSound(ZMSFX_BOX_LAND, box);
-			g_ZombieBoxState = ZOMBIEBOX_IDLE;
+			g_ZombieBoxBodyAnim = ZMCHAR_BOX + ZMCHAR_BOX_ARRIVE;
+			g_ZombieBoxBody60 = 0;
+			g_ZombieBoxLidAnim = -1;
+			g_ZombieBoxState = ZOMBIEBOX_ARRIVE;
 			g_ZombieBoxTime60 = 0;
-			sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box is back, at its place %d (pad %d) at %.0f %.0f %.0f",
+			sysLogPrintf(LOG_NOTE, "zombies: the Mystery Box is coming down at its place %d (pad %d) at %.0f %.0f %.0f",
 					g_ZombieBoxAt, g_ZombieBoxPads[g_ZombieBoxAt], box->pos.x, box->pos.y, box->pos.z);
 		}
 		break;
+	}
+	case ZOMBIEBOX_ARRIVE: {
+		const s32 arrive60 = zombiesBoxClip60(ZMCHAR_BOX_ARRIVE);
+		const s32 before = g_ZombieBoxTime60;
+
+		g_ZombieBoxTime60 += g_Vars.lvupdate60;
+
+		// its box_impact note (frame 140): the thud as it lands
+		if (before < 280 && g_ZombieBoxTime60 >= 280) {
+			zombiesPlayCodSound(ZMSFX_BOX_LAND, box);
+		}
+
+		if (g_ZombieBoxTime60 >= arrive60) {
+			if (arrive60 <= 0) {
+				zombiesPlayCodSound(ZMSFX_BOX_LAND, box);
+			}
+
+			g_ZombieBoxBodyAnim = -1;
+			g_ZombieBoxState = ZOMBIEBOX_IDLE;
+			g_ZombieBoxTime60 = 0;
+		}
+		break;
+	}
 	}
 
 	zombiesBoxPlaceGun();
@@ -15106,12 +15188,110 @@ static struct zombiemesh *zombiesBoxMesh(void)
 	return zm->gdl ? zm : NULL;
 }
 
+// The box's two pieces, each the triangles one bone of Black Ops II's box
+// carries (tools/zombies/glb2obj.py --joint=): its body on tag_animate and its
+// lid on j_hinge, hinged at the back of its top (17.34 inches up, 12.26 back)
+static struct zombiemesh g_ZombieBoxBodyMesh;
+static struct zombiemesh g_ZombieBoxLidMesh;
+
+static const f32 g_ZombieBoxHinge[3] = { 0, -12.261469f, 17.340683f };
+
+// A quaternion's turn of v (x y z w, Call of Duty's)
+static void zombiesBoxTurn(const f32 q[4], const f32 v[3], f32 out[3])
+{
+	const f32 tx = 2 * (q[1] * v[2] - q[2] * v[1]);
+	const f32 ty = 2 * (q[2] * v[0] - q[0] * v[2]);
+	const f32 tz = 2 * (q[0] * v[1] - q[1] * v[0]);
+
+	out[0] = v[0] + q[3] * tx + (q[1] * tz - q[2] * ty);
+	out[1] = v[1] + q[3] * ty + (q[2] * tx - q[0] * tz);
+	out[2] = v[2] + q[3] * tz + (q[0] * ty - q[1] * tx);
+}
+
+/**
+ * Where a piece's vertex goes this frame, in the mesh's own units (the
+ * centimetres of zombiesMeshVertex()'s y up and front +z, ZOMBIE_MESH_FIXED to
+ * the centimetre): taken back to Call of Duty's box space (inches, z up), moved
+ * by the body's track (tag_animate and the root's motion) and, for the lid,
+ * first turned about its hinge by j_hinge's, and brought back
+ */
+static void zombiesBoxPose(const f32 in[3], bool lid, const f32 bp[3], const f32 bq[4],
+		const f32 hp[3], const f32 hq[4], f32 out[3])
+{
+	const f32 k = ZOMBIE_MESH_FIXED * 2.54f;
+	f32 p[3] = { in[0] / k, -in[2] / k, in[1] / k };
+	f32 t[3];
+	s32 i;
+
+	if (lid) {
+		for (i = 0; i < 3; i++) {
+			t[i] = p[i] - g_ZombieBoxHinge[i];
+		}
+
+		zombiesBoxTurn(hq, t, p);
+
+		for (i = 0; i < 3; i++) {
+			p[i] += hp[i];
+		}
+	}
+
+	zombiesBoxTurn(bq, p, t);
+
+	for (i = 0; i < 3; i++) {
+		t[i] += bp[i];
+	}
+
+	out[0] = t[0] * k;
+	out[1] = t[2] * k;
+	out[2] = -t[1] * k;
+}
+
+// A piece's matrix this frame: zombiesBoxPose() of the origin and the three axes
+static void zombiesBoxPieceMtx(bool lid, const f32 bp[3], const f32 bq[4], const f32 hp[3], const f32 hq[4], Mtxf *out)
+{
+	static const f32 axes[4][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	f32 at[4][3];
+	s32 i;
+	s32 j;
+
+	for (i = 0; i < 4; i++) {
+		zombiesBoxPose(axes[i], lid, bp, bq, hp, hq, at[i]);
+	}
+
+	mtx4LoadIdentity(out);
+
+	for (j = 0; j < 3; j++) {
+		for (i = 0; i < 3; i++) {
+			out->m[j][i] = at[j + 1][i] - at[0][i];
+		}
+
+		out->m[3][j] = at[0][j];
+	}
+}
+
+// A clip's frame, t60 60ths in, held at its last
+static f32 zombiesBoxClipFrame(s32 anim, s32 t60)
+{
+	const f32 frames = zmcharAnimFrames(anim);
+	f32 frame = t60 * zmcharAnimRate(anim) / 60.0f;
+
+	return frame > frames - 1 ? frames - 1 : frame;
+}
+
 static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defaultobj *obj)
 {
 	struct zombiemesh *zm;
+	struct zombiemesh *body = &g_ZombieBoxBodyMesh;
+	struct zombiemesh *lid = &g_ZombieBoxLidMesh;
+	f32 bp[3] = { 0, 0, 0 };
+	f32 bq[4] = { 0, 0, 0, 1 };
+	f32 hp[3];
+	f32 hq[4] = { 0, 0, 0, 1 };
 	f32 centre[3];
 	f32 pos[3];
 	Mtxf world;
+	Mtxf piece;
+	Mtxf both;
 	Mtxf *mtx;
 	s32 i;
 	s32 j;
@@ -15124,6 +15304,12 @@ static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defa
 		return true;
 	}
 
+	if (!body->tried) {
+		zombiesMeshBuildFrom(body, "$E/zombies/models/magicbox_body/magicbox_body.obj", "the Mystery Box's body");
+		zombiesMeshBuildFrom(lid, "$E/zombies/models/magicbox_lid/magicbox_lid.obj", "the Mystery Box's lid");
+	}
+
+	// placed by the whole box's own size, as without its pieces
 	centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
 	centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
 	centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
@@ -15144,10 +15330,46 @@ static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defa
 		world.m[3][i] = pos[i] - (world.m[0][i] * centre[0] + world.m[1][i] * centre[1] + world.m[2][i] * centre[2]);
 	}
 
-	mtx = gfxAllocateMatrix();
-	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+	if (body->gdl == NULL || lid->gdl == NULL) {
+		mtx = gfxAllocateMatrix();
+		mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+		renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
 
-	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
+		return true;
+	}
+
+	// the clip playing: the body's (leaving, coming), which moves the lid
+	// too, else the lid's own (up, down); a lid at rest is shut
+	memcpy(hp, g_ZombieBoxHinge, sizeof(hp));
+
+	if (g_ZombieBoxBodyAnim >= 0) {
+		const f32 frame = zombiesBoxClipFrame(g_ZombieBoxBodyAnim, g_ZombieBoxBody60);
+
+		zmcharAnimBox(g_ZombieBoxBodyAnim, frame, false, bp, bq);
+
+		if (!zmcharAnimBox(g_ZombieBoxBodyAnim, frame, true, hp, hq)) {
+			memcpy(hp, g_ZombieBoxHinge, sizeof(hp));
+		}
+	} else if (g_ZombieBoxLidAnim >= 0) {
+		const f32 frame = zombiesBoxClipFrame(g_ZombieBoxLidAnim, g_ZombieBoxLid60);
+
+		if (!zmcharAnimBox(g_ZombieBoxLidAnim, frame, true, hp, hq)) {
+			memcpy(hp, g_ZombieBoxHinge, sizeof(hp));
+		}
+	}
+
+	// a hinge track that only turns leaves the hinge where it rests
+	if (hp[0] == 0 && hp[1] == 0 && hp[2] == 0) {
+		memcpy(hp, g_ZombieBoxHinge, sizeof(hp));
+	}
+
+	for (i = 0; i < 2; i++) {
+		zombiesBoxPieceMtx(i == 1, bp, bq, hp, hq, &piece);
+		mtx4MultMtx4(&world, &piece, &both);
+		mtx = gfxAllocateMatrix();
+		mtx4MultMtx4(camGetWorldToScreenMtxf(), &both, mtx);
+		renderdata->gdl = zombiesBottleDraw(renderdata->gdl, i == 1 ? lid : body, mtx, 0xff, 0xff, 0xff);
+	}
 
 	return true;
 }
