@@ -877,9 +877,28 @@ Changed to theirs:
   meleedamage 60 of a player's 100 (ZOMBIE_REACH_BLOW 0.60, was 0.51; still
   two hits down, five with Juggernog's 250).
 
-Not compared yet: _zm_blockers.gsc's tearing and rebuilding, _zm_zonemgr.gsc's
-spawners by zone, and the player's health regeneration (_zm_playerhealth.gsc,
-not downloaded).
+**Windows** (_zm_blockers.gsc): a board goes up the moment Interact is held,
+then one a second (do_post_chunk_repair_delay(), ZOMBIE_BARRIER_FIX60 60, was
+33), and Speed Cola does not quicken it: the wait takes no perk, and
+replace_chunk()'s quicker board asks for "speciality_fastreload", a perk
+nobody has. Ten points a board, counted first and paid while under the
+round's cap, 50 times the round up to 500 (it was 500 from round 1). Tearing
+is the tear animations' own pace already. Not done: BO2's windows have several
+attack spots (getzbarriernumattackslots(), from the barrier's asset, so how
+many is not in the scripts), ours one zombie at a time.
+
+**Spawning** (_zm_zonemgr.gsc's manage_zones()): zombies come in only in the
+active zones, the ones a player stands in and those joined to one by a door
+bought (zombiesFindActiveComps(), the player's zone by the nearest waypoint),
+not every zone opened so far. A player's own spawn and the zombies' scatter
+when everyone is down still use every open zone. With no pad in an active zone
+the open ones are used, never one behind a shut door. An arena without doors is
+one zone: there the barriers near a player are still preferred. The log says
+"player 1 is in zone N" as it changes. Carpark (--boot-stage 0x3d) has locked
+doors to try it on.
+
+Not compared yet: the player's health regeneration (_zm_playerhealth.gsc, not
+downloaded).
 
 Testing Zombies on a stock arena: `--boot-stage 0x3c --mpsims 1 --mpscenario 6`
 (Warehouse). `--boot-map` knows only mod maps, and --mpscenario does nothing

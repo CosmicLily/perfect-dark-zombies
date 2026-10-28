@@ -12283,13 +12283,13 @@ void botApplyHold(struct chrdata *chr, struct coord *pos, RoomNum *room, f32 ang
 
 static s32 g_ZombieScatterPad[MAX_BOTS]; // the spawn pad's index each went to, -1 for none
 
-static s32 zombiesOpenSpawnPads(s16 *out);
+static s32 zombiesOpenSpawnPads(s16 *out, bool active);
 
 static void zombiesScatter(s32 botnum, struct chrdata *zchr)
 {
 	// the pads in the zones open so far: none behind a door still shut
 	s16 pads[MAX_SPAWNPOINTS];
-	s32 n = zombiesOpenSpawnPads(pads);
+	s32 n = zombiesOpenSpawnPads(pads, false);
 	s32 pick = g_ZombieScatterPad[botnum];
 	f32 bestfar = -1;
 	s32 tries;
@@ -15837,9 +15837,9 @@ static void zombiesTickWallBuys(void)
 #define ZOMBIE_BARRIER_OPEN   (32 * ZOMBIE_COD_INCH) // the opening, half its width
 #define ZOMBIE_BARRIER_TOP    (ZOMBIE_BARRIER_SILL + 60 * ZOMBIE_COD_INCH) // its top over the floor
 #define ZOMBIE_BARRIER_TEAR60 54      // a board torn off this often
-#define ZOMBIE_BARRIER_FIX60  33      // and put back this often, Interact held
+#define ZOMBIE_BARRIER_FIX60  60      // and put back this often, Interact held: do_post_chunk_repair_delay()'s second
 #define ZOMBIE_BARRIER_POINTS 10
-#define ZOMBIE_BARRIER_CAP    500     // Call of Duty's rebuild_barrier_cap_per_round
+#define ZOMBIE_BARRIER_CAP    500     // rebuild_barrier_cap_per_round at the most: 50 a round to round 10
 #define ZOMBIE_BARRIER_NEAR   3000.0f // a zombie goes to a barrier this near a player, when there is one
 #define ZOMBIE_BOARD_FALL60   36      // a torn board falling
 #define ZOMBIE_BOARD_FIX60    14      // a board coming back on
@@ -16123,17 +16123,124 @@ static bool zombiesCompOpen(s32 comp)
 	return g_ZombieNumDoors == 0 || comp < 0 || comp >= ZOMBIE_WP_MAX || g_ZombieCompOpen[comp];
 }
 
-// The spawn pads in the zones open so far; the whole list when none are
-static s32 zombiesOpenSpawnPads(s16 *out)
+/**
+ * Black Ops II's active zones (_zm_zonemgr.gsc's manage_zones()): the zones a
+ * player stands in, and those joined to one of them by a door already
+ * bought. Zombies come in only there - not at every zone opened so far, which
+ * sent them in from the far end of the map once a few doors were open.
+ * Worked out once for each zombie sent in (zombiesBarrierPick() and
+ * zombiesOpenSpawnPads() ask it).
+ */
+#define ZOMBIE_ACTIVE_MAX (MAX_PLAYERS * (1 + ZOMBIE_DOOR_MAX))
+
+static s32 g_ZombieActiveComps[ZOMBIE_ACTIVE_MAX];
+static s32 g_ZombieNumActiveComps = -1; // -1 every open zone counts
+
+struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms);
+
+static void zombiesFindActiveComps(void)
+{
+	s32 occupied[MAX_PLAYERS];
+	s32 numoccupied = 0;
+	s32 p;
+	s32 d;
+
+	g_ZombieNumActiveComps = -1;
+
+	if (g_ZombieNumDoors == 0 || g_StageSetup.waypoints == NULL) {
+		return;
+	}
+
+	for (p = 0; p < PLAYERCOUNT(); p++) {
+		struct prop *pp = g_Vars.players[p] ? g_Vars.players[p]->prop : NULL;
+		struct waypoint *wp;
+		s32 index;
+
+		if (!pp || !zombiesPlayerIsUp(p)) {
+			continue;
+		}
+
+		wp = waypointFindClosestToPos(&pp->pos, pp->rooms);
+		index = wp ? wp - g_StageSetup.waypoints : -1;
+
+		if (index >= 0 && index < ZOMBIE_WP_MAX) {
+			occupied[numoccupied++] = g_ZombieWpComp[index];
+		}
+	}
+
+	if (numoccupied == 0) {
+		return;
+	}
+
+	g_ZombieNumActiveComps = 0;
+
+	// said when the zone a player stands in changes
+	{
+		static s32 lastzone = -2;
+
+		if (occupied[0] != lastzone) {
+			lastzone = occupied[0];
+			sysLogPrintf(LOG_NOTE, "zombies: player 1 is in zone %d; zombies come in there and through its bought doors",
+					occupied[0]);
+		}
+	}
+
+	for (p = 0; p < numoccupied; p++) {
+		g_ZombieActiveComps[g_ZombieNumActiveComps++] = occupied[p];
+
+		for (d = 0; d < g_ZombieNumDoors && g_ZombieNumActiveComps < ZOMBIE_ACTIVE_MAX; d++) {
+			const struct zombiedoor *door = &g_ZombieDoors[d];
+
+			if (!door->open) {
+				continue;
+			}
+
+			if (door->comps[0] == occupied[p]) {
+				g_ZombieActiveComps[g_ZombieNumActiveComps++] = door->comps[1];
+			} else if (door->comps[1] == occupied[p]) {
+				g_ZombieActiveComps[g_ZombieNumActiveComps++] = door->comps[0];
+			}
+		}
+	}
+}
+
+static bool zombiesCompActive(s32 comp)
+{
+	s32 i;
+
+	if (g_ZombieNumActiveComps < 0 || comp < 0) {
+		return zombiesCompOpen(comp);
+	}
+
+	for (i = 0; i < g_ZombieNumActiveComps; i++) {
+		if (g_ZombieActiveComps[i] == comp) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// The spawn pads in the zones open so far, or with active only those in the
+// zones active now (a zombie coming in); the whole list when none are
+static s32 zombiesOpenSpawnPads(s16 *out, bool active)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
 	s32 count = 0;
 	s32 i;
 
 	for (i = 0; i < n; i++) {
-		if (zombiesCompOpen(zombiesPadComp(g_SpawnPoints[i]))) {
+		const s32 comp = zombiesPadComp(g_SpawnPoints[i]);
+
+		if (active ? zombiesCompActive(comp) : zombiesCompOpen(comp)) {
 			out[count++] = g_SpawnPoints[i];
 		}
+	}
+
+	// no pad in a zone active now: those open so far, never one behind a
+	// door still shut
+	if (count == 0 && active) {
+		return zombiesOpenSpawnPads(out, false);
 	}
 
 	if (count == 0) {
@@ -16841,7 +16948,7 @@ bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms
 		return false;
 	}
 
-	n = zombiesOpenSpawnPads(pads);
+	n = zombiesOpenSpawnPads(pads, prop && prop->type == PROPTYPE_CHR && prop->chr && prop->chr->aibot);
 
 	if (n <= 0) {
 		return false;
@@ -17270,6 +17377,9 @@ static s32 zombiesBarrierPick(void)
 	s32 b;
 	s32 p;
 
+	// the zones a zombie may come in at, for this one's barrier or pad
+	zombiesFindActiveComps();
+
 	if (g_ZombieNumBarriers == 0 || rngRandom() % 4 == 0) {
 		return -1;
 	}
@@ -17278,7 +17388,7 @@ static s32 zombiesBarrierPick(void)
 		struct zombiebarrier *bar = &g_ZombieBarriers[b];
 		bool isnear = false;
 
-		if (!bar->placed || bar->zombie >= 0 || !zombiesCompOpen(bar->comp)) {
+		if (!bar->placed || bar->zombie >= 0 || !zombiesCompActive(bar->comp)) {
 			continue;
 		}
 
@@ -17301,7 +17411,9 @@ static s32 zombiesBarrierPick(void)
 		}
 	}
 
-	if (numnear > 0) {
+	// Black Ops II picks among its active zones' spawners at random; an arena
+	// with no doors is one zone, so there the nearer barriers are kept to
+	if (numnear > 0 && g_ZombieNumActiveComps < 0) {
 		return near[rngRandom() % numnear];
 	}
 
@@ -17839,13 +17951,16 @@ static void zombiesTickBarriers(void)
 		}
 
 		if (g_ZombieNearBarrier[i] < 0 || !zombiesHoldingUse(i)) {
-			g_ZombieFix60[i] = 0;
+			// the first board goes up the moment it is pressed
+			g_ZombieFix60[i] = ZOMBIE_BARRIER_FIX60;
 			continue;
 		}
 
-		// a board at a time while it is held; with Speed Cola twice as fast,
-		// as Call of Duty's rebuilds
-		g_ZombieFix60[i] += g_Vars.lvupdate60 * (zombiesPlayerHasPerk(i, ZOMBIEPERK_SPEEDCOLA) ? 2 : 1);
+		// a board a second while it is held. Not quicker with Speed Cola:
+		// Black Ops II's wait after each board takes no perk, and the quicker
+		// board it means to give Speed Cola asks for "speciality_fastreload",
+		// which nobody has (_zm_blockers.gsc's replace_chunk())
+		g_ZombieFix60[i] += g_Vars.lvupdate60;
 
 		if (g_ZombieFix60[i] >= ZOMBIE_BARRIER_FIX60) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieNearBarrier[i]];
@@ -17853,8 +17968,11 @@ static void zombiesTickBarriers(void)
 			g_ZombieFix60[i] = 0;
 			zombiesBarrierSet(g_ZombieNearBarrier[i], bar->boards + 1);
 
-			if (g_ZombieRebuilt[i] < ZOMBIE_BARRIER_CAP) {
-				g_ZombieRebuilt[i] += ZOMBIE_BARRIER_POINTS;
+			// handle_post_board_repair_rewards(): counted first, paid while
+			// under the round's cap, 50 a round to 500
+			g_ZombieRebuilt[i] += ZOMBIE_BARRIER_POINTS;
+
+			if (g_ZombieRebuilt[i] < MIN(50 * g_ZombieRound, ZOMBIE_BARRIER_CAP)) {
 				g_ZombiePoints[i] += ZOMBIE_BARRIER_POINTS;
 				g_ZombieTeamEarned += ZOMBIE_BARRIER_POINTS;
 				zombiesAddPopup(i, ZOMBIE_BARRIER_POINTS);
