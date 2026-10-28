@@ -1072,3 +1072,13 @@ again and again, for a fix to the arenas' paths some day: Warehouse 3842 95 -727
 (room 45) and 4145 296 1242 (room 44); Complex -2394 107 -1462 (room 31) and
 -4434 67 -1022 (room 20). The failsafe's log names the window and spot a zombie
 was held at, -1 when none.
+
+**The knife no longer reloads the gun** (2026-10-28): the quick knife swaps to
+the Combat Knife and back, and Perfect Dark's unequip puts a gun's loaded
+rounds back in the reserve (bondgun.c, the loop over loadedammo) while the
+equip loads a full magazine out of it (bgun0f098df8(); only the magnums,
+shotgun and crossbow remember theirs, WEAPONFLAG2_UNEQUIPPEDRELOAD). Each
+hand's loaded count is kept as the knife comes out (g_ZombieKnifeLoaded) and
+zombiesKnifeKeepLoaded() puts the magazine back to it once the gun is up again,
+the rest back in the reserve. `--zombies-test-knife F`: 3 loaded, a knife at
+frame F; the log says what it came back with (8) and was put back to (3).

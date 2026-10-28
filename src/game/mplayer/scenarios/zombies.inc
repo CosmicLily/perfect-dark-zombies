@@ -10939,6 +10939,7 @@ static s32 g_ZombieKnifeStage[MAX_PLAYERS];    // ZKNIFE_*
 static bool g_ZombieKnifeAttacked[MAX_PLAYERS]; // the slash has started
 static bool g_ZombieKnifeStruck[MAX_PLAYERS];   // and its blow has been dealt
 static s32 g_ZombieKnifeBack[MAX_PLAYERS][2];   // the right hand's gun and the left's, to go back to
+static s32 g_ZombieKnifeLoaded[MAX_PLAYERS][2]; // ... and what each had loaded, -1 not known
 
 static bool zombiesCrossed(s32 prev, s32 now, s32 at);
 static bool zombiesPlayerIsUp(s32 playernum);
@@ -11088,6 +11089,12 @@ void zombiesQuickMelee(void)
 	if (g_ZombieKnifeBack[playernum][0] < WEAPON_UNARMED || g_ZombieKnifeBack[playernum][0] == WEAPON_COMBATKNIFE) {
 		g_ZombieKnifeBack[playernum][0] = WEAPON_UNARMED;
 	}
+
+	// what the gun has loaded, kept: Perfect Dark refills a gun's magazine from the
+	// reserve when it comes back into the hand, and every knife was a reload
+	// (zombiesKnifeKeepLoaded())
+	g_ZombieKnifeLoaded[playernum][0] = ctrl->switchtoweaponnum < 0 ? g_Vars.currentplayer->hands[HAND_RIGHT].loadedammo[0] : -1;
+	g_ZombieKnifeLoaded[playernum][1] = ctrl->switchtoweaponnum < 0 && ctrl->dualwielding ? g_Vars.currentplayer->hands[HAND_LEFT].loadedammo[0] : -1;
 
 	g_ZombieKnifeStage[playernum] = ZKNIFE_IN;
 	g_ZombieKnife60[playernum] = 1;
@@ -11359,6 +11366,38 @@ bool zombiesKnifeStrike(bool landing)
 	return true;
 }
 
+/**
+ * The gun back in the hand after the knife, its magazine as it was: Perfect
+ * Dark's unequip put the rounds back in the reserve and the equip loaded a full
+ * magazine out of it (bgun0f098df8()), so a knife reloaded the gun. What the
+ * equip put in over what was there goes back to the reserve, once
+ */
+static void zombiesKnifeKeepLoaded(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+	s32 h;
+
+	for (h = 0; h < 2; h++) {
+		struct hand *hand = &player->hands[h];
+		const s32 had = g_ZombieKnifeLoaded[playernum][h];
+
+		if (had < 0 || hand->gset.weaponnum != g_ZombieKnifeBack[playernum][h] || hand->ammotypes[0] <= 0) {
+			continue;
+		}
+
+		if (sysArgCheck("--zombies-test-knife")) {
+			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-knife: hand %d back with %d loaded, put back to %d", h, hand->loadedammo[0], had);
+		}
+
+		if (hand->loadedammo[0] > had) {
+			player->ammoheldarr[hand->ammotypes[0]] += hand->loadedammo[0] - had;
+			hand->loadedammo[0] = had;
+		}
+
+		g_ZombieKnifeLoaded[playernum][h] = -1;
+	}
+}
+
 static void zombiesTickKnife(s32 playernum)
 {
 	const s32 prevplayernum = g_Vars.currentplayernum;
@@ -11368,6 +11407,18 @@ static void zombiesTickKnife(s32 playernum)
 	struct hand *hand = &player->hands[HAND_RIGHT];
 	bool settled;
 	bool late;
+
+	// --zombies-test-knife F: at level frame F player 1's magazine is down to 3
+	// rounds and they knife; zombiesKnifeKeepLoaded() says what it comes back as
+	if (playernum == 0 && sysArgCheck("--zombies-test-knife") && g_Vars.lvframenum == sysArgGetInt("--zombies-test-knife", 300)) {
+		const s32 prev = g_Vars.currentplayernum;
+
+		player->hands[HAND_RIGHT].loadedammo[0] = 3;
+		setCurrentPlayerNum(0);
+		zombiesQuickMelee();
+		setCurrentPlayerNum(prev);
+		sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-knife: knifing with 3 loaded");
+	}
 
 	if (g_ZombieKnifeEnter60[playernum] > 0) {
 		g_ZombieKnifeEnter60[playernum] -= g_Vars.lvupdate60;
@@ -11463,6 +11514,11 @@ static void zombiesTickKnife(s32 playernum)
 			}
 		}
 	} else if (stage == ZKNIFE_BACK) {
+		// the gun back up: its magazine as it was
+		if (ctrl->weaponnum == g_ZombieKnifeBack[playernum][0] && ctrl->switchtoweaponnum < 0) {
+			zombiesKnifeKeepLoaded(playernum);
+		}
+
 		if ((settled && ctrl->weaponnum != WEAPON_COMBATKNIFE) || late) {
 			zombiesKnifeCancel(playernum);
 
