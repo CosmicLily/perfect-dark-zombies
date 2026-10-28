@@ -1376,6 +1376,26 @@ bool bgunHandHasHands(s32 handnum)
 
 	return ctrl->handmodeldef != NULL && bgunWeaponHasHands(weaponnum);
 }
+
+/**
+ * Zombies' hands for a gun that has none (the RC-P120, a GoldenEye gun with
+ * its glove): the right hand's model is set up all the same, and its command
+ * list kept here rather than in unk0dd0, which would draw it on the gun.
+ * Black Ops II's perk drink and grenade throw are drawn on it (zombies.inc,
+ * zombiesDrinkHandModel()). Without it they fell back to the HUD's bottle.
+ */
+static uintptr_t *g_BgunSpareHandCmds[MAX_PLAYERS];
+
+static bool bgunHandsKeptSpare(s32 handnum)
+{
+	return handnum == HAND_RIGHT && zombiesIsActive();
+}
+
+// the current player's, or NULL
+uintptr_t *bgunSpareHandCmds(void)
+{
+	return g_BgunSpareHandCmds[g_Vars.currentplayernum];
+}
 #endif
 
 s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo *info, struct hand *hand)
@@ -5297,7 +5317,9 @@ void bgunTickMasterLoad(void)
 					hashands = false;
 
 #ifndef PLATFORM_N64
-					if (bgunWeaponHasHands(newweaponnum)) {
+					// Zombies draws a perk's drink and a grenade's throw on the
+					// player's own hands, whatever the gun (zombies.inc)
+					if (bgunWeaponHasHands(newweaponnum) || zombiesIsActive()) {
 #else
 					if (weaponHasFlag(newweaponnum, WEAPONFLAG_HASHANDS)) {
 #endif
@@ -5541,7 +5563,7 @@ void bgunTickMasterLoad(void)
 										? hand->biggunsavedata : hand->unk0a6c, 0);
 #endif
 
-							if (player->gunctrl.handmodeldef != 0 && bgunHandHasHands(i)) {
+							if (player->gunctrl.handmodeldef != 0 && (bgunHandHasHands(i) || bgunHandsKeptSpare(i))) {
 								modelInit(&hand->handmodel, player->gunctrl.handmodeldef, hand->handsavedata, false);
 							}
 
@@ -5563,6 +5585,24 @@ void bgunTickMasterLoad(void)
 								player->gunctrl.memloadptr += value;
 								player->gunctrl.memloadremaining -= value;
 							}
+
+#ifndef PLATFORM_N64
+							// the hands for a gun that has none: loaded and kept, not
+							// drawn on the gun (that is unk0dd0's being set)
+							if (i == HAND_RIGHT) {
+								g_BgunSpareHandCmds[g_Vars.currentplayernum] = NULL;
+							}
+
+							if (player->gunctrl.handmodeldef != 0 && !bgunHandHasHands(i) && bgunHandsKeptSpare(i)) {
+								g_BgunSpareHandCmds[g_Vars.currentplayernum] = (uintptr_t *) player->gunctrl.memloadptr;
+
+								value = bgunCreateModelCmdList(&hand->handmodel, player->gunctrl.handmodeldef->rootnode, (uintptr_t *) player->gunctrl.memloadptr);
+
+								sum += value;
+								player->gunctrl.memloadptr += value;
+								player->gunctrl.memloadremaining -= value;
+							}
+#endif
 						}
 
 #ifndef PLATFORM_N64

@@ -1130,3 +1130,15 @@ Guns with no row (launchers, tranquilizer, laser) keep the old path.
 `--zombies-log-damage` prints each hit in Black Ops II's units; with
 `--zombies-test-zombie 300 --zombies-test-shoot head` the Falcon (M1911, 20,
 head 3.5) takes three to kill a round 1 zombie, as Black Ops II's does.
+
+## The drink and the throw with a gun that has no hands (2026-10-28)
+
+The first-person drink and grenade throw are drawn on the character's hand model
+(`zombiesDrinkHandModel()`). A gun without WEAPONFLAG_HASHANDS (the RC-P120, a
+GoldenEye gun with its glove) never loaded one, so the drink fell back to the
+HUD's bottle. In Zombies the gun loader (bondgun.c) now loads the hands for every
+gun and sets up the right hand's model, but keeps its command list in
+`g_BgunSpareHandCmds` (`bgunSpareHandCmds()`) instead of `unk0dd0`: a set
+`unk0dd0` is what draws hands on the gun. `zombiesHandsSetUp()` runs that list
+before the drink, throw or knife draws the hands. Test with
+`--zombies-test-hold 13 --zombies-test-third 0 --zombies-test-drink 0`.

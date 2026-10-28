@@ -138,6 +138,9 @@ void bgunHandlePlayerDead(void);
 bool bgunIsMissionCritical(s32 weaponnum);
 void bgunDisarm(struct prop *attacker);
 void bgunExecuteModelCmdList(uintptr_t *arg0);
+#ifndef PLATFORM_N64
+uintptr_t *bgunSpareHandCmds(void);
+#endif
 s32 bgunCreateModelCmdList(struct model *model, struct modelnode *node, uintptr_t *ptr);
 void bgunStartDetonateAnimation(s32 playernum);
 void bgunUpdateGangsta(struct hand *hand, s32 handnum, struct coord *arg2, struct weaponfunc *funcdef, Mtxf *arg4, Mtxf *arg5);

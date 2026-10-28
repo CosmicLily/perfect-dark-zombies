@@ -4704,6 +4704,18 @@ static struct model *zombiesDrinkHandModel(struct player *player)
 }
 
 /**
+ * The hands for a gun that has none are not drawn on it, so nothing sets their
+ * nodes up each frame as bgunRender() does a gun's hands (bondgun.c,
+ * bgunSpareHandCmds()): done here before they are drawn.
+ */
+static void zombiesHandsSetUp(struct player *player, struct model *handmodel)
+{
+	if (handmodel == &player->hands[HAND_RIGHT].handmodel && player->hands[HAND_RIGHT].unk0dd0 == NULL) {
+		bgunExecuteModelCmdList(bgunSpareHandCmds());
+	}
+}
+
+/**
  * bgunRender()'s, after the guns: the drink in the hands of the player whose
  * view is being drawn. True when it was drawn, so the HUD's bottle is not.
  */
@@ -4896,6 +4908,7 @@ static Gfx *zombiesRenderThrowViewmodel(Gfx *gdl)
 
 	saved = handmodel->matrices;
 	handmodel->matrices = matrices;
+	zombiesHandsSetUp(player, handmodel);
 	modelUpdateRelations(handmodel);
 
 	// the left hand switched on (a gun's hand model holds it off): it pulls
@@ -5486,6 +5499,7 @@ Gfx *zombiesRenderGunViewmodel(Gfx *gdl)
 
 	saved = handmodel->matrices;
 	handmodel->matrices = matrices;
+	zombiesHandsSetUp(player, handmodel);
 	modelUpdateRelations(handmodel);
 
 	// both hands: Black Ops II's left one steadies the gun
@@ -5643,6 +5657,7 @@ Gfx *zombiesRenderDrinkViewmodel(Gfx *gdl)
 
 	saved = handmodel->matrices;
 	handmodel->matrices = matrices;
+	zombiesHandsSetUp(player, handmodel);
 	modelUpdateRelations(handmodel);
 
 	// the release's meshes keep a model's pose for the rest of the pass
