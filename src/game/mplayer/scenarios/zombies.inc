@@ -15855,6 +15855,12 @@ static void zombiesTickWallBuys(void)
 
 #define ZOMBIE_BARRIER_MAX    8
 #define ZOMBIE_BARRIER_BOARDS 6
+// Zombies at one window at once, and how far apart, in inches. Black Ops II
+// takes both from the window's own asset (getzbarriernumattackslots(),
+// getzbarrierattackslothorzoffset()), which is not in the scripts: three, a
+// zombie's shoulders apart, inside the opening's 64 inches
+#define ZOMBIE_BARRIER_SPOTS  3
+#define ZOMBIE_BARRIER_SPOTSIDE 22.0f
 #define ZOMBIE_BARRIER_REACH  400.0f  // how far from its pad the barrier's wall may be
 #define ZOMBIE_BARRIER_APART  350.0f  // from every machine, wall buy, doorway and other barrier
 #define ZOMBIE_BARRIER_STAND  30.0f   // a zombie tearing at it stands this far out from the wall
@@ -15902,14 +15908,23 @@ struct zombiebarrier {
 	RoomNum standrooms[8];
 	s32 comp;
 	s32 boards;
-	s32 zombie;            // the bot tearing it, -1 none
-	s32 tear60;            // its zombie through a board's grab, hold and pull
-	s32 pulling;           // the board being pulled off, -1 none
-	s32 enter60;           // its zombie climbing in over the sill, -1 not
-	s32 reach60;           // its zombie swiping through the boards at a player, -1 not
-	s32 reachplayer;       // ... at whom
-	bool reachleft;        // ... with which arm, each in turn
-	bool reachhit;         // ... and whether the blow has landed
+	// Black Ops II's attack spots (_zm_blockers.gsc's blocker_attack_spots()):
+	// the middle, then one each side, a zombie at each tearing its own board
+	struct zombiebarrierspot {
+		struct coord stand;    // where its zombie stands
+		RoomNum standrooms[8];
+		f32 side;              // inches to a looking-in zombie's left of the middle
+		s32 zombie;            // the bot at it, -1 none
+		s32 tear60;            // its zombie through a board's grab, hold and pull
+		s32 board;             // the board it has hold of, -1 none yet
+		s32 pulling;           // the board being pulled off, -1 none
+		s32 enter60;           // its zombie climbing in over the sill, -1 not
+		s32 reach60;           // its zombie swiping through the boards at a player, -1 not
+		s32 reachplayer;       // ... at whom
+		s32 rest60;            // ... and till it may again
+		bool reachleft;        // ... with which arm, each in turn
+		bool reachhit;         // ... and whether the blow has landed
+	} spots[ZOMBIE_BARRIER_SPOTS];
 	s16 anim60[ZOMBIE_BARRIER_BOARDS]; // since each board last went or came
 	bool torn[ZOMBIE_BARRIER_BOARDS];  // ... and which
 	bool placed;
@@ -16956,6 +16971,8 @@ static bool zombiesDoorPrompt(s32 playernum, char *text)
 	return true;
 }
 
+static s32 zombiesBarrierSpotOf(const struct zombiebarrier *bar, s32 botnum);
+
 /**
  * scenarios.c's spawn hook: a zombie sent to a barrier stands at its boards;
  * anyone else on a spawn pad in the zones open so far
@@ -16969,10 +16986,14 @@ bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms
 		struct zombiebarrier *bar = &g_ZombieBarriers[g_ZombieSpawnAt];
 		s32 i;
 
-		*pos = bar->stand;
+		// at the spot it will take (zombiesBarrierTake())
+		const s32 s = zombiesBarrierSpotOf(bar, -1);
+		const struct zombiebarrierspot *spot = &bar->spots[s >= 0 ? s : 0];
 
-		for (i = 0; i < 7 && bar->standrooms[i] != -1; i++) {
-			rooms[i] = bar->standrooms[i];
+		*pos = spot->stand;
+
+		for (i = 0; i < 7 && spot->standrooms[i] != -1; i++) {
+			rooms[i] = spot->standrooms[i];
 		}
 
 		rooms[i] = -1;
@@ -16999,6 +17020,58 @@ bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms
 /**
  * Barriers
  */
+/**
+ * A barrier's attack spots, from where the middle one's zombie stands
+ * (bar->stand): the middle first, then to the left and right of a zombie
+ * looking in, ZOMBIE_BARRIER_SPOTSIDE apart, as blocker_attack_spots() lays
+ * them out. A side spot that is not in a room is left out (zombie -2).
+ */
+static void zombiesBarrierInitSpots(struct zombiebarrier *bar)
+{
+	s32 s;
+
+	for (s = 0; s < ZOMBIE_BARRIER_SPOTS; s++) {
+		struct zombiebarrierspot *spot = &bar->spots[s];
+		const f32 side = s == 0 ? 0 : (s & 1 ? 1 : -1) * ZOMBIE_BARRIER_SPOTSIDE * ((s + 1) / 2);
+
+		spot->side = side;
+		spot->stand.x = bar->stand.x - bar->wall.z * side * ZOMBIE_COD_INCH;
+		spot->stand.y = bar->stand.y;
+		spot->stand.z = bar->stand.z + bar->wall.x * side * ZOMBIE_COD_INCH;
+		spot->zombie = -1;
+		spot->tear60 = 0;
+		spot->board = -1;
+		spot->pulling = -1;
+		spot->enter60 = -1;
+		spot->reach60 = -1;
+		spot->rest60 = 0;
+
+		if (s == 0) {
+			memcpy(spot->standrooms, bar->standrooms, sizeof(spot->standrooms));
+		} else {
+			func0f065e74(&bar->stand, bar->standrooms, &spot->stand, spot->standrooms);
+
+			if (spot->standrooms[0] <= 0) {
+				spot->zombie = -2;
+			}
+		}
+	}
+}
+
+// The spot a zombie is at, -1 none
+static s32 zombiesBarrierSpotOf(const struct zombiebarrier *bar, s32 botnum)
+{
+	s32 s;
+
+	for (s = 0; s < ZOMBIE_BARRIER_SPOTS; s++) {
+		if (bar->spots[s].zombie == botnum) {
+			return s;
+		}
+	}
+
+	return -1;
+}
+
 static void zombiesResetBarriers(void)
 {
 	s32 i;
@@ -17174,10 +17247,6 @@ static void zombiesPlaceBarriers(void)
 			bar->wall.z = l->barwall[i][1];
 			bar->comp = -1;
 			bar->boards = ZOMBIE_BARRIER_BOARDS;
-			bar->zombie = -1;
-			bar->pulling = -1;
-			bar->enter60 = -1;
-			bar->reach60 = -1;
 			bar->pos.x = pad.pos.x + bar->wall.x * (l->bardist[i] - 2);
 			bar->pos.y = pad.pos.y;
 			bar->pos.z = pad.pos.z + bar->wall.z * (l->bardist[i] - 2);
@@ -17189,6 +17258,7 @@ static void zombiesPlaceBarriers(void)
 			bar->stand.y = pad.pos.y;
 			bar->stand.z = pad.pos.z + bar->wall.z * out;
 			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+			zombiesBarrierInitSpots(bar);
 
 			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
 				continue;
@@ -17313,10 +17383,6 @@ static void zombiesPlaceBarriers(void)
 
 			bar->comp = zombiesPadComp(g_SpawnPoints[best]);
 			bar->boards = ZOMBIE_BARRIER_BOARDS;
-			bar->zombie = -1;
-			bar->pulling = -1;
-			bar->enter60 = -1;
-			bar->reach60 = -1;
 
 			// the boards against the wall, on the floor under it
 			bar->pos.x = pad.pos.x + bar->wall.x * (walldist[best] - 2);
@@ -17336,6 +17402,7 @@ static void zombiesPlaceBarriers(void)
 			bar->stand.y = pad.pos.y;
 			bar->stand.z = pad.pos.z + bar->wall.z * out;
 			func0f065e74(&pad.pos, padrooms, &bar->stand, bar->standrooms);
+			zombiesBarrierInitSpots(bar);
 
 			if (bar->rooms[0] <= 0 || bar->standrooms[0] <= 0 || !zombiesBarrierMakeObj(bar)) {
 				continue;
@@ -17425,7 +17492,7 @@ static s32 zombiesBarrierPick(void)
 		struct zombiebarrier *bar = &g_ZombieBarriers[b];
 		bool isnear = false;
 
-		if (!bar->placed || bar->zombie >= 0 || !zombiesCompActive(bar->comp)) {
+		if (!bar->placed || zombiesBarrierSpotOf(bar, -1) < 0 || !zombiesCompActive(bar->comp)) {
 			continue;
 		}
 
@@ -17461,13 +17528,23 @@ static void zombiesBarrierTake(s32 b, s32 botnum)
 {
 	struct zombiebarrier *bar = &g_ZombieBarriers[b];
 
-	if (bar->boards <= 0) {
+	s32 s;
+
+	if (bar->boards <= 0 || (s = zombiesBarrierSpotOf(bar, -1)) < 0) {
 		return;
 	}
 
-	bar->zombie = botnum;
-	bar->tear60 = 0;
+	bar->spots[s].zombie = botnum;
+	bar->spots[s].tear60 = 0;
+	bar->spots[s].board = -1;
+	bar->spots[s].pulling = -1;
+	bar->spots[s].enter60 = -1;
+	bar->spots[s].reach60 = -1;
 	g_ZombieAtBarrier[botnum] = b;
+
+	if (s > 0 && sysArgCheck("--zombies-test-barrier")) {
+		sysLogPrintf(LOG_NOTE, "zombies: zombie %d at window %d's spot %d, beside another", botnum, b, s);
+	}
 }
 
 // zombiesTick(): a zombie at a barrier's boards stays there, its target known
@@ -17475,6 +17552,7 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 {
 	s32 b = g_ZombieAtBarrier[botnum];
 	struct zombiebarrier *bar;
+	s32 s;
 
 	if (b < 0 || b >= g_ZombieNumBarriers) {
 		g_ZombieAtBarrier[botnum] = -1;
@@ -17482,11 +17560,12 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 	}
 
 	bar = &g_ZombieBarriers[b];
+	s = zombiesBarrierSpotOf(bar, botnum);
 
 	// held while it pulls the last board off and climbs in, too
-	if (bar->zombie != botnum || (bar->boards <= 0 && bar->pulling < 0 && bar->enter60 < 0)) {
-		if (bar->zombie == botnum) {
-			bar->zombie = -1;
+	if (s < 0 || (bar->boards <= 0 && bar->spots[s].pulling < 0 && bar->spots[s].enter60 < 0)) {
+		if (s >= 0) {
+			bar->spots[s].zombie = -1;
 		}
 
 		g_ZombieAtBarrier[botnum] = -1;
@@ -17494,7 +17573,7 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
 	}
 
 	if (zchr->aibot->command != AIBOTCMD_HOLD) {
-		botApplyHold(zchr, &bar->stand, bar->standrooms, atan2f(-bar->wall.x, -bar->wall.z));
+		botApplyHold(zchr, &bar->spots[s].stand, bar->spots[s].standrooms, atan2f(-bar->wall.x, -bar->wall.z));
 	}
 
 	if (target) {
@@ -17512,22 +17591,22 @@ static bool zombiesBarrierHolds(s32 botnum, struct chrdata *zchr, struct prop *t
  */
 #define ZOMBIE_BARRIER_CLIMB (57.8f * ZOMBIE_COD_INCH) // how far the climb carries it from the origin
 
-// Whether a barrier's zombie is a crawler: its tear and climb are a crawler's
-static bool zombiesBarrierCrawler(const struct zombiebarrier *bar)
+// Whether a spot's zombie is a crawler: its tear and climb are a crawler's
+static bool zombiesBarrierCrawler(const struct zombiebarrierspot *spot)
 {
-	return bar->zombie >= 0 && bar->zombie < MAX_BOTS && g_ZombieCrawler[bar->zombie];
+	return spot->zombie >= 0 && spot->zombie < MAX_BOTS && g_ZombieCrawler[spot->zombie];
 }
 
-static s32 zombiesBarrierAnim(const struct zombiebarrier *bar, s32 k, s32 part)
+static s32 zombiesBarrierAnim(const struct zombiebarrierspot *spot, s32 k, s32 part)
 {
-	const bool crawler = zombiesBarrierCrawler(bar);
+	const bool crawler = zombiesBarrierCrawler(spot);
 
 	return k < 0 ? (crawler ? ZMCHAR_CRAWL_ENTER : ZMCHAR_ENTER) : (crawler ? ZMCHAR_CRAWL_TEAR : ZMCHAR_TEAR) + k * 3 + part;
 }
 
-static s32 zombiesBarrierPhase60(const struct zombiebarrier *bar, s32 k, s32 part)
+static s32 zombiesBarrierPhase60(const struct zombiebarrierspot *spot, s32 k, s32 part)
 {
-	const s32 anim = zombiesBarrierAnim(bar, k, part);
+	const s32 anim = zombiesBarrierAnim(spot, k, part);
 	const f32 frames = zmcharAnimFrames(anim);
 
 	if (frames <= 0) {
@@ -17548,7 +17627,6 @@ static s32 zombiesBarrierPhase60(const struct zombiebarrier *bar, s32 k, s32 par
 #define ZOMBIE_REACH_BLOW  0.60f   // of a player's health: Black Ops II's meleedamage 60 of 100 (250 with Juggernog)
 #define ZOMBIE_REACH_REST60 120    // between one swipe through the boards and the next, tearing at them meanwhile
 
-static s32 g_ZombieReachRest60[ZOMBIE_BARRIER_MAX];
 
 static bool zombiesBarrierReaches(const struct zombiebarrier *bar, s32 playernum)
 {
@@ -17821,6 +17899,7 @@ static void zombiesTickBarriers(void)
 {
 	s32 i;
 	s32 b;
+	s32 k;
 
 	zombiesBarrierAnimate();
 
@@ -17832,129 +17911,193 @@ static void zombiesTickBarriers(void)
 		}
 	}
 
-	// the zombies at them tearing the boards off
+	// the zombies at them tearing the boards off, each at its own spot
 	for (b = 0; b < g_ZombieNumBarriers; b++) {
 		struct zombiebarrier *bar = &g_ZombieBarriers[b];
-		struct chrdata *zchr;
-		f32 dx;
-		f32 dz;
+		s32 s;
 
-		if (bar->zombie < 0) {
-			continue;
-		}
+		for (s = 0; s < ZOMBIE_BARRIER_SPOTS; s++) {
+			struct zombiebarrierspot *spot = &bar->spots[s];
+			struct chrdata *zchr;
+			f32 dx;
+			f32 dz;
 
-		zchr = bar->zombie < g_BotCount ? g_MpBotChrPtrs[bar->zombie] : NULL;
-
-		if (zchr == NULL || zchr->prop == NULL || chrIsDead(zchr) || g_ZombieAtBarrier[bar->zombie] != b) {
-			if (bar->zombie < MAX_BOTS && g_ZombieAtBarrier[bar->zombie] == b) {
-				g_ZombieAtBarrier[bar->zombie] = -1;
-			}
-
-			bar->zombie = -1;
-			continue;
-		}
-
-		// once it is at the boards
-		dx = zchr->prop->pos.x - bar->stand.x;
-		dz = zchr->prop->pos.z - bar->stand.z;
-
-		if (dx * dx + dz * dz > 80 * 80) {
-			continue;
-		}
-
-		// over the sill: where Call of Duty's climb ends, then after the players
-		if (bar->enter60 >= 0) {
-			bar->enter60 += g_Vars.lvupdate60;
-
-			if (bar->enter60 >= zombiesBarrierPhase60(bar, -1, 0)) {
-				struct coord to;
-				RoomNum torooms[8];
-				const s32 anim = zombiesBarrierAnim(bar, -1, 0);
-				f32 out = ZOMBIE_BARRIER_ORIGIN + ZOMBIE_BARRIER_CLIMB;
-				f32 root[3];
-				f32 q[4];
-
-				// where the climb's own root motion ends, a crawler's or not
-				if (zmcharAnimRoot(anim, zmcharAnimFrames(anim) - 1, root, q)) {
-					out = ZOMBIE_BARRIER_ORIGIN + root[0] * ZOMBIE_COD_INCH;
-				}
-
-				to.x = bar->pos.x - bar->wall.x * out;
-				to.y = zchr->prop->pos.y;
-				to.z = bar->pos.z - bar->wall.z * out;
-				func0f065e74(&zchr->prop->pos, zchr->prop->rooms, &to, torooms);
-				chrMoveToPos(zchr, &to, torooms, atan2f(-bar->wall.x, -bar->wall.z), false);
-
-				bar->enter60 = -1;
-				g_ZombieAtBarrier[bar->zombie] = -1;
-				bar->zombie = -1;
-			}
-
-			continue;
-		}
-
-		// a player at the boards: a swipe through them (Call of Duty's
-		// reachThroughAttacks), the boards left alone meanwhile
-		if (bar->reach60 >= 0) {
-			const s32 anim = bar->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
-			const s32 len = zmcharAnimFrames(anim) > 0 ? (s32)(zmcharAnimFrames(anim) * 60 / zmcharAnimRate(anim)) : 90;
-
-			bar->reach60 += g_Vars.lvupdate60;
-
-			if (!bar->reachhit && bar->reach60 >= len * ZOMBIE_REACH_HITAT) {
-				bar->reachhit = true;
-
-				if (zombiesBarrierReaches(bar, bar->reachplayer)) {
-					zombiesReachHit(zchr, bar->reachplayer);
-				}
-			}
-
-			if (bar->reach60 >= len) {
-				bar->reach60 = -1;
-				g_ZombieReachRest60[b] = ZOMBIE_REACH_REST60;
-			}
-
-			continue;
-		}
-
-		if (g_ZombieReachRest60[b] > 0) {
-			g_ZombieReachRest60[b] -= g_Vars.lvupdate60;
-		}
-
-		if (bar->pulling < 0 && bar->boards > 0 && g_ZombieReachRest60[b] <= 0) {
-			for (i = 0; i < PLAYERCOUNT(); i++) {
-				if (zombiesBarrierReaches(bar, i)) {
-					bar->reach60 = 0;
-					bar->reachplayer = i;
-					bar->reachleft = !bar->reachleft;
-					bar->reachhit = false;
-					break;
-				}
-			}
-
-			if (bar->reach60 >= 0) {
+			if (spot->zombie < 0) {
 				continue;
 			}
-		}
 
-		bar->tear60 += g_Vars.lvupdate60;
+			zchr = spot->zombie < g_BotCount ? g_MpBotChrPtrs[spot->zombie] : NULL;
 
-		// a board's grab and hold, then its pull: the board goes as it begins
-		if (bar->pulling < 0 && bar->boards > 0) {
-			const s32 k = bar->boards - 1;
+			if (zchr == NULL || zchr->prop == NULL || chrIsDead(zchr) || g_ZombieAtBarrier[spot->zombie] != b) {
+				if (spot->zombie < MAX_BOTS && g_ZombieAtBarrier[spot->zombie] == b) {
+					g_ZombieAtBarrier[spot->zombie] = -1;
+				}
 
-			if (bar->tear60 >= zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_GRAB) + zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_HOLD)) {
-				bar->pulling = k;
-				bar->tear60 = 0;
-				zombiesBarrierSet(b, k);
+				spot->zombie = -1;
+				spot->board = -1;
+				spot->pulling = -1;
+				spot->enter60 = -1;
+				spot->reach60 = -1;
+				continue;
 			}
-		} else if (bar->pulling >= 0 && bar->tear60 >= zombiesBarrierPhase60(bar, bar->pulling, ZMCHAR_TEAR_PULL)) {
-			bar->pulling = -1;
-			bar->tear60 = 0;
 
-			// through: in over the sill
+			// once it is at its spot
+			dx = zchr->prop->pos.x - spot->stand.x;
+			dz = zchr->prop->pos.z - spot->stand.z;
+
+			if (dx * dx + dz * dz > 80 * 80) {
+				continue;
+			}
+
+			// over the sill: where Call of Duty's climb ends, then after the players
+			if (spot->enter60 >= 0) {
+				spot->enter60 += g_Vars.lvupdate60;
+
+				if (spot->enter60 >= zombiesBarrierPhase60(spot, -1, 0)) {
+					struct coord to;
+					RoomNum torooms[8];
+					const s32 anim = zombiesBarrierAnim(spot, -1, 0);
+					f32 out = ZOMBIE_BARRIER_ORIGIN + ZOMBIE_BARRIER_CLIMB;
+					f32 root[3];
+					f32 q[4];
+
+					// where the climb's own root motion ends, a crawler's or not
+					if (zmcharAnimRoot(anim, zmcharAnimFrames(anim) - 1, root, q)) {
+						out = ZOMBIE_BARRIER_ORIGIN + root[0] * ZOMBIE_COD_INCH;
+					}
+
+					to.x = bar->pos.x - bar->wall.x * out - bar->wall.z * spot->side * ZOMBIE_COD_INCH;
+					to.y = zchr->prop->pos.y;
+					to.z = bar->pos.z - bar->wall.z * out + bar->wall.x * spot->side * ZOMBIE_COD_INCH;
+					func0f065e74(&zchr->prop->pos, zchr->prop->rooms, &to, torooms);
+					chrMoveToPos(zchr, &to, torooms, atan2f(-bar->wall.x, -bar->wall.z), false);
+
+					spot->enter60 = -1;
+					g_ZombieAtBarrier[spot->zombie] = -1;
+					spot->zombie = -1;
+				}
+
+				continue;
+			}
+
+			// a player at the boards: a swipe through them (Call of Duty's
+			// reachThroughAttacks), the boards left alone meanwhile
+			if (spot->reach60 >= 0) {
+				const s32 anim = spot->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
+				const s32 len = zmcharAnimFrames(anim) > 0 ? (s32)(zmcharAnimFrames(anim) * 60 / zmcharAnimRate(anim)) : 90;
+
+				spot->reach60 += g_Vars.lvupdate60;
+
+				if (!spot->reachhit && spot->reach60 >= len * ZOMBIE_REACH_HITAT) {
+					spot->reachhit = true;
+
+					if (zombiesBarrierReaches(bar, spot->reachplayer)) {
+						zombiesReachHit(zchr, spot->reachplayer);
+					}
+				}
+
+				if (spot->reach60 >= len) {
+					spot->reach60 = -1;
+					spot->rest60 = ZOMBIE_REACH_REST60;
+				}
+
+				continue;
+			}
+
+			if (spot->rest60 > 0) {
+				spot->rest60 -= g_Vars.lvupdate60;
+			}
+
+			if (spot->pulling < 0 && bar->boards > 0 && spot->rest60 <= 0) {
+				for (i = 0; i < PLAYERCOUNT(); i++) {
+					if (zombiesBarrierReaches(bar, i)) {
+						spot->reach60 = 0;
+						spot->reachplayer = i;
+						spot->reachleft = !spot->reachleft;
+						spot->reachhit = false;
+						spot->board = -1;
+						spot->tear60 = 0;
+						break;
+					}
+				}
+
+				if (spot->reach60 >= 0) {
+					continue;
+				}
+			}
+
+			// a board's grab and hold, then its pull: the board goes as the
+			// pull begins
+			if (spot->pulling >= 0) {
+				spot->tear60 += g_Vars.lvupdate60;
+
+				if (spot->tear60 >= zombiesBarrierPhase60(spot, spot->pulling, ZMCHAR_TEAR_PULL)) {
+					spot->pulling = -1;
+					spot->tear60 = 0;
+
+					// through: in over the sill
+					if (bar->boards <= 0) {
+						spot->enter60 = 0;
+					}
+				}
+
+				continue;
+			}
+
 			if (bar->boards <= 0) {
-				bar->enter60 = 0;
+				// the boards all gone by the others' hands: in too
+				spot->board = -1;
+				spot->enter60 = 0;
+				continue;
+			}
+
+			// the highest board still up that no other zombie has hold of
+			// (Black Ops II's chunks "targetted_by_zombie"); none, it waits
+			if (spot->board < 0 || spot->board >= bar->boards) {
+				s32 k;
+
+				spot->board = -1;
+				spot->tear60 = 0;
+
+				for (k = bar->boards - 1; k >= 0 && spot->board < 0; k--) {
+					s32 o;
+
+					for (o = 0; o < ZOMBIE_BARRIER_SPOTS; o++) {
+						if (o != s && bar->spots[o].zombie >= 0
+								&& (bar->spots[o].board == k || bar->spots[o].pulling == k)) {
+							break;
+						}
+					}
+
+					if (o == ZOMBIE_BARRIER_SPOTS) {
+						spot->board = k;
+					}
+				}
+
+				if (spot->board < 0) {
+					continue;
+				}
+			}
+
+			spot->tear60 += g_Vars.lvupdate60;
+
+			if (spot->tear60 >= zombiesBarrierPhase60(spot, spot->board, ZMCHAR_TEAR_GRAB)
+					+ zombiesBarrierPhase60(spot, spot->board, ZMCHAR_TEAR_HOLD)) {
+				// the boards come off from the top: this zombie pulls the top
+				// one, and one that had hold of it takes this one's instead
+				const s32 top = bar->boards - 1;
+				s32 o;
+
+				for (o = 0; o < ZOMBIE_BARRIER_SPOTS; o++) {
+					if (o != s && bar->spots[o].zombie >= 0 && bar->spots[o].board == top) {
+						bar->spots[o].board = spot->board;
+					}
+				}
+
+				spot->pulling = top;
+				spot->board = -1;
+				spot->tear60 = 0;
+				zombiesBarrierSet(b, top);
 			}
 		}
 	}
@@ -18015,8 +18158,13 @@ static void zombiesTickBarriers(void)
 				zombiesAddPopup(i, ZOMBIE_BARRIER_POINTS);
 			}
 
-			// a zombie at it starts on the new board afresh
-			bar->tear60 = 0;
+			// the zombies at it start on the new board afresh
+			for (k = 0; k < ZOMBIE_BARRIER_SPOTS; k++) {
+				if (bar->spots[k].pulling < 0) {
+					bar->spots[k].board = -1;
+					bar->spots[k].tear60 = 0;
+				}
+			}
 		}
 	}
 }
@@ -18439,8 +18587,10 @@ static bool zombiesCodBarrier(s32 i, struct chrdata *chr, s32 *anim, f32 *frame)
 {
 	const s32 b = i >= 0 && i < MAX_BOTS ? g_ZombieAtBarrier[i] : -1;
 	struct zombiebarrier *bar;
+	struct zombiebarrierspot *spot;
 	f32 dx;
 	f32 dz;
+	s32 s;
 	s32 t;
 
 	if (b < 0 || b >= g_ZombieNumBarriers || zmcharAnimFrames(ZMCHAR_TEAR) <= 0) {
@@ -18448,40 +18598,43 @@ static bool zombiesCodBarrier(s32 i, struct chrdata *chr, s32 *anim, f32 *frame)
 	}
 
 	bar = &g_ZombieBarriers[b];
+	s = zombiesBarrierSpotOf(bar, i);
 
-	if (bar->zombie != i) {
+	if (s < 0) {
 		return false;
 	}
 
-	dx = chr->prop->pos.x - bar->stand.x;
-	dz = chr->prop->pos.z - bar->stand.z;
+	spot = &bar->spots[s];
+	dx = chr->prop->pos.x - spot->stand.x;
+	dz = chr->prop->pos.z - spot->stand.z;
 
 	if (dx * dx + dz * dz > 80 * 80) {
 		return false;
 	}
 
-	if (bar->reach60 >= 0) {
-		*anim = bar->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
-		t = bar->reach60;
-	} else if (bar->enter60 >= 0) {
-		*anim = zombiesBarrierAnim(bar, -1, 0);
-		t = bar->enter60;
-	} else if (bar->pulling >= 0) {
-		*anim = zombiesBarrierAnim(bar, bar->pulling, ZMCHAR_TEAR_PULL);
-		t = bar->tear60;
+	if (spot->reach60 >= 0) {
+		*anim = spot->reachleft ? ZMCHAR_WINDOW_L : ZMCHAR_WINDOW_R;
+		t = spot->reach60;
+	} else if (spot->enter60 >= 0) {
+		*anim = zombiesBarrierAnim(spot, -1, 0);
+		t = spot->enter60;
+	} else if (spot->pulling >= 0) {
+		*anim = zombiesBarrierAnim(spot, spot->pulling, ZMCHAR_TEAR_PULL);
+		t = spot->tear60;
 	} else if (bar->boards > 0) {
-		const s32 k = bar->boards - 1;
-		const s32 grab = zombiesBarrierPhase60(bar, k, ZMCHAR_TEAR_GRAB);
+		// its board, or waiting for one at the top's first frame
+		const s32 k = spot->board >= 0 && spot->board < bar->boards ? spot->board : bar->boards - 1;
+		const s32 grab = zombiesBarrierPhase60(spot, k, ZMCHAR_TEAR_GRAB);
 
-		if (bar->tear60 < grab) {
-			*anim = zombiesBarrierAnim(bar, k, ZMCHAR_TEAR_GRAB);
-			t = bar->tear60;
+		if (spot->tear60 < grab) {
+			*anim = zombiesBarrierAnim(spot, k, ZMCHAR_TEAR_GRAB);
+			t = spot->tear60;
 		} else {
-			*anim = zombiesBarrierAnim(bar, k, ZMCHAR_TEAR_HOLD);
-			t = bar->tear60 - grab;
+			*anim = zombiesBarrierAnim(spot, k, ZMCHAR_TEAR_HOLD);
+			t = spot->tear60 - grab;
 		}
 	} else {
-		*anim = zombiesBarrierAnim(bar, -1, 0);
+		*anim = zombiesBarrierAnim(spot, -1, 0);
 		t = 0;
 	}
 
@@ -18518,6 +18671,15 @@ static void zombiesCodBarrierPlace(s32 i, Mtxf *world)
 		pos[0] = -23;
 		pos[1] = 0;
 		pos[2] = -31;
+	}
+
+	// its spot's way along the window from the middle
+	{
+		const s32 s = zombiesBarrierSpotOf(bar, i);
+
+		if (s > 0) {
+			pos[1] += bar->spots[s].side;
+		}
 	}
 
 	zombiesBarrierToWorld(bar, pos, true, w);
@@ -23190,12 +23352,12 @@ void zombiesNetCapture(u8 *out, s32 size)
 		const struct zombiebarrier *bar = &g_ZombieBarriers[k];
 		const bool in = k < g_ZombieNumBarriers;
 
-		znPut(&b, (u8)(s8)(in ? znClamp(bar->zombie, -1, 0x7f) : -1), 1);
-		znPut(&b, in ? znClamp(bar->tear60, 0, 0xffff) : 0, 2);
-		znPut(&b, (u8)(s8)(in ? znClamp(bar->pulling, -1, 0x7f) : -1), 1);
-		znPut(&b, (u16)(s16)(in ? znClamp(bar->enter60, -1, 0x7fff) : -1), 2);
-		znPut(&b, (u16)(s16)(in ? znClamp(bar->reach60, -1, 0x7fff) : -1), 2);
-		znPut(&b, in && bar->reachleft ? 1 : 0, 1);
+		znPut(&b, (u8)(s8)(in ? znClamp(bar->spots[0].zombie, -1, 0x7f) : -1), 1);
+		znPut(&b, in ? znClamp(bar->spots[0].tear60, 0, 0xffff) : 0, 2);
+		znPut(&b, (u8)(s8)(in ? znClamp(bar->spots[0].pulling, -1, 0x7f) : -1), 1);
+		znPut(&b, (u16)(s16)(in ? znClamp(bar->spots[0].enter60, -1, 0x7fff) : -1), 2);
+		znPut(&b, (u16)(s16)(in ? znClamp(bar->spots[0].reach60, -1, 0x7fff) : -1), 2);
+		znPut(&b, in && bar->spots[0].reachleft ? 1 : 0, 1);
 	}
 
 	// (version 7) what has been shot off each zombie, a byte each (ZGIB_*)
@@ -23545,15 +23707,15 @@ void zombiesNetApply(const u8 *in, s32 size, s32 final)
 		if (i < g_ZombieNumBarriers) {
 			struct zombiebarrier *bar = &g_ZombieBarriers[i];
 
-			bar->zombie = zombie >= 0 && zombie < MAX_BOTS ? zombie : -1;
-			bar->tear60 = tear60;
-			bar->pulling = pulling >= 0 && pulling < ZOMBIE_BARRIER_BOARDS ? pulling : -1;
-			bar->enter60 = enter60;
-			bar->reach60 = reach60;
-			bar->reachleft = reachleft;
+			bar->spots[0].zombie = zombie >= 0 && zombie < MAX_BOTS ? zombie : -1;
+			bar->spots[0].tear60 = tear60;
+			bar->spots[0].pulling = pulling >= 0 && pulling < ZOMBIE_BARRIER_BOARDS ? pulling : -1;
+			bar->spots[0].enter60 = enter60;
+			bar->spots[0].reach60 = reach60;
+			bar->spots[0].reachleft = reachleft;
 
-			if (bar->zombie >= 0) {
-				g_ZombieAtBarrier[bar->zombie] = i;
+			if (bar->spots[0].zombie >= 0) {
+				g_ZombieAtBarrier[bar->spots[0].zombie] = i;
 			}
 		}
 	}

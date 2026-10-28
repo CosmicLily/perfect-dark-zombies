@@ -883,9 +883,16 @@ then one a second (do_post_chunk_repair_delay(), ZOMBIE_BARRIER_FIX60 60, was
 replace_chunk()'s quicker board asks for "speciality_fastreload", a perk
 nobody has. Ten points a board, counted first and paid while under the
 round's cap, 50 times the round up to 500 (it was 500 from round 1). Tearing
-is the tear animations' own pace already. Not done: BO2's windows have several
-attack spots (getzbarriernumattackslots(), from the barrier's asset, so how
-many is not in the scripts), ours one zombie at a time.
+is the tear animations' own pace already. **Several zombies at a window** (blocker_attack_spots()): three spots, the middle
+then 22 inches to each side (the count and spacing are the window asset's,
+not in the scripts: ZOMBIE_BARRIER_SPOTS, ZOMBIE_BARRIER_SPOTSIDE). Each spot
+is its own zombie, tear clock, swipe and climb (struct zombiebarrierspot). The
+boards are still a stack that comes off from the top: a zombie takes hold of
+the highest board no other has (BO2's "targetted_by_zombie"), and whoever pulls
+first pulls the top one, one that held it taking the puller's board instead.
+With every board gone the others climb in too, each at its own offset. Online
+the scenario block carries the middle spot only (its layout unchanged); the
+side spots are the host's. `--zombies-test-barrier N` logs a side spot taken.
 
 **Spawning** (_zm_zonemgr.gsc's manage_zones()): zombies come in only in the
 active zones, the ones a player stands in and those joined to one by a door
