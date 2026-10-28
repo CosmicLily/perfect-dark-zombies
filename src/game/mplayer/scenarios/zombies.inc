@@ -14416,7 +14416,7 @@ static void zombiesTickBox(void)
 #define ZOMBIE_DROPS_PER_ROUND  4
 #define ZOMBIE_DROP_SOLID60     900     // _zm_powerups' powerup_timeout: 15 seconds as it is,
 #define ZOMBIE_DROP_LIFE60      1590    // then 40 blinks, slower to quicker: 26.5 seconds in all
-#define ZOMBIE_DROP_RANGE       90.0f   // how near a player picks it up
+#define ZOMBIE_DROP_RANGE       127.0f  // how near a player picks it up: powerup_grab()'s 64 inches from the feet to it, 40 up
 #define ZOMBIE_DROP_SIZE        80.0f   // how long the crate is (34 was easy to miss)
 #define ZOMBIE_DROP_FLOAT       40.0f   // its bottom this far over the floor: waist high, as Call of Duty's float
 #define ZOMBIE_DROP_BANNER60    150     // how long "MAX AMMO!" stays up
@@ -14615,12 +14615,16 @@ static bool zombiesDropShown(s32 age60)
  * Black Ops II's power-ups (zombie_ammocan, zombie_skull, zombie_x2_icon,
  * zombie_bomb, zombie_carpenter, zombie_firesale: tools/zombies/glb2obj.py
  * into the build's zombies/models/pu_<name>/), drawn in place of the stand-in
- * the drop is made from, ZOMBIE_POWERUP_MESHSIZE on its longest side, its middle
- * ZOMBIE_POWERUP_FLOAT over the floor, turning and bobbing as the stand-in does. Without the OBJ the stand-in is drawn.
+ * the drop is made from at its own size, as Black Ops II spawns it (a plain
+ * script_model, never scaled: _zm_powerups.gsc), the meshes being a unit to the
+ * centimetre as our Call of Duty models are - the Max Ammo can 60 long, the
+ * Nuke 108. Its middle ZOMBIE_POWERUP_FLOAT over the floor, where Black Ops II
+ * spawns it (40 inches over the drop point), turning and bobbing as the
+ * stand-in does. Without the OBJ the stand-in is drawn. They were each squeezed
+ * to 40 on the longest side, a third to a half of Call of Duty's.
  */
-#define ZOMBIE_POWERUP_MESHSIZE 40.0f
-#define ZOMBIE_POWERUP_GLOW     48.0f // the green glow's half size about it (fx_zombie_powerup_on)
-#define ZOMBIE_POWERUP_FLOAT    85.0f // its middle over the floor: a man's waist
+#define ZOMBIE_POWERUP_GLOW     64.0f // the green glow's half size about it (fx_zombie_powerup_on)
+#define ZOMBIE_POWERUP_FLOAT    (40 * 2.54f) // its middle over the floor
 
 static struct zombiemesh g_ZombiePowerupMeshes[ZOMBIEPOWERUP_COUNT];
 
@@ -14648,6 +14652,22 @@ static struct zombiemesh *zombiesPowerupMesh(s32 kind)
 	return zm->gdl ? zm : NULL;
 }
 
+// A power-up's model's longest side, in our units (its own size, zombiesRenderPowerup())
+static f32 zombiesPowerupLongest(s32 kind)
+{
+	struct zombiemesh *zm = zombiesPowerupMesh(kind);
+	f32 longest;
+
+	if (zm == NULL) {
+		return ZOMBIE_DROP_SIZE;
+	}
+
+	longest = zm->width > zm->height ? zm->width : zm->height;
+	longest = zm->depth > longest ? zm->depth : longest;
+
+	return longest;
+}
+
 // A drop's middle this frame: floating at the waist, bobbing (zombiesDropPlace())
 static void zombiesPowerupCentre(struct zombiedrop *drop, f32 pos[3])
 {
@@ -14673,6 +14693,7 @@ static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos,
 		f32 a[3];
 		f32 b[3];
 		f32 pulse;
+		f32 glow;
 
 		if (!drop->active || drop->obj.prop == NULL || (drop->obj.flags2 & OBJFLAG2_INVISIBLE)
 				|| zombiesPowerupMesh(drop->kind) == NULL) {
@@ -14690,7 +14711,8 @@ static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos,
 		{
 			f32 to[3] = { campos->x - pos[0], campos->y - pos[1], campos->z - pos[2] };
 			f32 len = sqrtf(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]);
-			f32 pull = len > ZOMBIE_POWERUP_MESHSIZE ? ZOMBIE_POWERUP_MESHSIZE * 0.6f / len : 0;
+			const f32 size = zombiesPowerupLongest(drop->kind);
+			f32 pull = len > size ? size * 0.6f / len : 0;
 
 			centre.x = pos[0] + to[0] * pull;
 			centre.y = pos[1] + to[1] * pull;
@@ -14699,10 +14721,14 @@ static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos,
 
 		pulse = 0.85f + 0.15f * sinf(drop->age60 * 0.1f);
 
+		// about the model whatever its size
+		glow = zombiesPowerupLongest(drop->kind) * 0.6f;
+		glow = glow > ZOMBIE_POWERUP_GLOW ? glow : ZOMBIE_POWERUP_GLOW;
+
 		// a wide soft green, and a smaller brighter one in it
 		for (k = 0; k < 3; k++) {
-			a[k] = right[k] * ZOMBIE_POWERUP_GLOW * pulse;
-			b[k] = up[k] * ZOMBIE_POWERUP_GLOW * pulse;
+			a[k] = right[k] * glow * pulse;
+			b[k] = up[k] * glow * pulse;
 		}
 
 		gDPSetPrimColor(gdl++, 0, 0, 0x30, 0xff, 0x40, 0x80);
@@ -14726,7 +14752,6 @@ static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defa
 	struct zombiemesh *zm;
 	f32 centre[3];
 	f32 pos[3];
-	f32 longest;
 	f32 k;
 	Mtxf world;
 	Mtxf *mtx;
@@ -14748,9 +14773,8 @@ static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defa
 		return true;
 	}
 
-	longest = zm->width > zm->height ? zm->width : zm->height;
-	longest = zm->depth > longest ? zm->depth : longest;
-	k = ZOMBIE_POWERUP_MESHSIZE / (longest * ZOMBIE_MESH_FIXED);
+	// at its own size: the mesh's centimetres our units
+	k = 1.0f / ZOMBIE_MESH_FIXED;
 
 	centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
 	centre[1] = (zm->ymin + zm->height / 2) * ZOMBIE_MESH_FIXED;
@@ -18838,7 +18862,7 @@ Gfx *zombiesRenderWindowHoles(Gfx *gdl, s32 roomnum)
 	static const u8 dark[3] = { 0x0c, 0x0a, 0x08 };
 	s32 b;
 
-	if (!zombiesIsActive() || g_ZombieNumBarriers == 0 || !gfx_stencil_supported()) {
+	if (!zombiesIsActive() || g_ZombieNumBarriers == 0 || !gfx_stencil_supported() || sysArgCheck("--zombies-no-holes")) {
 		return gdl;
 	}
 

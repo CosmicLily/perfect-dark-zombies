@@ -956,3 +956,22 @@ in the level:
 - Recesses the arena already has are still preferred for a window
   (zombiesFindNiche()); without a stencil, a window on a plain wall is built out
   with a block of wall round it.
+
+## Power-ups at Black Ops II's size, and test windows that must not be minimized (2026-10-28)
+
+Black Ops II spawns a power-up as a plain script_model 40 inches over the drop
+point and never scales it (_zm_powerups.gsc). Our power-up meshes are a unit to
+the centimetre, as every Call of Duty model here is (Juggernog's machine is 253
+tall, Call of Duty's 100 inches), so zombiesRenderPowerup() draws each at its
+own size (`k = 1 / ZOMBIE_MESH_FIXED`): Max Ammo 60 long, skull 59, Double
+Points 55, Carpenter 77, Nuke 108, Fire Sale 195. They had each been squeezed
+to 40. The middle floats ZOMBIE_POWERUP_FLOAT (40 inches) over the floor, the
+glow is sized to the model (zombiesPowerupLongest()), and the pick-up range is
+powerup_grab()'s 64 inches from the feet (ZOMBIE_DROP_RANGE 127 sideways).
+
+**A test run started minimized (`Start-Process -WindowStyle Minimized`) on
+Windows draws nothing on OpenGL**: --screenshot-frame then saves black, or
+black over coloured noise, from frames the game drew correctly. Today's chase
+of "black frames" near the in-wall windows was only that: the same runs in a
+normal window are fine, and `--zombies-no-holes` (no window cut) was as black
+minimized. Start screenshot runs in a normal window.
