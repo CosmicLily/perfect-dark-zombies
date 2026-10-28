@@ -847,21 +847,85 @@ static void zombiesMaybeCrawler(struct chrdata *zchr)
  * round 1 went at a run). A crawler crawls: a walker at the crawl's 14, the
  * others at the crawl sprint's 40.
  */
-#define ZOMBIE_MOVE_PER_ROUND 8
-#define ZOMBIE_MOVE_SPREAD    20
+#define ZOMBIE_MOVE_PER_ROUND 8   // Black Ops II's zombie_move_speed_multiplier
+#define ZOMBIE_MOVE_SPREAD    35  // set_run_speed()'s randomintrange(speed, speed + 35)
 #define ZOMBIE_SIM_RUN        147.0f // inches a second, a simulant's run
 
 enum { ZOMBIE_WALKER, ZOMBIE_RUNNER, ZOMBIE_SPRINTER };
 
 static u8 g_ZombieMoveClass[MAX_BOTS];
 
+/**
+ * Black Ops II's set_run_speed(): the round's zombie_move_speed is 1 in round
+ * 1 and the last round's number times 8 after it (_zm.gsc sets it as a round
+ * ends, before the number goes up), and a zombie draws from it to 34 above.
+ * So rounds 1 and 2 are walkers but a few, round 6 has the first sprinters,
+ * round 7 the last walkers, and from round 10 every one sprints. It was the
+ * round times 8 give or take 20: a round early, and walkers left in round 10.
+ */
 static void zombiesPickMoveClass(s32 i)
 {
-	const s32 speed = g_ZombieRound * ZOMBIE_MOVE_PER_ROUND
-		+ (s32)(rngRandom() % (ZOMBIE_MOVE_SPREAD * 2 + 1)) - ZOMBIE_MOVE_SPREAD;
+	const s32 base = g_ZombieRound <= 1 ? 1 : (g_ZombieRound - 1) * ZOMBIE_MOVE_PER_ROUND;
+	const s32 speed = base + (s32)(rngRandom() % ZOMBIE_MOVE_SPREAD);
 
 	g_ZombieMoveClass[i] = speed <= 35 ? ZOMBIE_WALKER : speed <= 70 ? ZOMBIE_RUNNER : ZOMBIE_SPRINTER;
 }
+
+/**
+ * Black Ops II's zombie_speed_up(): from round 4, once no more than 4 are
+ * left to come and no more than 3 are out, the last one standing (with its
+ * legs) sprints whenever it is the only one out.
+ */
+static s32 g_ZombieSpeedUpRound = -1; // the round it was armed in
+static bool g_ZombieSpeedUpArmed;
+
+static void zombiesTickSpeedUp(s32 alive)
+{
+	s32 i;
+
+	if (g_ZombieSpeedUpRound != g_ZombieRound) {
+		g_ZombieSpeedUpRound = g_ZombieRound;
+		g_ZombieSpeedUpArmed = false;
+	}
+
+	if (g_ZombieRound <= 3) {
+		return;
+	}
+
+	if (!g_ZombieSpeedUpArmed) {
+		g_ZombieSpeedUpArmed = g_ZombieRoundTotal - g_ZombieSpawned <= 4 && alive <= 3;
+		return;
+	}
+
+	if (alive != 1) {
+		return;
+	}
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+
+		if (zchr && zchr->prop && !chrIsDead(zchr) && !zombiesChrIsCrawler(zchr)
+				&& g_ZombieMoveClass[i] != ZOMBIE_SPRINTER) {
+			g_ZombieMoveClass[i] = ZOMBIE_SPRINTER;
+			sysLogPrintf(LOG_NOTE, "zombies: the last zombie (%d) of round %d sprints", i, g_ZombieRound);
+		}
+	}
+}
+
+/**
+ * Black Ops II's round_spawn_failsafe(): every 30 seconds (40 for a crawler) a
+ * zombie that has gone less than 24 inches since the last look is stuck, and
+ * is killed and sent back into the round's count to come again - unless it
+ * tore at a barrier's boards in the last 8 seconds. No points, no drop.
+ */
+#define ZOMBIE_FAILSAFE60        (30 * 60)
+#define ZOMBIE_FAILSAFE_CRAWL60  (40 * 60)
+#define ZOMBIE_FAILSAFE_MOVED    (24.0f * 2.54f)
+#define ZOMBIE_FAILSAFE_TORE60   (8 * 60)
+
+static s32 g_ZombieFailsafe60[MAX_BOTS];      // since the last look, -1 not out
+static struct coord g_ZombieFailsafePos[MAX_BOTS];
+static s32 g_ZombieTore60[MAX_BOTS];          // since it last tore at boards
 
 f32 zombiesChrSpeedScale(struct chrdata *chr)
 {
@@ -898,6 +962,66 @@ static struct {
 	RoomNum torooms[8];
 } g_ZombieClimb[MAX_BOTS];
 static s32 zombiesBarrierPick(void);
+
+// round_spawn_failsafe()'s look, each tick (above)
+static void zombiesTickFailsafe(void)
+{
+	struct coord none = {0, 0, 0};
+	s32 i;
+
+	for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+		struct chrdata *zchr = g_MpBotChrPtrs[i];
+		f32 dx;
+		f32 dz;
+
+		if (!zchr || !zchr->prop || chrIsDead(zchr) || g_ZombieHidden[i]) {
+			g_ZombieFailsafe60[i] = -1;
+			continue;
+		}
+
+		if (g_ZombieFailsafe60[i] < 0) {
+			g_ZombieFailsafe60[i] = 0;
+			g_ZombieFailsafePos[i] = zchr->prop->pos;
+			g_ZombieTore60[i] = ZOMBIE_FAILSAFE_TORE60;
+		}
+
+		// at a barrier's boards counts as tearing at them
+		if (g_ZombieAtBarrier[i] >= 0 || g_ZombieClimb[i].on) {
+			g_ZombieTore60[i] = 0;
+		} else if (g_ZombieTore60[i] < ZOMBIE_FAILSAFE_TORE60) {
+			g_ZombieTore60[i] += g_Vars.lvupdate60;
+		}
+
+		g_ZombieFailsafe60[i] += g_Vars.lvupdate60;
+
+		if (g_ZombieFailsafe60[i] < (zombiesChrIsCrawler(zchr) ? ZOMBIE_FAILSAFE_CRAWL60 : ZOMBIE_FAILSAFE60)) {
+			continue;
+		}
+
+		g_ZombieFailsafe60[i] = 0;
+		dx = zchr->prop->pos.x - g_ZombieFailsafePos[i].x;
+		dz = zchr->prop->pos.z - g_ZombieFailsafePos[i].z;
+		g_ZombieFailsafePos[i] = zchr->prop->pos;
+
+		if (g_ZombieTore60[i] < ZOMBIE_FAILSAFE_TORE60
+				|| dx * dx + dz * dz >= ZOMBIE_FAILSAFE_MOVED * ZOMBIE_FAILSAFE_MOVED) {
+			continue;
+		}
+
+		sysLogPrintf(LOG_NOTE, "zombies: zombie %d stuck at %.0f %.0f %.0f for %d seconds, sent back to come again",
+				i, zchr->prop->pos.x, zchr->prop->pos.y, zchr->prop->pos.z,
+				(zombiesChrIsCrawler(zchr) ? ZOMBIE_FAILSAFE_CRAWL60 : ZOMBIE_FAILSAFE60) / 60);
+
+		// no attacker: no points and no drop, as the Nuke's
+		chrDamageByMisc(zchr, 10000, &none, NULL, NULL);
+
+		if (g_ZombieSpawned > 0) {
+			g_ZombieSpawned--;
+		}
+
+		g_ZombieFailsafe60[i] = -1;
+	}
+}
 static void zombiesBarrierTake(s32 b, s32 botnum);
 
 // Sends one finished-dying zombie back in. Returns true if one went.
@@ -919,6 +1043,7 @@ static bool zombiesSpawnOne(void)
 			g_ZombieGib[i] = 0;
 			g_ZombieClimb[i].on = false;
 			g_ZombieHidden[i] = false;
+			g_ZombieFailsafe60[i] = -1;
 			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
 
@@ -6940,7 +7065,7 @@ bool zombiesBodyHidesHeld(struct chrdata *chr, struct prop *prop)
 #define ZOMBIE_COD_RUN     72.0f // between the walk's 37.6 and the run's 108
 #define ZOMBIE_COD_SPRINT  125.0f
 #define ZOMBIE_COD_CRAWLFAST 25.0f // between the crawl's 14 and its sprint's 40
-#define ZOMBIE_COD_REACH     150.0f // how near a player a zombie swipes at them: Call of Duty's 60 inches (a bot's own punch reaches 210)
+#define ZOMBIE_COD_REACH     162.6f // how near a player a zombie swipes at them: Black Ops II's meleeattackdist, 64 inches (a bot's own punch reaches 210)
 
 static struct {
 	s32 anim;
@@ -16749,6 +16874,7 @@ static void zombiesResetBarriers(void)
 
 	for (i = 0; i < MAX_BOTS; i++) {
 		g_ZombieAtBarrier[i] = -1;
+		g_ZombieFailsafe60[i] = -1;
 	}
 }
 
@@ -17270,7 +17396,7 @@ static s32 zombiesBarrierPhase60(const struct zombiebarrier *bar, s32 k, s32 par
  */
 #define ZOMBIE_REACH_HITAT 0.45f
 #define ZOMBIE_REACH_DEPTH 75.0f   // how far out from the boards' face a player is in reach
-#define ZOMBIE_REACH_BLOW  0.51f   // of a player's health
+#define ZOMBIE_REACH_BLOW  0.60f   // of a player's health: Black Ops II's meleedamage 60 of 100 (250 with Juggernog)
 #define ZOMBIE_REACH_REST60 120    // between one swipe through the boards and the next, tearing at them meanwhile
 
 static s32 g_ZombieReachRest60[ZOMBIE_BARRIER_MAX];
@@ -20080,6 +20206,38 @@ void zombiesTick(void)
 		}
 	}
 
+	// --zombies-scan-blank: from level frame 150 player 1 is put at each pad
+	// in turn, eight frames a pad, turning a quarter each two frames, so bg.c
+	// says where the map draws almost nothing ("bg: ... draws N room(s)");
+	// --exit-frame ends it, or the last pad does
+	if (sysArgCheck("--zombies-scan-blank") && !NET_CLIENT && g_Vars.players[0] && g_Vars.players[0]->prop
+			&& g_PadsFile && g_Vars.lvframenum >= 150) {
+		const s32 step = g_Vars.lvframenum - 150;
+		const s32 padnum = step / 8;
+
+		g_PlayerInvincible = true;
+
+		if (padnum >= g_PadsFile->numpads) {
+			// done: --exit-frame closes the game
+		} else if (step % 8 == 0) {
+			struct pad pad;
+			RoomNum rooms[2];
+
+			padUnpack(padnum, PADFIELD_POS | PADFIELD_ROOM, &pad);
+			rooms[0] = pad.room;
+			rooms[1] = -1;
+			chrMoveToPos(g_Vars.players[0]->prop->chr, &pad.pos, rooms, 0, true);
+			sysLogPrintf(LOG_NOTE, "zombies: scan pad %d at %.0f %.0f %.0f room %d", padnum,
+					pad.pos.x, pad.pos.y, pad.pos.z, pad.room);
+		} else if (step % 2 == 0) {
+			g_Vars.players[0]->vv_theta += 90;
+
+			if (g_Vars.players[0]->vv_theta >= 360) {
+				g_Vars.players[0]->vv_theta -= 360;
+			}
+		}
+	}
+
 	// --zombies-test-qrleave F: Quick Revive's three solo bottles counted as
 	// bought at level frame F, so its machine goes (zombiesTickQrMachine());
 	// watch it with --zombies-test-perk 1
@@ -20483,7 +20641,10 @@ void zombiesTick(void)
 		return;
 	}
 
+	// a stuck zombie sent back to come again, and the last one sprinting
+	zombiesTickFailsafe();
 	alive = zombiesCountAlive();
+	zombiesTickSpeedUp(alive);
 
 	// let the zombies in one at a time, never above the cap
 	if (g_ZombieSpawned < g_ZombieRoundTotal && alive < ZOMBIE_MAX_ALIVE

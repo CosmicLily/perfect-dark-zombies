@@ -844,3 +844,43 @@ out of bounds is never recorded as the one to come back to.
 **Names.** The arena tab is "Custom Maps" (arenatabs.c TABKEY_MODS; the flat
 list's group too, setup.c), and an arena whose map name already ends in ")"
 - "Town (BO2)" - is not given its mod's name after it (modloader.c).
+
+## The zombie AI against Black Ops II's own scripts (2026-10-27)
+
+Black Ops II's Zombies rules are in its GSC scripts. Decompiled copies are
+published by Plutonium (github.com/plutoniummod/t6-scripts, under
+ZM/Core/maps/mp/zombies/): _zm.gsc (round flow), _zm_spawner.gsc (spawning,
+attacks), _zm_ai_basic.gsc (the chase), _zm_utility.gsc (run speeds),
+_zm_zonemgr.gsc, _zm_blockers.gsc. They are Activision's code: read them from a
+scratch folder, never commit them; our C follows their rules in our own words.
+The movement itself (pathing, steering) is engine code, not in any script.
+
+Checked and already the same: the round's zombie count (default_max_zombie_func
+and round_spawning's multiplier), the spawn delay (2 s, 0.95 a round, 0.08 the
+least), health (150, +100 to round 9, then +10%), 24 out at once, ten seconds
+between rounds. The chase in solo is the nearest player, picked again every 1
+to 3 seconds (find_flesh), which a single player makes moot.
+
+Changed to theirs:
+- **Run speed** (set_run_speed()): zombie_move_speed is 1 in round 1, then the
+  last round's number times 8; a zombie draws from it to 34 above, walking to
+  35, running to 70, sprinting past it. Ours was the round times 8 give or
+  take 20, a round early.
+- **The last zombie sprints** (zombie_speed_up()): from round 4, once 4 or
+  fewer are left to come and 3 or fewer are out, the one left alone sprints.
+  zombiesTickSpeedUp().
+- **Stuck zombies** (round_spawn_failsafe()): every 30 s (40 for a crawler) one
+  that has gone under 24 inches is killed with no points and put back in the
+  count, unless it was at a barrier's boards in the last 8 s.
+  zombiesTickFailsafe().
+- **The swipe**: meleeattackdist 64 inches (ZOMBIE_COD_REACH 162.6, was 150),
+  meleedamage 60 of a player's 100 (ZOMBIE_REACH_BLOW 0.60, was 0.51; still
+  two hits down, five with Juggernog's 250).
+
+Not compared yet: _zm_blockers.gsc's tearing and rebuilding, _zm_zonemgr.gsc's
+spawners by zone, and the player's health regeneration (_zm_playerhealth.gsc,
+not downloaded).
+
+Testing Zombies on a stock arena: `--boot-stage 0x3c --mpsims 1 --mpscenario 6`
+(Warehouse). `--boot-map` knows only mod maps, and --mpscenario does nothing
+without --mpsims.
