@@ -95,6 +95,7 @@ f32 zombiesMeleeDamage(void);
 bool zombiesInstaKillOn(void);
 s32 zombiesDoorBarsChrs(struct prop *doorprop);
 f32 zombiesBulletScale(struct prop *aprop);
+f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, f32 damage);
 bool zombiesPhdShrugs(struct chrdata *chr);
 f32 zombiesBlowDamage(void);
 bool zombiesZombieSwipe(struct chrdata *zchr);
@@ -5844,8 +5845,8 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				if (ismelee) {
 					damage = zombiesMeleeDamage();
 				} else if (!explosion) {
-					// Double Tap: each bullet counts twice
-					damage *= zombiesBulletScale(aprop);
+					// Black Ops II's gun for the gun, and Double Tap
+					damage = zombiesBulletDamage(chr, aprop, gset, hitpart, damage);
 				}
 
 				// Insta-Kill: any hit, whatever its damage, kills

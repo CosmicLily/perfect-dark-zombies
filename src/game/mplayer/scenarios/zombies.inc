@@ -10466,6 +10466,193 @@ f32 zombiesBulletScale(struct prop *aprop)
 }
 
 /**
+ * A player's bullet on a zombie as Black Ops II's: each of Perfect Dark's
+ * guns takes the weapon file of the nearest Black Ops II one (the dump's
+ * zm_*\/weapons/<gun>_zm and _upgraded_zm) - its damage up close, its
+ * minDamage past minDamageRange (inches; a Perfect Dark unit is a
+ * centimetre), straight between, and its locHead, locTorsoUpper,
+ * locTorsoLower and arm multipliers. _zm.gsc's actor_damage_override passes
+ * that through untouched but for the perks. Perfect Dark's own numbers were
+ * made for simulants, which have a twentieth of a zombie's health by round
+ * 10 and none of its head multiplier: a rifle did the same as a pistol.
+ *
+ * Pack-a-Punched, the gun takes the _upgraded_zm file in place of doubling.
+ * A shotgun's pellets share the Black Ops II gun's shotCount between Perfect
+ * Dark's six. Guns with no row (the launchers, which explode, the
+ * tranquilizer, the laser) keep Perfect Dark's damage and the doubling.
+ */
+struct zombiecodshot {
+	s16 damage;
+	s16 mindamage;
+	s16 maxrange;  // inches: full damage this near
+	s16 minrange;  // and minDamage this far
+	f32 head;
+	f32 torso;
+	f32 pelvis;
+	f32 limb;
+};
+
+struct zombiecodgun {
+	s32 weaponnum;
+	u8 pellets;    // Black Ops II's shotCount, for a shotgun; 0 for a gun
+	struct zombiecodshot base;
+	struct zombiecodshot up;
+};
+
+#define ZOMBIE_M1911   { 20,   20,   500,  1300, 3.5f, 1.25f, 1.1f, 0.85f }, { 1000, 1000, 0,    0,    4,    1,    0.9f, 0.8f }
+#define ZOMBIE_KAP40   { 150,  100,  700,  1800, 2.5f, 1,     1,    1     }, { 200,  140,  700,  1800, 2.5f, 1,    1,    1    }
+#define ZOMBIE_FIVE7   { 160,  90,   800,  1800, 3.5f, 1,     1,    1     }, { 300,  180,  800,  1800, 3.5f, 1,    1,    1    }
+#define ZOMBIE_B23R    { 160,  100,  500,  1800, 2,    1,     1,    1     }, { 200,  150,  500,  1800, 2,    1,    1,    1    }
+#define ZOMBIE_PYTHON  { 1000, 300,  384,  1200, 1.5f, 1,     1,    1     }, { 1000, 600,  384,  1200, 3,    1.5f, 1.5f, 1.25f }
+#define ZOMBIE_MP5K    { 100,  50,   800,  1800, 4,    1,     1,    1     }, { 140,  80,   800,  1800, 5,    1,    1,    1    }
+#define ZOMBIE_PDW57   { 90,   90,   425,  1351, 4,    1,     1,    1     }, { 175,  100,  425,  1351, 5,    1,    1,    1    }
+#define ZOMBIE_SKORPION { 110, 40,   400,  851,  4,    1,     1,    1     }, { 210,  60,   400,  851,  5,    1,    1,    1    }
+#define ZOMBIE_CHICOM  { 100,  60,   600,  1400, 4,    1,     1,    1     }, { 160,  120,  600,  1400, 5,    1,    1,    1    }
+#define ZOMBIE_UZI     { 100,  60,   750,  1000, 4,    1,     1,    1     }, { 230,  80,   300,  1250, 4,    1,    1,    1    }
+#define ZOMBIE_MP40    { 110,  60,   800,  1800, 4,    1,     1,    1     }, { 200,  120,  800,  1800, 5,    1,    1,    1    }
+#define ZOMBIE_LSAT    { 195,  90,   1250, 3000, 3,    1,     1,    1     }, { 225,  120,  1250, 3000, 4,    1,    1,    1    }
+#define ZOMBIE_RPD     { 140,  100,  750,  1800, 3,    1,     1,    1     }, { 180,  140,  750,  1800, 3,    2,    1,    1    }
+#define ZOMBIE_GALIL   { 150,  100,  1600, 3000, 4,    1,     1,    1     }, { 220,  150,  1600, 3000, 5,    1,    1,    1    }
+#define ZOMBIE_SCAR    { 210,  100,  2250, 3000, 3.5f, 1,     1,    1     }, { 300,  150,  2250, 3000, 4,    1,    1,    1    }
+#define ZOMBIE_MTAR    { 140,  100,  1600, 2500, 4,    1,     1,    1     }, { 195,  150,  1600, 2500, 5,    1,    1,    1    }
+#define ZOMBIE_FAL     { 160,  130,  1600, 3000, 4,    1,     1,    1     }, { 240,  180,  1600, 3000, 5,    1,    1,    1    }
+#define ZOMBIE_TYPE25  { 110,  70,   1200, 2750, 4,    1,     1,    1     }, { 160,  110,  1200, 2750, 5,    1,    1,    1    }
+#define ZOMBIE_AK47    { 150,  100,  1500, 2000, 3,    1,     1,    1     }, { 250,  200,  1500, 2000, 5,    1,    1,    1    }
+#define ZOMBIE_870     { 310,  15,   400,  900,  1,    1,     1,    1     }, { 600,  30,   400,  1000, 1,    1,    1,    1    }
+#define ZOMBIE_DSR50   { 800,  550,  4000, 5000, 10,   1.5f,  1.5f, 1.5f  }, { 1000, 1000, 4000, 5000, 10,   5,    3,    2.5f }
+#define ZOMBIE_BARRETT { 600,  500,  4000, 5000, 10,   1.5f,  1.1f, 1     }, { 900,  900,  4000, 5000, 10,   3,    3,    2.5f }
+#define ZOMBIE_BALLISTA { 150, 150,  3000, 3001, 4,    1.8f,  1,    1     }, { 400,  200,  4000, 4000, 10,   6,    1,    1    }
+
+static const struct zombiecodgun g_ZombieCodGuns[] = {
+	// pistols: the Falcon 2 is the starting M1911, Mustang and Sally upgraded
+	{ WEAPON_FALCON2,          0, ZOMBIE_M1911 },
+	{ WEAPON_FALCON2_SILENCER, 0, ZOMBIE_KAP40 },
+	{ WEAPON_FALCON2_SCOPE,    0, ZOMBIE_FIVE7 },
+	{ WEAPON_PP9I,             0, ZOMBIE_FIVE7 },
+	{ WEAPON_CC13,             0, ZOMBIE_KAP40 },
+	{ WEAPON_MAGSEC4,          0, ZOMBIE_B23R },
+	{ WEAPON_MAULER,           0, ZOMBIE_FIVE7 },
+	{ WEAPON_PHOENIX,          0, ZOMBIE_KAP40 },
+	{ WEAPON_DY357MAGNUM,      0, ZOMBIE_PYTHON },
+	{ WEAPON_DY357LX,          0, ZOMBIE_PYTHON },
+	// sub-machine guns
+	{ WEAPON_CMP150,           0, ZOMBIE_MP5K },
+	{ WEAPON_DMC,              0, ZOMBIE_MP5K },
+	{ WEAPON_CYCLONE,          0, ZOMBIE_PDW57 },
+	{ WEAPON_RCP45,            0, ZOMBIE_PDW57 },
+	{ WEAPON_CALLISTO,         0, ZOMBIE_SKORPION },
+	{ WEAPON_LAPTOPGUN,        0, ZOMBIE_CHICOM },
+	{ WEAPON_KL01313,          0, ZOMBIE_UZI },
+	{ WEAPON_ZZT,              0, ZOMBIE_MP40 },
+	// assault rifles
+	{ WEAPON_DRAGON,           0, ZOMBIE_GALIL },
+	{ WEAPON_K7AVENGER,        0, ZOMBIE_SCAR },
+	{ WEAPON_AR34,             0, ZOMBIE_MTAR },
+	{ WEAPON_SUPERDRAGON,      0, ZOMBIE_FAL },
+	{ WEAPON_KF7SPECIAL,       0, ZOMBIE_TYPE25 },
+	{ WEAPON_AR53,             0, ZOMBIE_AK47 },
+	// light machine guns
+	{ WEAPON_RCP120,           0, ZOMBIE_LSAT },
+	{ WEAPON_REAPER,           0, ZOMBIE_RPD },
+	// shotguns and snipers
+	{ WEAPON_SHOTGUN,          4, ZOMBIE_870 },
+	{ WEAPON_SNIPERRIFLE,      0, ZOMBIE_DSR50 },
+	{ WEAPON_FARSIGHT,         0, ZOMBIE_BARRETT },
+	{ WEAPON_CROSSBOW,         0, ZOMBIE_BALLISTA },
+};
+
+// chrDamage() asks, for a player's bullet on a zombie: damage as it is to
+// be taken, Double Tap's included
+f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, f32 damage)
+{
+	const struct zombiecodshot *shot = NULL;
+	const struct zombiecodgun *gun = NULL;
+	s32 playernum;
+	f32 cod;
+	f32 dist;
+	f32 mult;
+	s32 weaponnum;
+	s32 i;
+
+	if (!aprop || aprop->type != PROPTYPE_PLAYER || !gset || !chr || !chr->prop) {
+		return damage * zombiesBulletScale(aprop);
+	}
+
+	weaponnum = weaponHost(gset->weaponnum);
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieCodGuns); i++) {
+		if (g_ZombieCodGuns[i].weaponnum == weaponnum) {
+			gun = &g_ZombieCodGuns[i];
+			break;
+		}
+	}
+
+	if (!gun) {
+		return damage * zombiesBulletScale(aprop);
+	}
+
+	playernum = playermgrGetPlayerNumByProp(aprop);
+	shot = playernum >= 0 && zombiesGunIsPapped(playernum, gset->weaponnum) ? &gun->up : &gun->base;
+
+	// the falloff, in Perfect Dark's units
+	{
+		const f32 dx = chr->prop->pos.x - aprop->pos.x;
+		const f32 dy = chr->prop->pos.y - aprop->pos.y;
+		const f32 dz = chr->prop->pos.z - aprop->pos.z;
+		const f32 near = shot->maxrange * 2.54f;
+		const f32 far = shot->minrange * 2.54f;
+
+		dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+		if (shot->mindamage >= shot->damage || dist <= near) {
+			cod = shot->damage;
+		} else if (dist >= far || far <= near) {
+			cod = shot->mindamage;
+		} else {
+			cod = shot->damage + (shot->mindamage - shot->damage) * (dist - near) / (far - near);
+		}
+	}
+
+	switch (hitpart) {
+	case HITPART_HEAD:
+	case HITPART_HAT:
+		mult = shot->head;
+		break;
+	case HITPART_TORSO:
+	case HITPART_GENERAL:
+	case HITPART_GENERALHALF:
+		mult = shot->torso;
+		break;
+	case HITPART_PELVIS:
+		mult = shot->pelvis;
+		break;
+	default:
+		mult = shot->limb;
+		break;
+	}
+
+	cod *= mult;
+
+	// Perfect Dark's shotgun fires six pellets where Black Ops II's fires its shotCount
+	if (gun->pellets) {
+		cod = cod * gun->pellets / 6;
+	}
+
+	if (playernum >= 0 && zombiesPlayerHasPerk(playernum, ZOMBIEPERK_DOUBLETAP)) {
+		cod *= ZOMBIE_DOUBLETAP_DAMAGE;
+	}
+
+	if (sysArgCheck("--zombies-log-damage")) {
+		sysLogPrintf(LOG_NOTE, "ZOMBIES: gun %d%s hitpart %d at %.0f: %.0f of Black Ops II's (health %.0f of %.0f)",
+				weaponnum, shot == &gun->up ? " (upgraded)" : "", hitpart, dist, cod,
+				(chr->maxdamage - chr->damage) * ZOMBIE_COD_HEALTH / ZOMBIE_PD_HEALTH,
+				chr->maxdamage * ZOMBIE_COD_HEALTH / ZOMBIE_PD_HEALTH);
+	}
+
+	return ZOMBIE_PD_HEALTH * cod / ZOMBIE_COD_HEALTH;
+}
+
+/**
  * chrDamage() asks, before anything is taken: Deadshot Daiquiri's aim. A
  * player with it looking down the sights (Perfect Dark's aim mode, or COD
  * Style Aiming's sights) puts a bullet that hits a zombie anywhere into its

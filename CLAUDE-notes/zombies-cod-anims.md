@@ -1111,3 +1111,22 @@ The middle of the screen under the HUD's left alignment is not `viewWidth/2`:
 the alignment is an offset (the pillar's width, cut to 16:9's under
 `G_ASPECT_WIDE_EXT`, none when centred), and the view is 320x220, not 4:3.
 Taking it as 4:3 put the title ~90px right of centre at 1920x1009.
+
+## A gun's damage on a zombie is Black Ops II's weapon file (2026-10-28)
+
+Perfect Dark's damage numbers were made for simulants: by round 10 a zombie
+has some seven times a round 1 zombie's health, and Perfect Dark's rifles hit
+barely harder than its pistols, so the assault rifles "did nothing".
+`zombiesBulletDamage()` (zombies.inc, called from chrDamage() in place of the
+old `zombiesBulletScale()` doubling) gives each Perfect Dark gun the weapon file
+of the nearest Black Ops II gun, read out of the dump
+(`zone_dump/t6/zm_*/weapons/<gun>_zm`, backslash-separated key\value): `damage`,
+`minDamage`, `maxDamageRange`/`minDamageRange` (inches, ×2.54 for our units),
+and `locHead`, `locTorsoUpper`, `locTorsoLower`, `locRightArmUpper`.
+`_zm.gsc`'s actor_damage_override passes that through untouched but for the
+perks, so nothing else multiplies it. Pack-a-Punch takes the `_upgraded_zm` file
+instead of doubling. The shotgun's six pellets share the 870's `shotCount` (4).
+Guns with no row (launchers, tranquilizer, laser) keep the old path.
+`--zombies-log-damage` prints each hit in Black Ops II's units; with
+`--zombies-test-zombie 300 --zombies-test-shoot head` the Falcon (M1911, 20,
+head 3.5) takes three to kill a round 1 zombie, as Black Ops II's does.
