@@ -20,6 +20,10 @@
 #include "xblamesh.h"
 #include "system.h"
 #include "net/net.h"
+
+#ifndef PLATFORM_N64
+s32 codmapStageIs(s32 stagenum); // codmap.c
+#endif
 #endif
 
 /**
@@ -269,6 +273,10 @@ void gfxReset(void)
 #ifndef PLATFORM_N64
 		// netplay (phase 8): remote passes keep their matrices and vertices
 		if (g_NetMode != NETMODE_NONE) vtxsize += netGfxVtxExtra();
+
+		// A Black Ops II map draws every room in view (bgTickPortals()),
+		// each with the frame's copy of its colours: Town wanted 2 MB at once
+		if (codmapStageIs(mainGetStageNum())) vtxsize *= 3;
 
 		gfxsize *= GFX_POOL_SCALE;
 		vtxsize *= GFX_POOL_SCALE;
@@ -643,6 +651,20 @@ void *gfxAllocate(u32 size)
 	return gfxVtxTake(ALIGN16(size), "a general allocation");
 #endif
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Whether ptr came from the scratch block every allocation past the pool's
+ * guard shares (gfxVtxTake()): the next such allocation writes over it, so a
+ * record the renderer follows a pointer out of must not be left there
+ */
+bool gfxAllocationIsScratch(const void *ptr)
+{
+	const u8 *p = ptr;
+
+	return g_VtxSink && p >= g_VtxSink && p < g_VtxSink + g_VtxSinkSize;
+}
+#endif
 
 void gfxSwapBuffers(void)
 {

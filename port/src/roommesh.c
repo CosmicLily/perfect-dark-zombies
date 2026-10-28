@@ -86,6 +86,13 @@ Gfx *roomMeshBegin(Gfx *gdl, s32 roomnum)
 	m->dynamic = (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) != 0;
 
 	draw = gfxAllocate(sizeof(*draw));
+
+	// Past the frame's pool the record would be written over before it is
+	// drawn: the room goes through the CPU this frame instead
+	if (gfxAllocationIsScratch(draw)) {
+		return gdl;
+	}
+
 	draw->mesh = m;
 	draw->palette = NULL;
 	draw->colours = g_Rooms[roomnum].colours

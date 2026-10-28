@@ -2599,7 +2599,7 @@ void bgTick(void)
 	 * reads and its 4KB-at-a-time inflate; on PC rooms come from the heap, and
 	 * bgGarbageCollectRooms() is compiled out entirely for that reason.
 	 */
-	if (modSpectateIsOn() || xblaStageDrawsEveryRoom()) {
+	if (modSpectateIsOn() || xblaStageDrawsEveryRoom() || codmapStageIs(g_Vars.stagenum)) {
 		var8007fc10 = 200;
 	}
 #endif
@@ -7166,6 +7166,23 @@ static void bgTickPortalsSpectate(struct screenbox *box)
 			continue;
 		}
 
+		// A Black Ops II map's room past the far plane is in the fog
+		if (!modSpectateIsOn() && codmapStageIs(g_Vars.stagenum)) {
+			f32 d2 = 0.0f;
+
+			for (s32 i = 0; i < 3; i++) {
+				const f32 c = campos->f[i];
+				const f32 d = c < g_Rooms[room].bbmin[i] ? g_Rooms[room].bbmin[i] - c
+					: c > g_Rooms[room].bbmax[i] ? c - g_Rooms[room].bbmax[i] : 0.0f;
+
+				d2 += d * d;
+			}
+
+			if (d2 > g_BgSnake.zrange.far * g_BgSnake.zrange.far) {
+				continue;
+			}
+		}
+
 		// Two of the HD level's rooms that overlap are drawn only where the
 		// portal walk reaches them (Aztec's closet and the room whose wall
 		// runs through it)
@@ -7681,6 +7698,13 @@ void bgTickPortals(void)
 				bgTickPortalsSpectate(&box);
 			} else if (xblaStageDrawsEveryRoom()) {
 				bgTickPortalsEveryRoom(&box);
+			} else if (codmapStageIs(g_Vars.stagenum)) {
+				// A Black Ops II map's rooms are squares of a grid, and its
+				// portals the squares' open sides: the walk through them
+				// narrowed at every side and dropped rooms the camera could
+				// see, which came and went as the player walked. Every room in
+				// the view's box and the fog's reach is drawn instead
+				bgTickPortalsSpectate(&box);
 			} else
 #endif
 			bgTickPortalsWalk(&box);

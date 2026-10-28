@@ -18,6 +18,7 @@ Col *gfxAllocateColours(s32 count);
 void *gfxAllocate(u32 size);
 #ifndef PLATFORM_N64
 bool gfxHasVtxSpace(u32 size);
+bool gfxAllocationIsScratch(const void *ptr);
 #endif
 void gfxSwapBuffers(void);
 s32 gfxGetFreeGfx(Gfx *gdl);

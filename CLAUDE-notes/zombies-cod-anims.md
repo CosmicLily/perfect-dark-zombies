@@ -799,3 +799,20 @@ bondwalk.c's four-second fall death. `--zombies-test-under` with
 now ask `zombiesFallNetCatch()` first, which on a Black Ops II map in Zombies
 puts the player back at their last safe place and cancels the fall. Placed at
 8500,8500 (outside Town, ground -2^32) the player used to die on the spot.
+## A Black Ops II map's rooms popping in and out (2026-10-27)
+
+codmap.c's rooms are squares of a 1000-unit grid and its portals the squares'
+open sides. bgTickPortalsWalk() narrows the screen box at every portal, so on
+Town whole squares the camera could see were dropped and came back as the
+player walked ("when I walk around it just bugs out"). A codmap stage now goes
+through bgTickPortalsSpectate() instead (every room in the screen box, cut at
+the far plane, which the fog hides), with the 200-room load budget.
+
+That drew past the frame's vtx pool (Town wanted 2 MB of a 1.6 MB pool), and
+anything past the pool's guard is served from ONE scratch block every such
+allocation shares (gfxVtxTake()). roommesh.c's gfxmeshdraw record landed there,
+was written over before the renderer read it, and gfx_mesh_begin() crashed on a
+pointer of -1. roomMeshBegin() now leaves a room on the CPU path when its record
+is scratch (gfxAllocationIsScratch()), and a codmap stage starts with three
+times the pool. Any new record the renderer follows a pointer out of, taken
+from gfxAllocate(), needs the same check.
