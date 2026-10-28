@@ -1082,3 +1082,18 @@ hand's loaded count is kept as the knife comes out (g_ZombieKnifeLoaded) and
 zombiesKnifeKeepLoaded() puts the magazine back to it once the gun is up again,
 the rest back in the reserve. `--zombies-test-knife F`: 3 loaded, a knife at
 frame F; the log says what it came back with (8) and was put back to (3).
+
+## The players' own spawn points (2026-10-28)
+
+As Call of Duty's: every player starts, and comes back, at one spot of four
+together (zombiesReservePlayerPads(), zombiesPlayerSpot()): one spawn pad of
+the start zone, the one nearest the middle of the zone's pads that has no wall
+near it (one no window could use), kept back from the spawn list, and three
+more 90 out ahead, left and right of it where the floor goes on and no wall is
+between; player N at the Nth (zombiesChooseSpawnLocation()). Windows keep
+350 off the pad. They had spawned at any pad of the open zones, the windows'
+own among them. Taking four whole pads instead cost Warehouse and Villa every
+window - an arena has 10 to 17 spawn pads, and machines, wall buys, windows
+and the box's places all want them. Even one shifts which feature gets which
+wall: windows came out Warehouse 2, Carpark 1, Complex 4, Villa 1, Skedar 3
+(were 3, 2, 5, 3, 3), Villa's walls going to its wall buys.

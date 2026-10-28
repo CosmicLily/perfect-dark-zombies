@@ -1875,6 +1875,174 @@ static void zombiesReserveBoxPad(void)
 
 }
 
+/**
+ * The players' own spawn points, as Call of Duty's: ZOMBIE_PLAYER_SPAWNS spots
+ * together where the players start - one spawn pad of the start zone, the one
+ * nearest the middle of the zone's pads, kept back from the spawn list, and
+ * spots round it on open floor (zombiesPlayerSpot()). Every player starts
+ * there and comes back there, player N at the Nth; no window or machine goes
+ * beside it (zombiesPlaceBarriers()'s taken). They spawned at any pad in the
+ * open zones, the pads the windows stand beside among them. One pad, not
+ * four: an arena has 10 to 17, and four left Warehouse no window.
+ */
+#define ZOMBIE_PLAYER_SPAWNS 4
+#define ZOMBIE_PLAYER_APART  90.0f // the spots round the pad, this far out
+
+static bool zombiesFindWall(struct coord *pos, RoomNum *rooms, f32 reach, f32 *dist, struct coord *dir);
+
+static s16 g_ZombiePlayerPad = -1;
+static s32 g_ZombieNumPlayerPads = 0; // 1 with a pad kept, 0 without
+
+static void zombiesReservePlayerPads(void)
+{
+	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
+	struct coord mid = {0, 0, 0};
+	f32 bestdist = 1e30f;
+	s32 count = 0;
+	s32 best = -1;
+	s32 i;
+
+	g_ZombiePlayerPad = -1;
+	g_ZombieNumPlayerPads = 0;
+
+	if (n < 4) {
+		return;
+	}
+
+	for (i = 0; i < n; i++) {
+		struct pad pad;
+
+		if (g_ZombieStartComp >= 0 && zombiesPadComp(g_SpawnPoints[i]) != g_ZombieStartComp) {
+			continue;
+		}
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS, &pad);
+		mid.x += pad.pos.x;
+		mid.y += pad.pos.y;
+		mid.z += pad.pos.z;
+		count++;
+	}
+
+	if (count == 0) {
+		return;
+	}
+
+	mid.x /= count;
+	mid.y /= count;
+	mid.z /= count;
+
+	for (i = 0; i < n; i++) {
+		struct pad pad;
+		f32 dx;
+		f32 dy;
+		f32 dz;
+		f32 d;
+
+		if (g_ZombieStartComp >= 0 && zombiesPadComp(g_SpawnPoints[i]) != g_ZombieStartComp) {
+			continue;
+		}
+
+		padUnpack(g_SpawnPoints[i], PADFIELD_POS | PADFIELD_ROOM, &pad);
+		dx = pad.pos.x - mid.x;
+		dy = pad.pos.y - mid.y;
+		dz = pad.pos.z - mid.z;
+		d = dx * dx + dy * dy * 4 + dz * dz;
+
+		// a pad with no wall near it first: one a window could not have
+		{
+			RoomNum rooms[2] = { pad.room, -1 };
+			struct coord dir;
+			f32 walldist;
+
+			if (zombiesFindWall(&pad.pos, rooms, 400.0f, &walldist, &dir)) { // ZOMBIE_BARRIER_REACH
+				d += 1e12f;
+			}
+		}
+
+		if (d < bestdist || (d == bestdist && g_SpawnPoints[i] < g_SpawnPoints[best])) {
+			bestdist = d;
+			best = i;
+		}
+	}
+
+	if (best < 0) {
+		return;
+	}
+
+	g_ZombiePlayerPad = g_SpawnPoints[best];
+	g_ZombieNumPlayerPads = 1;
+	g_SpawnPoints[best] = g_SpawnPoints[n - 1];
+	g_NumSpawnPoints = n - 1;
+
+	sysLogPrintf(LOG_NOTE, "zombies: the players spawn round pad %d on stage 0x%02x", g_ZombiePlayerPad, g_Vars.stagenum);
+}
+
+/**
+ * Spawn spot k of the players' (0 the pad itself, then ahead, left and right
+ * of it ZOMBIE_PLAYER_APART out, each where the floor goes on and no wall is
+ * between it and the pad, else the pad): its place and rooms
+ */
+static void zombiesPlayerSpot(s32 k, struct coord *pos, RoomNum *rooms)
+{
+	static const f32 dirs[4][2] = { { 0, 0 }, { 0, 1 }, { 1, 0 }, { -1, 0 } };
+	struct pad pad;
+	RoomNum padrooms[2];
+	struct coord to;
+	RoomNum torooms[8];
+	f32 ax;
+	f32 az;
+	f32 len;
+	s32 i;
+
+	padUnpack(g_ZombiePlayerPad, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
+	padrooms[0] = pad.room;
+	padrooms[1] = -1;
+	*pos = pad.pos;
+	rooms[0] = pad.room;
+	rooms[1] = -1;
+
+	k %= ZOMBIE_PLAYER_SPAWNS;
+
+	if (k == 0) {
+		return;
+	}
+
+	len = sqrtf(pad.look.x * pad.look.x + pad.look.z * pad.look.z);
+	ax = len > 0.001f ? pad.look.x / len : 0;
+	az = len > 0.001f ? pad.look.z / len : 1;
+
+	// ahead along the pad's look; left and right across it
+	to.x = pad.pos.x + (dirs[k][1] * ax + dirs[k][0] * az) * ZOMBIE_PLAYER_APART;
+	to.y = pad.pos.y;
+	to.z = pad.pos.z + (dirs[k][1] * az - dirs[k][0] * ax) * ZOMBIE_PLAYER_APART;
+
+	if (!cdTestLos04(&pad.pos, padrooms, &to, CDTYPE_BG | CDTYPE_OBJS)) {
+		return;
+	}
+
+	func0f065e74(&pad.pos, padrooms, &to, torooms);
+
+	if (torooms[0] <= 0) {
+		return;
+	}
+
+	{
+		f32 ground = cdFindGroundAtCyl(&to, 20, torooms, NULL, NULL);
+
+		if (ground < pad.pos.y - 200 || ground > pad.pos.y) {
+			return;
+		}
+	}
+
+	*pos = to;
+
+	for (i = 0; i < 7 && torooms[i] != -1; i++) {
+		rooms[i] = torooms[i];
+	}
+
+	rooms[i] = -1;
+}
+
 void zombiesReserveJuggPad(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
@@ -1893,6 +2061,7 @@ void zombiesReserveJuggPad(void)
 	// a spot of its own needs no pad
 	if (n < 3 || zombiesFindJuggSpot(g_Vars.stagenum) || zombiesLayout()) {
 		zombiesReserveBoxPad();
+		zombiesReservePlayerPads();
 		return;
 	}
 
@@ -1930,6 +2099,7 @@ void zombiesReserveJuggPad(void)
 	}
 
 	zombiesReserveBoxPad();
+	zombiesReservePlayerPads();
 }
 
 // The fallback: the pad zombiesReserveJuggPad() kept for it
@@ -17967,6 +18137,28 @@ bool zombiesChooseSpawnLocation(f32 chrradius, struct coord *pos, RoomNum *rooms
 		return true;
 	}
 
+	// a player: their own spawn point, player N at the Nth
+	// (zombiesReservePlayerPads())
+	if (g_ZombieNumPlayerPads > 0 && prop && prop->type == PROPTYPE_PLAYER) {
+		s32 p;
+
+		for (p = 0; p < PLAYERCOUNT(); p++) {
+			if (g_Vars.players[p] && g_Vars.players[p]->prop == prop) {
+				break;
+			}
+		}
+
+		{
+			struct pad pad;
+
+			zombiesPlayerSpot(p < PLAYERCOUNT() ? p : 0, pos, rooms);
+			padUnpack(g_ZombiePlayerPad, PADFIELD_LOOK, &pad);
+			*angle = atan2f(pad.look.x, pad.look.z);
+		}
+
+		return true;
+	}
+
 	if (g_ZombieNumDoors == 0) {
 		return false;
 	}
@@ -18277,7 +18469,7 @@ static bool zombiesFindNiche(struct coord *pos, RoomNum *rooms, f32 *dist, struc
 static void zombiesPlaceBarriers(void)
 {
 	s32 n = g_NumSpawnPoints < MAX_SPAWNPOINTS ? g_NumSpawnPoints : MAX_SPAWNPOINTS;
-	struct coord taken[ZOMBIE_MACHINE_IDS + ZOMBIE_WALLBUY_MAX + ZOMBIE_DOOR_MAX + ZOMBIE_BARRIER_MAX + 4];
+	struct coord taken[ZOMBIE_MACHINE_IDS + ZOMBIE_WALLBUY_MAX + ZOMBIE_DOOR_MAX + ZOMBIE_BARRIER_MAX + 4 + ZOMBIE_PLAYER_SPAWNS];
 	struct coord walldir[MAX_SPAWNPOINTS];
 	f32 walldist[MAX_SPAWNPOINTS];
 	bool usable[MAX_SPAWNPOINTS];
@@ -18356,6 +18548,13 @@ static void zombiesPlaceBarriers(void)
 
 	for (k = 0; k < g_ZombieNumDoors; k++) {
 		taken[ntaken++] = g_ZombieDoors[k].pos;
+	}
+
+	// and the players' own spawn points: no window by where they start
+	if (g_ZombieNumPlayerPads > 0) {
+		RoomNum sprooms[8];
+
+		zombiesPlayerSpot(0, &taken[ntaken++], sprooms);
 	}
 
 	for (i = 0; i < n; i++) {
