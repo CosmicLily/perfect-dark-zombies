@@ -3800,6 +3800,7 @@ static bool zombiesCherryFxAny(void)
 Gfx *zombiesRenderGibs(Gfx *gdl);
 
 static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw);
+static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw);
 
 Gfx *zombiesRenderRayFx(Gfx *gdl)
 {
@@ -3834,6 +3835,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 
 	// and the power-ups' glow
 	any |= zombiesRenderPowerupGlows(NULL, NULL, NULL, NULL, NULL, false) != NULL;
+	any |= zombiesRenderBoxGlows(NULL, NULL, NULL, NULL, NULL, false) != NULL;
 
 	if (!any) {
 		return gdl;
@@ -3885,6 +3887,7 @@ Gfx *zombiesRenderRayFx(Gfx *gdl)
 
 	gdl = zombiesRayTex(gdl, false);
 	gdl = zombiesRenderPowerupGlows(gdl, cam, campos, right, up, true);
+	gdl = zombiesRenderBoxGlows(gdl, cam, campos, right, up, true);
 
 	// the bolts: a streak along the way and a bright head
 	for (i = 0; i < ZOMBIE_RAYFX_MAX; i++) {
@@ -15121,6 +15124,116 @@ static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos,
 	}
 
 	return draw ? gdl : NULL;
+}
+
+/**
+ * The Mystery Box's lights, as Black Ops II's effects (no file of theirs in the
+ * dump: drawn with the Ray Gun's glow sprite, additively):
+ * - lght_marker (default_pandora_fx_func()): the tall beam over the place the
+ *   box is at, so it is found across the map; while it is there
+ * - magicbox_glow (treasure_chest_glowfx(), fx_zmb_tranzit_marker_glow): the
+ *   light out of it while its lid is up
+ */
+#define ZOMBIE_BOX_BEAM_HIGH  1600.0f // how far up the beam reaches
+#define ZOMBIE_BOX_BEAM_WIDE  70.0f   // and its half width
+#define ZOMBIE_BOX_GLOW_WIDE  110.0f  // the open box's glow, half its size
+
+static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw)
+{
+	const bool here = g_ZombieBox && g_ZombieBox->prop
+		&& g_ZombieBoxState != ZOMBIEBOX_AWAY && g_ZombieBoxState != ZOMBIEBOX_ARRIVE;
+	const bool open = here && g_ZombieBoxLidAnim == ZMCHAR_BOX + ZMCHAR_BOX_OPEN;
+	const f32 top = g_ZombieBoxFloor + 49;
+	struct coord centre;
+	f32 side[3];
+	f32 len;
+	f32 a[3];
+	f32 b[3];
+	f32 pulse;
+	s32 k;
+
+	if (!here || !zombiesBoxMesh()) {
+		return NULL;
+	}
+
+	if (!draw) {
+		return (Gfx *)1;
+	}
+
+	pulse = 0.9f + 0.1f * sinf(g_Vars.lvframenum * 0.08f);
+
+	// the beam: upright, its face to the camera about the vertical
+	side[0] = campos->z - g_ZombieBox->prop->pos.z;
+	side[1] = 0;
+	side[2] = g_ZombieBox->prop->pos.x - campos->x;
+	len = sqrtf(side[0] * side[0] + side[2] * side[2]);
+
+	if (len < 1) {
+		side[0] = right[0];
+		side[2] = right[2];
+		len = sqrtf(side[0] * side[0] + side[2] * side[2]);
+	}
+
+	side[0] /= len > 0 ? len : 1;
+	side[2] /= len > 0 ? len : 1;
+
+	centre.x = g_ZombieBox->prop->pos.x;
+	centre.z = g_ZombieBox->prop->pos.z;
+
+	// in pieces up its length, overlapping: the sprite is brightest in its
+	// middle, and one quad the beam's height was all but clear at the box
+	{
+		const f32 piece = 100;
+		f32 y;
+
+		for (y = top + piece * 0.5f; y < top + ZOMBIE_BOX_BEAM_HIGH; y += piece) {
+			const f32 fade = 1.0f - (y - top) / ZOMBIE_BOX_BEAM_HIGH;
+
+			centre.y = y;
+
+			for (k = 0; k < 3; k++) {
+				a[k] = side[k] * ZOMBIE_BOX_BEAM_WIDE;
+				b[k] = (k == 1 ? 1 : 0) * piece;
+			}
+
+			gDPSetPrimColor(gdl++, 0, 0, 0x60, 0x98, 0xff, (u8)(0x58 * fade));
+			gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+
+			for (k = 0; k < 3; k++) {
+				a[k] *= 0.35f;
+			}
+
+			gDPSetPrimColor(gdl++, 0, 0, 0xc0, 0xd8, 0xff, (u8)(0x70 * fade));
+			gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+		}
+	}
+
+	// out of the open box: a warm glow at its mouth and a short shaft up
+	if (open) {
+		const f32 grow = MIN(1.0f, g_ZombieBoxLid60 / 30.0f);
+
+		centre.y = top + 10;
+
+		for (k = 0; k < 3; k++) {
+			a[k] = right[k] * ZOMBIE_BOX_GLOW_WIDE * pulse * grow;
+			b[k] = up[k] * ZOMBIE_BOX_GLOW_WIDE * 0.6f * pulse * grow;
+		}
+
+		gDPSetPrimColor(gdl++, 0, 0, 0xff, 0xd0, 0x80, 0xb0);
+		gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+
+		centre.y = top + 90;
+
+		for (k = 0; k < 3; k++) {
+			a[k] = side[k] * 45 * grow;
+			b[k] = (k == 1 ? 1 : 0) * 90 * grow;
+		}
+
+		gDPSetPrimColor(gdl++, 0, 0, 0xff, 0xe8, 0xb0, 0x90);
+		gdl = zombiesRayQuad(gdl, cam, &centre, a, b);
+	}
+
+	return gdl;
 }
 
 static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defaultobj *obj)

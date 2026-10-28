@@ -1020,3 +1020,15 @@ round rise by weapon_rise's own motion from the box's floor
 (magic_box_do_weapon_rise(): BO2 carries them on zbarrier pieces 3 and 4, then
 spawns the gun 40 inches up and sinks it 85% over its 12 s, as ours does).
 Not used: teddy_rise's motion (BO2's script moves the bear with moveto()).
+
+**The box's lights** (2026-10-28): Black Ops II puts them on with effects
+(default_pandora_fx_func()'s lght_marker on a tag_origin over the box, and
+treasure_chest_glowfx()'s magicbox_glow client field, fx_zmb_tranzit_marker_glow),
+whose files are not in the dump. zombiesRenderBoxGlows() draws them with the Ray
+Gun's glow sprite, additively, in the effects pass beside the power-ups' glow:
+the beam, upright and turned to the camera, pale blue, 1600 up in overlapping
+100-high pieces (one quad the beam's height is the sprite's bright middle far
+over the box and nothing at it) and fading to its top, while the box is at its
+place; and with the lid up a warm glow at its mouth and a short shaft. The "?"
+marks have no glow map of their own (the box's generic_objective material is a
+black placeholder for Black Ops II's objective outline).
