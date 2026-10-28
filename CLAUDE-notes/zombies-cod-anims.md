@@ -995,3 +995,10 @@ timers and 4 drops a round, kill points. Kept on purpose: the Ray Gun's 1 in 8
 (BO2 picks evenly; our pool is larger and a tester never saw one). Not synced
 online: a client keeps the box where it started. Test: `--zombies-test-box`
 (camera on it), `--zombies-test-teddy F` (a spin at frame F that must move it).
+
+**The box's own model** (2026-10-28): p6_anim_zm_magic_box_lod0.glb (TranZit's
+zone; its pictures ~-gp6_zm_magic_box_c, _hay_c and generic_objective are in
+Buried's images/) through glb2obj.py into zombies/models/magicbox/: 243 x 67 x
+49 cm. zombiesRenderBoxMesh() draws it over the crate, which stays for
+collision at ZOMBIE_BOX_LENGTH 243; its floor is g_ZombieBoxFloor, and with the
+model the gun floats 40 inches over the floor as Black Ops II floats it.

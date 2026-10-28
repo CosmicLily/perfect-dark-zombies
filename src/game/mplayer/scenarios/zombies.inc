@@ -1496,6 +1496,9 @@ static s32 g_ZombieBoxAt = 0;       // which of them it is at
 static s32 g_ZombieBoxAccessed = 0; // level.chest_accessed: guns it has offered since it last moved
 static s32 g_ZombieBoxMoves = 0;    // level.chest_moves
 static s32 g_ZombieBoxPaid = 0;     // what the spin now going cost, given back if the teddy bear comes
+static f32 g_ZombieBoxFloor = 0;  // the floor under it (zombiesBoxPutAt())
+struct zombiemesh;
+static struct zombiemesh *zombiesBoxMesh(void);
 static bool g_ZombieBoxBySale = false; // ... and whether Fire Sale opened it: then it never moves, and is not counted
 
 /**
@@ -3992,6 +3995,7 @@ static bool zombiesRenderBarrier(struct modelrenderdata *renderdata, struct defa
 static bool zombiesRenderZmGun(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defaultobj *obj);
 static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaultobj *obj);
+static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defaultobj *obj);
 
 /**
  * propobj.c's objRender(), for each object before it draws its model: true
@@ -4098,6 +4102,11 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// the Mystery Box's teddy bear, in place of the gun over it
 	if (zombiesRenderTeddy(renderdata, obj)) {
+		return true;
+	}
+
+	// the Mystery Box itself, as Black Ops II's, in place of the crate
+	if (zombiesRenderBoxMesh(renderdata, obj)) {
 		return true;
 	}
 
@@ -12605,7 +12614,7 @@ s32 zombiesStartAmmo(s32 weaponnum)
  * that will not load is left out rather than drawn as nothing.
  */
 #define ZOMBIE_BOX_MODEL      MODEL_MULTI_AMMO_CRATE
-#define ZOMBIE_BOX_LENGTH     160.0f  // how long the box is, in world units
+#define ZOMBIE_BOX_LENGTH     243.0f  // how long the box is, in world units: Black Ops II's p6_anim_zm_magic_box
 #define ZOMBIE_BOX_COST       950
 static s32 zombiesBoxCost(void); // ZOMBIE_BOX_COST, or Fire Sale's
 #define ZOMBIE_BOX_RANGE      140.0f  // how near the box buying and taking work
@@ -13003,6 +13012,19 @@ static void zombiesBoxPutAt(s32 padnum)
 
 	if (setupGetObjBbox(obj, &obj->prop->pos, obj->realrot, &min, &max)) {
 		g_ZombieBoxTop = max.y;
+	}
+
+	// Black Ops II's own box stands on the floor and its gun floats 40 inches
+	// over that (treasure_chest_weapon_spawn()): the lid where the gun's rise
+	// (8 and ZOMBIE_BOX_RISE over it) comes to that
+	g_ZombieBoxFloor = obj->prop->pos.y;
+
+	if (setupGetObjBbox(obj, &obj->prop->pos, obj->realrot, &min, &max)) {
+		g_ZombieBoxFloor = min.y;
+	}
+
+	if (zombiesBoxMesh()) {
+		g_ZombieBoxTop = g_ZombieBoxFloor + 40 * 2.54f - 8 - ZOMBIE_BOX_RISE;
 	}
 }
 
@@ -15063,6 +15085,72 @@ static bool zombiesRenderPowerup(struct modelrenderdata *renderdata, struct defa
  * from the gun as Black Ops II turns it. Without the OBJ the gun is drawn.
  */
 static struct zombiemesh g_ZombieTeddyMesh;
+
+/**
+ * Black Ops II's Mystery Box (p6_anim_zm_magic_box, TranZit's zone, through
+ * tools/zombies/glb2obj.py into zombies/models/magicbox/), at its own size,
+ * drawn in place of the crate the box is made from (which keeps its place and
+ * is as long, ZOMBIE_BOX_LENGTH), its bottom on the floor and its length along
+ * the crate's. Without the OBJ the crate is drawn.
+ */
+static struct zombiemesh g_ZombieBoxMesh;
+
+static struct zombiemesh *zombiesBoxMesh(void)
+{
+	struct zombiemesh *zm = &g_ZombieBoxMesh;
+
+	if (!zm->tried) {
+		zombiesMeshBuildFrom(zm, "$E/zombies/models/magicbox/magicbox.obj", "the Mystery Box");
+	}
+
+	return zm->gdl ? zm : NULL;
+}
+
+static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defaultobj *obj)
+{
+	struct zombiemesh *zm;
+	f32 centre[3];
+	f32 pos[3];
+	Mtxf world;
+	Mtxf *mtx;
+	s32 i;
+	s32 j;
+
+	if (obj != g_ZombieBox || obj->prop == NULL || (zm = zombiesBoxMesh()) == NULL) {
+		return false;
+	}
+
+	if (!(renderdata->flags & MODELRENDERFLAG_OPA)) {
+		return true;
+	}
+
+	centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
+	centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
+	centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
+
+	pos[0] = obj->prop->pos.x;
+	pos[1] = g_ZombieBoxFloor;
+	pos[2] = obj->prop->pos.z;
+
+	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &world);
+
+	for (i = 0; i < 3; i++) {
+		for (j = 0; j < 3; j++) {
+			world.m[i][j] /= ZOMBIE_MESH_FIXED;
+		}
+	}
+
+	for (i = 0; i < 3; i++) {
+		world.m[3][i] = pos[i] - (world.m[0][i] * centre[0] + world.m[1][i] * centre[1] + world.m[2][i] * centre[2]);
+	}
+
+	mtx = gfxAllocateMatrix();
+	mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
+
+	return true;
+}
 
 static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaultobj *obj)
 {
