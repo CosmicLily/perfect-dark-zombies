@@ -897,8 +897,15 @@ one zone: there the barriers near a player are still preferred. The log says
 "player 1 is in zone N" as it changes. Carpark (--boot-stage 0x3d) has locked
 doors to try it on.
 
-Not compared yet: the player's health regeneration (_zm_playerhealth.gsc, not
-downloaded).
+**Health** (_zm_playerhealth.gsc's playerhealthregen()): 2.4 seconds after the
+last hit health is full again at once; if it went to a fifth or less ("very
+hurt", which lasts until it is full) it waits until 5 seconds after the hit and
+refills a tenth every 0.05 s. Ours refilled from nothing over 1.25 s after the
+2.4. The script's "player_is_invulnerable" flag is checked by nothing in
+Zombies; the one guard is the same zombie not landing again for 0.4 s
+(remove_ignore_attacker()), which our 1.5 s between swipes covers.
+`--zombies-log-regen` logs each refill. Without Juggernog very hurt is never
+reached: a blow leaves 40%, the next downs.
 
 Testing Zombies on a stock arena: `--boot-stage 0x3c --mpsims 1 --mpscenario 6`
 (Warehouse). `--boot-map` knows only mod maps, and --mpscenario does nothing

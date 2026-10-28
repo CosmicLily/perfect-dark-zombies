@@ -581,31 +581,68 @@ static u8 zombiesDifficultyForRound(s32 round)
 	return BOTDIFF_DARK;
 }
 
-// Health regeneration at Call of Duty's pace: 2.4 seconds after the last hit
-// it starts, and refills from nothing in about a second and a quarter
-#define ZOMBIE_REGEN_DELAY60 144
-#define ZOMBIE_REGEN_FULL60  75
+/**
+ * Health regeneration, Black Ops II's (_zm_playerhealth.gsc's
+ * playerhealthregen()): 2.4 seconds after the last hit (playerhealth_
+ * regularregendelay) health is back to full at once - unless it went down to
+ * a fifth or less (healthoverlaycutoff), "very hurt": then it stays where it
+ * is until 5 seconds after the last hit (longregentime) and comes back a
+ * tenth every twentieth of a second, full in half a second. Very hurt lasts
+ * until health is full again. It refilled from nothing over a second and a
+ * quarter, whatever the hurt.
+ */
+#define ZOMBIE_REGEN_DELAY60  144  // 2.4 seconds
+#define ZOMBIE_REGEN_LONG60   300  // 5 seconds, when very hurt
+#define ZOMBIE_REGEN_FULL60   30   // very hurt's refill, a tenth each 0.05 s
+#define ZOMBIE_REGEN_VERYHURT 0.2f
 
-// Health regeneration: after a few seconds without being hurt, health refills.
+static bool g_ZombieVeryHurt[MAX_PLAYERS];
+static s32 g_ZombieSinceHurt60[MAX_PLAYERS];
+
 static void zombiesTickRegen(s32 playernum)
 {
 	struct player *player = g_Vars.players[playernum];
+	const f32 max = g_ZombieMaxHealth[playernum];
 
 	if (player->isdead || g_ZombieDowned[playernum]) {
 		g_ZombieLastHealth[playernum] = player->bondhealth;
+		g_ZombieVeryHurt[playernum] = false;
 		return;
 	}
 
-	if (player->bondhealth < g_ZombieLastHealth[playernum]) {
-		// just got hurt: the wait before healing starts begins again
-		g_ZombieRegenDelay60[playernum] = ZOMBIE_REGEN_DELAY60;
-	} else if (g_ZombieRegenDelay60[playernum] > 0) {
-		g_ZombieRegenDelay60[playernum] -= g_Vars.lvupdate60;
-	} else if (player->bondhealth < g_ZombieMaxHealth[playernum]) {
-		player->bondhealth += g_ZombieMaxHealth[playernum] * g_Vars.lvupdate60 / ZOMBIE_REGEN_FULL60;
+	if (player->bondhealth >= max) {
+		g_ZombieVeryHurt[playernum] = false;
+	} else if (player->bondhealth <= max * ZOMBIE_REGEN_VERYHURT) {
+		g_ZombieVeryHurt[playernum] = true;
+	}
 
-		if (player->bondhealth > g_ZombieMaxHealth[playernum]) {
-			player->bondhealth = g_ZombieMaxHealth[playernum];
+	if (player->bondhealth < g_ZombieLastHealth[playernum]) {
+		// just got hurt: the waits begin again
+		g_ZombieRegenDelay60[playernum] = ZOMBIE_REGEN_DELAY60;
+		g_ZombieSinceHurt60[playernum] = 0;
+	} else {
+		if (g_ZombieSinceHurt60[playernum] < ZOMBIE_REGEN_LONG60 + 1) {
+			g_ZombieSinceHurt60[playernum] += g_Vars.lvupdate60;
+		}
+
+		if (g_ZombieRegenDelay60[playernum] > 0) {
+			g_ZombieRegenDelay60[playernum] -= g_Vars.lvupdate60;
+		} else if (player->bondhealth < max) {
+			if (!g_ZombieVeryHurt[playernum]) {
+				player->bondhealth = max;
+			} else if (g_ZombieSinceHurt60[playernum] > ZOMBIE_REGEN_LONG60) {
+				player->bondhealth += max * g_Vars.lvupdate60 / ZOMBIE_REGEN_FULL60;
+			}
+
+			if (player->bondhealth > max) {
+				player->bondhealth = max;
+			}
+
+			// --zombies-log-regen: when it is whole again, and how long after the hit
+			if (player->bondhealth >= max && sysArgCheck("--zombies-log-regen")) {
+				sysLogPrintf(LOG_NOTE, "zombies: player %d whole again %.2f s after the last hit (%s)", playernum,
+						g_ZombieSinceHurt60[playernum] / 60.0f, g_ZombieVeryHurt[playernum] ? "very hurt" : "at once");
+			}
 		}
 	}
 
