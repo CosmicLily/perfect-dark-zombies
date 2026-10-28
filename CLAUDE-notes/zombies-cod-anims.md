@@ -1097,3 +1097,17 @@ window - an arena has 10 to 17 spawn pads, and machines, wall buys, windows
 and the box's places all want them. Even one shifts which feature gets which
 wall: windows came out Warehouse 2, Carpark 1, Complex 4, Villa 1, Skedar 3
 (were 3, 2, 5, 3, 3), Villa's walls going to its wall buys.
+
+## The round's opening, and no "Zombies" box (2026-10-28)
+
+Black Ops II opens a match on "Round" and a big number in the middle of the
+screen, then the number shrinks into the bottom-left corner. `zombiesRoundIntro()`
+and `zombiesRenderRoundIntro()` in zombies.inc do that: the HUD is not drawn
+while `TICKMODE_MPSWIRL` turns the camera round, so the first first-person frame
+starts it (a flag, reset when `lvframenum` goes backwards). The stock scenario
+name box ("Zombies", bottom left, scenarios.c) is skipped for Zombies.
+
+The middle of the screen under the HUD's left alignment is not `viewWidth/2`:
+the alignment is an offset (the pillar's width, cut to 16:9's under
+`G_ASPECT_WIDE_EXT`, none when centred), and the view is 320x220, not 4:3.
+Taking it as 4:3 put the title ~90px right of centre at 1920x1009.

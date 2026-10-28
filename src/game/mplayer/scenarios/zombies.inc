@@ -24209,6 +24209,130 @@ static bool zombiesScoreboardHeld(void)
 	return always || joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), BUTTON_SCOREBOARD) != 0;
 }
 
+/**
+ * The match's opening, as Call of Duty's: while the camera goes round the
+ * player (TICKMODE_MPSWIRL) no round number; once it is behind their eyes,
+ * "Round" and the number big in the middle of the screen, held, then the
+ * number shrinking down to its place in the bottom left corner
+ */
+#define ZOMBIE_INTRO_FADE60  20
+#define ZOMBIE_INTRO_HOLD60  140 // in the middle this long, from the start
+#define ZOMBIE_INTRO_MOVE60  50  // then to the corner
+#define ZOMBIE_INTRO_BIG     4   // its size in the middle, times the corner's
+
+// Frames into the opening (0 on), -2 while the camera goes round, -1 none
+static s32 zombiesRoundIntro(void)
+{
+	static s32 start = -1;
+	static bool shown = false;
+	static s32 lastframe = 0;
+	s32 t;
+
+	// a new match
+	if (g_Vars.lvframenum < lastframe) {
+		start = -1;
+		shown = false;
+	}
+
+	lastframe = g_Vars.lvframenum;
+
+	if (g_Vars.tickmode == TICKMODE_MPSWIRL) {
+		return -2;
+	}
+
+	// the HUD is not drawn while the camera goes round, so the first frame
+	// it is drawn in first person is the opening's start
+	if (!shown) {
+		shown = true;
+		start = g_Vars.lvframenum;
+	}
+
+	if (start < 0) {
+		return -1;
+	}
+
+	t = g_Vars.lvframenum - start;
+
+	if (t >= ZOMBIE_INTRO_HOLD60 + ZOMBIE_INTRO_MOVE60) {
+		start = -1;
+		return -1;
+	}
+
+	return t;
+}
+
+// The opening at t: the number (and "Round" over it) from the middle of the
+// screen to the corner, drawn under the left alignment the counter has
+static Gfx *zombiesRenderRoundIntro(Gfx *gdl, s32 t, char *text, struct fontchar *chars, struct font *font,
+		u32 colour, s32 scale, s32 left, s32 bottom, s32 lineheight)
+{
+	// the left alignment moves what is drawn into the pillar by an offset
+	// (the pillar's width, held at 16:9's under WIDE; none when centred), so
+	// the middle of the screen is that far right of the 4:3 view's middle
+	// (the view is 320x220, not 4:3)
+	const f32 native = (f32)viGetViewWidth() / viGetViewHeight();
+	const f32 aspect = videoGetAspect();
+	f32 ofs = viGetViewWidth() * 0.5f * (aspect / native - 1);
+	f32 cx;
+
+	if ((g_HudAlignModeL & G_ASPECT_WIDE_EXT) && aspect > 16.0f / 9.0f) {
+		ofs *= (16.0f / 9.0f) / aspect;
+	}
+
+	if ((g_HudAlignModeL & G_ASPECT_CENTER_EXT) == G_ASPECT_CENTER_EXT || ofs < 0) {
+		ofs = 0;
+	}
+
+	cx = viGetViewLeft() + viGetViewWidth() * 0.5f + ofs;
+	const f32 cy = viGetViewTop() + viGetViewHeight() * 0.45f;
+	u32 alpha = colour & 0xff;
+	f32 k = 0;
+	s32 size = ZOMBIE_INTRO_BIG;
+	s32 textwidth;
+	s32 textheight;
+	s32 x;
+	s32 y;
+
+	if (t < ZOMBIE_INTRO_FADE60) {
+		alpha = alpha * t / ZOMBIE_INTRO_FADE60;
+	}
+
+	if (t >= ZOMBIE_INTRO_HOLD60) {
+		k = (f32)(t - ZOMBIE_INTRO_HOLD60) / ZOMBIE_INTRO_MOVE60;
+		k = k > 1 ? 1 : k;
+		k = k * k * (3 - 2 * k);
+		size = (s32)(ZOMBIE_INTRO_BIG + (scale - ZOMBIE_INTRO_BIG) * k + 0.5f);
+		size = size < scale ? scale : size;
+	}
+
+	textMeasure(&textheight, &textwidth, text, chars, font, 0);
+
+	// the number: from its place in the middle to the corner's
+	{
+		const f32 mx = cx - textwidth * size * 0.5f;
+		const f32 my = cy - lineheight * size * 0.5f;
+
+		x = (s32)(mx + (left - mx) * k);
+		y = (s32)(my + (bottom - lineheight * scale - my) * k);
+	}
+
+	gdl = textRenderScaled(gdl, x, y, text, chars, font, (colour & 0xffffff00) | alpha, size);
+
+	// "Round" over it in the middle, going as it moves
+	if (k < 1) {
+		char word[] = "Round";
+		const u32 wordalpha = (u32)(alpha * (1 - k));
+		s32 wordwidth;
+		s32 wordheight;
+
+		textMeasure(&wordheight, &wordwidth, word, chars, font, 0);
+		gdl = textRenderScaled(gdl, (s32)(cx - wordwidth), (s32)(cy - lineheight * ZOMBIE_INTRO_BIG * 0.5f - lineheight * 2 - 2),
+				word, chars, font, (colour & 0xffffff00) | wordalpha, 2);
+	}
+
+	return gdl;
+}
+
 // Round number (red, bottom-left) and points (yellow, bottom-right, above the ammo).
 Gfx *zombiesRenderHud(Gfx *gdl)
 {
@@ -24273,9 +24397,18 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 			}
 
 			if (font) {
+				s32 at = zombiesRoundIntro();
+
 				textheight = zombiesLineHeight(chars, font);
-				gdl = textRenderScaled(gdl, left, bottom - textheight * scale, text,
-						chars, font, colour, scale);
+
+				if (at == -2) {
+					// the opening camera still going round: nothing yet
+				} else if (at >= 0) {
+					gdl = zombiesRenderRoundIntro(gdl, at, text, chars, font, colour, scale, left, bottom, textheight);
+				} else {
+					gdl = textRenderScaled(gdl, left, bottom - textheight * scale, text,
+							chars, font, colour, scale);
+				}
 			}
 		}
 #else

@@ -648,6 +648,12 @@ void scenarioCreateMatchStartHudmsgs(void)
 
 	sprintf(scenarioname, "%s\n", scenarioGetName(g_MpSetup.scenario));
 
+	// Zombies opens on its round's number instead, as Call of Duty's does
+	// (zombies.inc): no "Zombies" box at the bottom left
+	if (g_MpSetup.scenario == MPSCENARIO_ZOMBIES) {
+		return;
+	}
+
 	for (i = 0; i < g_MpNumChrs; i++) {
 		if (g_MpAllChrPtrs[i]->aibot == NULL) {
 			setCurrentPlayerNum(i);
