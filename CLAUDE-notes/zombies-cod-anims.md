@@ -1015,6 +1015,8 @@ vertex is one bone's), the lid turned about the hinge by j_hinge, both moved by
 tag_animate. Played: open on a buy, close on a take or a timeout, leave after
 the teddy bear (7.5 s, then the poof and the box put at its next place), arrive
 there (5 s, the thud on its box_impact note at frame 140). The guns switch on
-o_zombie_magic_box_weapon_rise's 40 "switch" notes (g_ZombieBoxSwitches). Not
-used: weapon_rise's and teddy_rise's own motion (the gun and the bear keep
-their rise; Black Ops II's script moves the bear with moveto()).
+o_zombie_magic_box_weapon_rise's 40 "switch" notes (g_ZombieBoxSwitches). The guns going
+round rise by weapon_rise's own motion from the box's floor
+(magic_box_do_weapon_rise(): BO2 carries them on zbarrier pieces 3 and 4, then
+spawns the gun 40 inches up and sinks it 85% over its 12 s, as ours does).
+Not used: teddy_rise's motion (BO2's script moves the bear with moveto()).

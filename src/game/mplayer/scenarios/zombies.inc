@@ -1507,6 +1507,7 @@ static s32 g_ZombieBoxBodyAnim = -1;
 static s32 g_ZombieBoxBody60 = 0;
 struct zombiemesh;
 static struct zombiemesh *zombiesBoxMesh(void);
+static f32 zombiesBoxClipFrame(s32 anim, s32 t60);
 static bool g_ZombieBoxBySale = false; // ... and whether Fire Sale opened it: then it never moves, and is not counted
 
 /**
@@ -13129,9 +13130,19 @@ static void zombiesBoxPlaceGun(void)
 	}
 
 	if (g_ZombieBoxState == ZOMBIEBOX_SPIN) {
+		const s32 anim = ZMCHAR_BOX + ZMCHAR_BOX_WEAPON_RISE;
 		f32 frac = g_ZombieBoxTime60 / 60.0f;
+		f32 dp[3];
+		f32 dq[4];
 
 		rise = ZOMBIE_BOX_RISE * (frac > 1 ? 1 : frac);
+
+		// Black Ops II's: the guns going round carried up out of the box by
+		// o_zombie_magic_box_weapon_rise's own motion, from the box's floor
+		// (magic_box_do_weapon_rise()), with Black Ops II's box
+		if (zombiesBoxMesh() && zmcharAnimRoot(anim, zombiesBoxClipFrame(anim, g_ZombieBoxTime60), dp, dq)) {
+			rise = g_ZombieBoxFloor + dp[2] * 2.54f - (g_ZombieBoxTop + 8);
+		}
 	} else if (g_ZombieBoxState == ZOMBIEBOX_TEDDY) {
 		// where the gun would be, then up: three seconds gathering speed and
 		// one at it, ZOMBIE_BOX_TEDDYUP in all (moveto(..., 4, 3))
@@ -14627,6 +14638,16 @@ static void zombiesTickBox(void)
 			// a gun offered, counted toward the next move (not on a Fire Sale)
 			if (!g_ZombieBoxBySale) {
 				g_ZombieBoxAccessed++;
+			}
+
+			{
+				f32 dp[3];
+				f32 dq[4];
+				const s32 anim = ZMCHAR_BOX + ZMCHAR_BOX_WEAPON_RISE;
+
+				if (zmcharAnimRoot(anim, zmcharAnimFrames(anim) - 1, dp, dq)) {
+					sysLogPrintf(LOG_NOTE, "zombies: the box's weapon rise ends %.1f %.1f %.1f inches from its floor", dp[0], dp[1], dp[2]);
+				}
 			}
 
 			// landed: Black Ops II's music box has its own end
