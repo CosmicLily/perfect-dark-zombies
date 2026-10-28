@@ -24326,8 +24326,9 @@ static Gfx *zombiesRenderRoundIntro(Gfx *gdl, s32 t, char *text, struct fontchar
 		s32 wordheight;
 
 		textMeasure(&wordheight, &wordwidth, word, chars, font, 0);
-		gdl = textRenderScaled(gdl, (s32)(cx - wordwidth), (s32)(cy - lineheight * ZOMBIE_INTRO_BIG * 0.5f - lineheight * 2 - 2),
-				word, chars, font, (colour & 0xffffff00) | wordalpha, 2);
+		// at the counter's own size, small over the number, as Call of Duty's is
+		gdl = textRenderScaled(gdl, (s32)(cx - wordwidth * 0.5f), (s32)(cy - lineheight * ZOMBIE_INTRO_BIG * 0.5f - lineheight - 2),
+				word, chars, font, (colour & 0xffffff00) | wordalpha, 1);
 	}
 
 	return gdl;
