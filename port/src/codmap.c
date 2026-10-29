@@ -2199,6 +2199,68 @@ static void readModeObjects(const char *path, const char *modeldir, const struct
 	sysLogPrintf(LOG_NOTE, "codmap: %d of Survival's own objects placed (%d triangles), %d with no model", placed, tris, missing);
 }
 
+/**
+ * Slopes over stairs. Black Ops II walks its stairs on clip ramps C2M's
+ * export has not; Perfect Dark's own levels have slopes where stairs are
+ * drawn. Each ramp is a box over a flight (our units) climbing along z from
+ * h0 at z0 to h1 at z1, laid in as an invisible, solid floor (held between
+ * the two). The line is the steps' front edges, measured with
+ * `--zombies-test-probe 2`: every step is under it, so up the flight the
+ * ground is the slope's - no step to stop at, and no gap between open treads
+ * to fall through (Town's Juggernog stairs, F3 2026-10-28). A plane fitted to
+ * the steps in a box was tried first, and the furniture and landings in the
+ * box set it far off.
+ */
+struct codramp {
+	const char *key;  // the row's
+	f32 x0, x1;       // the flight's sides
+	f32 z0, h0;       // its foot: where the slope meets the floor under it
+	f32 z1, h1;       // and its head
+};
+
+static const struct codramp g_CodMapRamps[] = {
+	{ "bo2town", 2695, 2990, -3598, -142, -2988, 224 }, // the bar's, to its upper floor
+	{ "bo2town", -2090, -1825, -512, -142, 172, 305 },  // up to Juggernog, open treads
+};
+
+static void addRamps(const struct codmaprow *row)
+{
+	s32 r;
+
+	for (r = 0; r < (s32)ARRAYCOUNT(g_CodMapRamps); r++) {
+		const struct codramp *rp = &g_CodMapRamps[r];
+		const f32 q[4][3] = {
+			{ rp->x0, rp->h0, rp->z0 }, { rp->x1, rp->h0, rp->z0 },
+			{ rp->x1, rp->h1, rp->z1 }, { rp->x0, rp->h1, rp->z1 },
+		};
+		const s32 quad[2][3] = { { 0, 2, 1 }, { 0, 3, 2 } };
+		const s32 mat = matFind("codmap_ramp");
+		s32 i;
+
+		if (strcmp(rp->key, row->key) != 0) {
+			continue;
+		}
+
+		for (i = 0; i < 2; i++) {
+			const f32 *uv[3] = { NULL, NULL, NULL };
+
+			triAdd(q[quad[i][0]], q[quad[i][1]], q[quad[i][2]], uv, mat);
+
+			// up, whichever way it was wound
+			if (g_Tris[g_NumTris - 1].n[1] < 0) {
+				g_NumTris--;
+				triAdd(q[quad[i][0]], q[quad[i][2]], q[quad[i][1]], uv, mat);
+			}
+
+			g_Tris[g_NumTris - 1].hide = 1;
+			g_Tris[g_NumTris - 1].solid = 1;
+		}
+
+		sysLogPrintf(LOG_NOTE, "codmap: ramp %d, %.0f..%.0f across, %.0f at %.0f to %.0f at %.0f",
+				r, rp->x0, rp->x1, rp->h0, rp->z0, rp->h1, rp->z1);
+	}
+}
+
 static void cbS32List(cbuf *b, const s32 *v, s32 n)
 {
 	s32 i;
@@ -2521,6 +2583,9 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 		snprintf(path, sizeof(path), "%s/%s/%s_xmodels.json", indir, row->map, row->map);
 		readProps(path, sysArgGetString("--codmap-props"), row, centre);
 	}
+
+	// slopes over the stairs, now every step is in g_Tris
+	addRamps(row);
 
 	codmapEntsPath(path, sizeof(path), indir, row->map);
 	numspawns = readSpawns(path, row, centre, spawns, ARRAYCOUNT(spawns));

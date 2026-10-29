@@ -1282,3 +1282,16 @@ west road ran on into Tranzit (F3: -2476 -1545). `readModeObjects()` places them
 as props, solid, the rotation x roll, y pitch, z yaw. The invisible collision
 `zm_collision_transit_town_survival` is a placeholder cube in every exporter
 (its shape is collision data only), so it is not used.
+**Slopes over Town's stairs (2026-10-28).** Black Ops II walks stairs on clip
+ramps, which no exporter here has (C2M's world is drawn surfaces; the zone dump
+has only the entity file). `g_CodMapRamps` (codmap.c) lists a ramp per flight:
+its sides in x and a line along z from its foot (z0, h0) to its head (z1, h1),
+laid in by `addRamps()` as two invisible solid floor triangles. The line is the
+steps' front edges, read off `--zombies-test-probe 2` (raised till no step is
+over it), so the ground up the flight is the slope's: no step to stop at, no gap
+between the Juggernog stairs' open treads to fall through. Town: the bar's
+(2695..2990, -142 at -3598 to 224 at -2988) and the Juggernog flight
+(-2090..-1825, -142 at -512 to 305 at 172). A plane fitted to the floors in a
+box was tried first: furniture and landings in the box set it far off (the bar's
+foot came out at 122). `--zombies-test-walk 0` from the foot climbs either one
+without a stop.
