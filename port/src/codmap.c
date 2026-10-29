@@ -262,15 +262,25 @@ static s32 matFind(const char *name)
 		snprintf(kind, sizeof(kind), "%.*s", layers ? (int)(layers - name) : (int)strlen(name), name);
 	}
 
-	for (i = 0; i < g_NumTexNames; i++) {
-		if (strcmp(g_TexNames[i], name) == 0) {
-			g_Mats[g_NumMats].texnum = g_TexNums[i];
+	// The picture: the whole name's, else the base's. C2M's _materials.json
+	// names only the base materials, and a merged surface's name is in none
+	// of its rows: 560 of Town's 956 surfaces were drawn a flat colour
+	for (i = 0; i < g_NumTexNames * 2; i++) {
+		const s32 t = i % g_NumTexNames;
+		const char *want = i < g_NumTexNames ? name : kind;
+
+		if (i == g_NumTexNames && g_Mats[g_NumMats].texnum >= 0) {
+			break;
+		}
+
+		if (strcmp(g_TexNames[t], want) == 0) {
+			g_Mats[g_NumMats].texnum = g_TexNums[t];
 			// Black Ops II keeps more than cover in many colour maps' alpha
 			// (bricks, floors, whole cars came out holed): cut out only what is
 			// meant to be seen through
 			// (branches and leaves are not wholly clear between twigs, and with
 			// no blend colour to test against they stayed slabs: hidden below)
-			g_Mats[g_NumMats].cut = g_TexCut[i] && (strstr(kind, "fence") || strstr(kind, "chain")
+			g_Mats[g_NumMats].cut = g_TexCut[t] && (strstr(kind, "fence") || strstr(kind, "chain")
 					|| strstr(kind, "barbed") || strstr(kind, "_holes") || strstr(kind, "leaf")
 					|| strstr(kind, "branch") || strstr(kind, "shrub") || strstr(kind, "bush")
 					|| (strstr(kind, "grass") && !strstr(kind, "ground")));
@@ -684,6 +694,12 @@ static struct cmodel *modelGet(const char *dir, const char *name, s32 detail)
 				memcpy(m->p[m->numtris][i], &verts[v * 3], sizeof(f32) * 3);
 				m->uv[m->numtris][i][0] = t >= 0 && t < numuvs ? uvs[t * 2] : 0;
 				m->uv[m->numtris][i][1] = t >= 0 && t < numuvs ? uvs[t * 2 + 1] : 0;
+
+				// the newer C2M writes a model's t the other way up from its map's
+				// (triAdd() turns it over again): a car's paint came out a jumble
+				if (g_NewC2m) {
+					m->uv[m->numtris][i][1] = 1.0f - m->uv[m->numtris][i][1];
+				}
 			}
 
 			if (i == 3) {

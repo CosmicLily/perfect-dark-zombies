@@ -1266,3 +1266,10 @@ found nothing and it looped (`g_ZombieSafeGround` now holds the floor); and
 bondwalk.c asks the rooms at the position on a Black Ops II map when the
 carried rooms give no floor. `--zombies-test-at-y Y` starts the test-at search
 at Y (the bar is under a floor at 224).
+**Town's textures: merged surfaces and the props' t (2026-10-28).** Two things
+made Town look rough. 560 of its 956 surfaces were a flat colour: the newer
+C2M's `_materials.json` names only base materials, and a merged surface's name
+(`base__layer_blend`) is in none of its rows; matFind() now takes the base's
+picture when the whole name has none. And every prop's picture was upside down
+and jumbled (a car's hood showed its dashboard): the newer C2M writes a model's
+t the other way up from its map's, and modelGet() turns it over for g_NewC2m.
