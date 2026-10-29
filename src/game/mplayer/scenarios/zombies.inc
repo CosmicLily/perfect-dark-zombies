@@ -19601,7 +19601,8 @@ static void zombiesTickLava(s32 playernum)
 s32 codmapStageIs(s32 stagenum);
 
 static s32 g_ZombieFall60[MAX_PLAYERS];
-static struct coord g_ZombieSafePos[MAX_PLAYERS];
+static struct coord g_ZombieSafePos[MAX_PLAYERS];  // the prop's place there, its y the eye's as a player's is
+static f32 g_ZombieSafeGround[MAX_PLAYERS];        // and the floor under it
 static RoomNum g_ZombieSafeRooms[MAX_PLAYERS][8];
 static bool g_ZombieSafeHave[MAX_PLAYERS];
 
@@ -19694,8 +19695,8 @@ static void zombiesPutBack(s32 playernum)
 	// again the same way). Moved without them, the camera stayed where the
 	// fall had taken it, at -4294967040 (F3 pd.log 2026-10-28), and the
 	// view was blank with the body back on the street
-	player->vv_ground = g_ZombieSafePos[playernum].y;
-	player->vv_manground = g_ZombieSafePos[playernum].y;
+	player->vv_ground = g_ZombieSafeGround[playernum];
+	player->vv_manground = g_ZombieSafeGround[playernum];
 	player->sumground = player->vv_manground / (PAL ? 0.054400026798248f : 0.045499980449677f);
 	player->bdeltapos.y = 0;
 	player->isfalling = false;
@@ -19785,7 +19786,7 @@ static void zombiesTickFallNet(s32 playernum)
 	if (inbounds && !player->isfalling && player->vv_ground > -29999.0f) {
 		g_ZombieFall60[playernum] = 0;
 		g_ZombieSafePos[playernum] = player->prop->pos;
-		g_ZombieSafePos[playernum].y = player->vv_manground;
+		g_ZombieSafeGround[playernum] = player->vv_manground;
 		roomsCopy(player->prop->rooms, g_ZombieSafeRooms[playernum]);
 		g_ZombieSafeHave[playernum] = true;
 		return;
@@ -19795,6 +19796,8 @@ static void zombiesTickFallNet(s32 playernum)
 
 	// at once with nothing under them at all; else after a long fall
 	if ((g_ZombieFall60[playernum] >= ZOMBIE_FALLNET60 || player->vv_ground <= -29999.0f) && g_ZombieSafeHave[playernum]) {
+		sysLogPrintf(LOG_NOTE, "zombies: player %d falling %d 60ths, ground %.0f man %.0f eye %.0f falling %d", playernum,
+				g_ZombieFall60[playernum], player->vv_ground, player->vv_manground, player->prop->pos.y, player->isfalling);
 		g_ZombieFall60[playernum] = 0;
 		zombiesPutBack(playernum);
 		sysLogPrintf(LOG_NOTE, "zombies: player %d fell through the map at %.0f %.0f, put back at %.0f %.0f %.0f",
@@ -22699,7 +22702,7 @@ void zombiesTick(void)
 		at.x = at.z = 0;
 
 		if (s && sscanf(s, "%f,%f", &at.x, &at.z) == 2) {
-			at.y = g_Vars.players[0]->prop->pos.y + 300;
+			at.y = sysArgCheck("--zombies-test-at-y") ? sysArgGetInt("--zombies-test-at-y", 0) : g_Vars.players[0]->prop->pos.y + 300;
 			func0f065e74(&g_Vars.players[0]->prop->pos, g_Vars.players[0]->prop->rooms, &at, rooms);
 			bgFindRoomsByPos(&at, rooms, above, 20, NULL);
 			at.y = cdFindGroundAtCyl(&at, 20, rooms, NULL, NULL) + 1;
@@ -22735,7 +22738,7 @@ void zombiesTick(void)
 							q.z += gz * 20;
 							q.y = sysArgGetInt("--zombies-probe-y", 600);
 							bgFindRoomsByPos(&q, qr, qa, 20, NULL);
-							y = cdFindGroundAtCyl(&q, 5, qr, NULL, NULL);
+							y = cdFindGroundAtCyl(&q, sysArgGetInt("--zombies-probe-r", 5), qr, NULL, NULL);
 							len += snprintf(row + len, sizeof(row) - len, " %5.0f", y > -1000000.0f ? y : -9999.0f);
 						}
 

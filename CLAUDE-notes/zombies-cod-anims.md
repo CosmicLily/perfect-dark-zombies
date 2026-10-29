@@ -1252,3 +1252,17 @@ floor. `--zombies-test-probe 2 --zombies-probe-y Y` logs the floor's height on
 the 9x9 grid instead of '#'/'.' (the stairs: 20-unit risers, 40-unit treads).
 At 2700 -3297 the player lands on the staircase's side wall (129) and cannot
 step off it: where a jump up the old stairs could leave them.
+**The falls' real cause: twenty floors in the player's circle (2026-10-28).**
+`cdFindGroundInfoAtCyl()` (src/lib/collision.c) collected at most 20 floor
+tiles within the player's radius and dropped the rest silently. Town's floors are
+many small triangles, each filed in every room within 60 of it, and in places
+(the bar, the sidewalks, the bank door) the tile under the player was past the
+twentieth: no ground, a "fall", the fall net. Found with `--zombies-test-probe 2
+--zombies-probe-r 30` (the player's radius): single points of -9999 where radius
+5 found the floor. The list is 256 on PC. Fixed on the way: the fall net saved
+the floor's height as the safe spot's y, a player's prop y is the eye's, so it
+put them back with the eye on the floor, where the search ("strictly below")
+found nothing and it looped (`g_ZombieSafeGround` now holds the floor); and
+bondwalk.c asks the rooms at the position on a Black Ops II map when the
+carried rooms give no floor. `--zombies-test-at-y Y` starts the test-at search
+at Y (the bar is under a floor at 224).

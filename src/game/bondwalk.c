@@ -34,6 +34,9 @@
 #include "game/modrules.h"
 #include "game/bg.h"
 #ifndef PLATFORM_N64
+s32 codmapStageIs(s32 stagenum); // codmap.c
+#endif
+#ifndef PLATFORM_N64
 #include "modloader.h"
 #include "geroom.h"
 #include "gestan.h"
@@ -1537,6 +1540,25 @@ void bwalkUpdateVertical(void)
 	// This used to be two fallbacks taken only when the first answer was
 	// nothing at all, which held the player up and left them in the wrong room
 	// - drawing from it, which is the void a player walked into past a portal.
+	// A Black Ops II map's rooms are squares of a grid whose tiles reach a
+	// little past their sides, and the rooms a walker carries are not always
+	// those the floor under them is filed in: no floor, a "fall", and the fall
+	// net putting them back to fall again (Town's bar, F3 2026-10-28). With
+	// none found, the rooms at the position are asked
+	if (ground <= -29999.0f && codmapStageIs(g_Vars.stagenum)) {
+		RoomNum byposrooms[21];
+		RoomNum aboverooms[21];
+
+		bgFindRoomsByPos(&testpos, byposrooms, aboverooms, 20, NULL);
+
+		if (byposrooms[0] != -1) {
+			ground = cdFindGroundInfoAtCyl(&testpos, g_Vars.currentplayer->bond2.radius, byposrooms,
+					&g_Vars.currentplayer->floorcol, &g_Vars.currentplayer->floortype,
+					&g_Vars.currentplayer->floorflags, &g_Vars.currentplayer->floorroom,
+					&newinlift, &lift);
+		}
+	}
+
 	if (geRoomActive()) {
 		ground = geRoomGround(&testpos, g_Vars.currentplayer->bond2.radius, rooms,
 				&g_Vars.currentplayer->floorcol, &g_Vars.currentplayer->floortype,

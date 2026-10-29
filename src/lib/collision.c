@@ -2406,12 +2406,22 @@ struct prop *g_CdGroundProp;
 f32 cdFindGroundInfoAtCyl(struct coord *pos, f32 radius, RoomNum *rooms, u16 *floorcol,
 		u8 *floortype, u16 *floorflags, RoomNum *floorroom, s32 *inlift, struct prop **lift)
 {
+#ifdef PLATFORM_N64
 	struct collision collisions[21];
+#else
+	// Twenty floors within the player's circle was every stock level's most,
+	// and the collection stops at the list's end: on a Black Ops II map,
+	// whose floors are many small triangles each filed in every room it comes
+	// near, the floor under the player was often the twenty-first, and they
+	// fell through it (Town's bar, F3 2026-10-28)
+	struct collision collisions[257];
+#endif
 	struct collision *sp72 = NULL;
 	f32 ground;
 	struct geo *geo = NULL;
 
-	cdCollectGeoForCyl(pos, radius, rooms, CDTYPE_ALL, GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2, CHECKVERTICAL_NO, 0, 0, collisions, 20);
+	cdCollectGeoForCyl(pos, radius, rooms, CDTYPE_ALL, GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2, CHECKVERTICAL_NO, 0, 0, collisions,
+			ARRAYCOUNT(collisions) - 1);
 	ground = cdFindGroundFromList(collisions, pos, &sp72, radius);
 
 	if (sp72) {
