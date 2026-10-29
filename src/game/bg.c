@@ -411,6 +411,7 @@ void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
 #define MAX_ROOM_PIECES 256
 s32 codmapStageIs(s32 stagenum); // codmap.c: Black Ops II's maps have pieces too
 Gfx *zombiesRenderWindowHoles(Gfx *gdl, s32 roomnum); // zombies.inc
+Gfx *zombiesRenderBoxFakes(Gfx *gdl, s32 roomnum); // zombies.inc
 bool zombiesWindowHoleAt(struct coord *pos);
 static RoomNum g_BgRoomPieces[MAX_ROOM_PIECES][2];
 static s32 g_BgNumRoomPieces;
@@ -1466,6 +1467,9 @@ Gfx *bgRenderScene(Gfx *gdl)
 		// Zombies: the holes its windows stand in, cut through this room's
 		// walls before the props drawn after it (zombies.inc)
 		gdl = zombiesRenderWindowHoles(gdl, thing->roomnum);
+
+		// and the Mystery Box's fakes at the places it is not
+		gdl = zombiesRenderBoxFakes(gdl, thing->roomnum);
 #endif
 
 		// Render prop opaque components - post BG pass

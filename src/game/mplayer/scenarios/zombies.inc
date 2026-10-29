@@ -1645,6 +1645,13 @@ static s32 g_ZombieBoxMoves = 0;    // level.chest_moves
 static s32 g_ZombieBoxPaid = 0;     // what the spin now going cost, given back if the teddy bear comes
 static f32 g_ZombieBoxFloor = 0;  // the floor under it (zombiesBoxPutAt())
 
+// Where the box would stand at each of its places, for Black Ops II's fake box
+// at the ones it is not at (zombiesCacheBoxFakes(), zombiesRenderBoxFakes())
+static struct coord g_ZombieBoxFakePos[ZOMBIE_BOX_SPOTS];
+static RoomNum g_ZombieBoxFakeRooms[ZOMBIE_BOX_SPOTS][8];
+static f32 g_ZombieBoxFakeYaw[ZOMBIE_BOX_SPOTS];
+static s32 g_ZombieBoxFakeCount = 0; // places cached, 0 for none yet
+
 // The box's own clips playing (zombiesRenderBoxMesh()): its lid's (ZMCHAR_BOX_OPEN or
 // _CLOSE, -1 shut) and its body's (_LEAVE or _ARRIVE, -1 at rest, the lid then
 // the body clip's too), each from when it began
@@ -1791,6 +1798,7 @@ static void zombiesReserveBoxPad(void)
 
 	g_ZombieBoxPad = -1;
 	g_ZombieBoxNumPads = 0;
+	g_ZombieBoxFakeCount = 0;
 	g_ZombieBoxAt = 0;
 
 	// the arena's own spot, which is no spawn pad
@@ -15040,6 +15048,8 @@ static bool zombiesBoxRollsTeddy(void)
 	return chance > random;
 }
 
+static void zombiesCacheBoxFakes(void);
+
 static void zombiesTickBox(void)
 {
 	s32 numplayers = PLAYERCOUNT();
@@ -15049,6 +15059,8 @@ static void zombiesTickBox(void)
 	if (box == NULL || g_ZombieBox->model == NULL) {
 		return;
 	}
+
+	zombiesCacheBoxFakes();
 
 	// its clips going on
 	g_ZombieBoxLid60 += g_Vars.lvupdate60;
@@ -15987,7 +15999,7 @@ static bool zombiesRenderBoxMesh(struct modelrenderdata *renderdata, struct defa
 	pos[1] = g_ZombieBoxFloor;
 	pos[2] = obj->prop->pos.z;
 
-	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &world);
+	mtx4LoadYRotation(g_ZombieBoxYaw, &world);
 
 	for (i = 0; i < 3; i++) {
 		for (j = 0; j < 3; j++) {
@@ -16077,7 +16089,7 @@ static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaul
 	pos[1] = obj->prop->pos.y;
 	pos[2] = obj->prop->pos.z;
 
-	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &world);
+	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI, &world);
 
 	for (i = 0; i < 3; i++) {
 		for (j = 0; j < 3; j++) {
@@ -16095,6 +16107,106 @@ static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaul
 	renderdata->gdl = zombiesBottleDraw(renderdata->gdl, zm, mtx, 0xff, 0xff, 0xff);
 
 	return true;
+}
+
+/**
+ * Black Ops II's fake box (zmcore_magicbox's first piece,
+ * p6_anim_zm_magic_box_fake: a shut, worn footlocker with a teddy bear on it,
+ * Buried's zone through tools/zombies/glb2obj.py into
+ * zombies/models/magicbox_fake/) at each of the box's places it is not at.
+ * Each place is where zombiesBoxPutAt() would stand the box, worked out once
+ * by standing it there and putting it back; the two models share an origin,
+ * so the fake is placed by the real box's own size. Without the OBJ nothing
+ * is drawn.
+ */
+static struct zombiemesh g_ZombieBoxFakeMesh;
+
+static void zombiesCacheBoxFakes(void)
+{
+	s32 k;
+
+	if (g_ZombieBoxFakeCount == g_ZombieBoxNumPads || g_ZombieBoxNumPads < 2
+			|| g_ZombieBoxState != ZOMBIEBOX_IDLE || g_ZombieBox == NULL || g_ZombieBox->prop == NULL) {
+		return;
+	}
+
+	for (k = 0; k < g_ZombieBoxNumPads; k++) {
+		zombiesBoxPutAt(g_ZombieBoxPads[k]);
+		g_ZombieBoxFakePos[k] = g_ZombieBox->prop->pos;
+		g_ZombieBoxFakePos[k].y = g_ZombieBoxFloor;
+		g_ZombieBoxFakeYaw[k] = g_ZombieBoxYaw;
+		memcpy(g_ZombieBoxFakeRooms[k], g_ZombieBox->prop->rooms, sizeof(g_ZombieBoxFakeRooms[k]));
+	}
+
+	zombiesBoxPutAt(g_ZombieBoxPads[g_ZombieBoxAt]);
+	g_ZombieBoxFakeCount = g_ZombieBoxNumPads;
+}
+
+// bg.c's, in each room's pass: the fake boxes standing in it
+Gfx *zombiesRenderBoxFakes(Gfx *gdl, s32 roomnum)
+{
+	struct zombiemesh *fake = &g_ZombieBoxFakeMesh;
+	struct zombiemesh *zm;
+	s32 k;
+
+	if (!zombiesIsActive() || g_ZombieBoxFakeCount < 2 || (zm = zombiesBoxMesh()) == NULL) {
+		return gdl;
+	}
+
+	if (!fake->tried) {
+		zombiesMeshBuildFrom(fake, "$E/zombies/models/magicbox_fake/magicbox_fake.obj", "the Mystery Box's fake");
+	}
+
+	if (fake->gdl == NULL) {
+		return gdl;
+	}
+
+	for (k = 0; k < g_ZombieBoxFakeCount; k++) {
+		f32 centre[3];
+		f32 pos[3];
+		Mtxf world;
+		Mtxf *mtx;
+		s32 i;
+		s32 j;
+
+		if (k == g_ZombieBoxAt) {
+			continue;
+		}
+
+		for (i = 0; i < 8 && g_ZombieBoxFakeRooms[k][i] != -1 && g_ZombieBoxFakeRooms[k][i] != roomnum; i++);
+
+		if (i >= 8 || g_ZombieBoxFakeRooms[k][i] != roomnum) {
+			continue;
+		}
+
+		centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
+		centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
+		centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
+
+		pos[0] = g_ZombieBoxFakePos[k].x;
+		pos[1] = g_ZombieBoxFakePos[k].y;
+		pos[2] = g_ZombieBoxFakePos[k].z;
+
+		mtx4LoadYRotation(g_ZombieBoxFakeYaw[k], &world);
+
+		for (i = 0; i < 3; i++) {
+			for (j = 0; j < 3; j++) {
+				world.m[i][j] /= ZOMBIE_MESH_FIXED;
+			}
+		}
+
+		for (i = 0; i < 3; i++) {
+			world.m[3][i] = pos[i] - (world.m[0][i] * centre[0] + world.m[1][i] * centre[1] + world.m[2][i] * centre[2]);
+		}
+
+		mtx = gfxAllocateMatrix();
+		mtx4MultMtx4(camGetWorldToScreenMtxf(), &world, mtx);
+
+		gSPMatrix(gdl++, osVirtualToPhysical(camGetPerspectiveMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION | CAM_PROJ_MTX_FLAGS);
+		gdl = zombiesBottleDraw(gdl, fake, mtx, 0xff, 0xff, 0xff);
+	}
+
+	return gdl;
 }
 
 // The crate where it is this frame: turning, and bobbing over the floor
@@ -21406,6 +21518,36 @@ s32 zombiesGameOverCameraTick(struct coord *pos, struct coord *up, struct coord 
 
 				return 1;
 			}
+		}
+
+		// --zombies-test-fake K: round the box's place K, a fake when the
+		// box is not there
+		if (sysArgCheck("--zombies-test-fake") && g_ZombieBoxFakeCount > 0) {
+			extern s32 g_ShotFrame;
+			const s32 k = sysArgGetInt("--zombies-test-fake", 1) % g_ZombieBoxFakeCount;
+			struct coord *at = &g_ZombieBoxFakePos[k];
+			const f32 a = (g_Vars.lvframenum / 40) * 0.785398f;
+			const f32 r = sysArgGetInt("--zombies-perk-dist", 200);
+
+			g_PlayerInvincible = true;
+
+			if (g_ShotFrame > 0 && g_Vars.lvframenum > g_ShotFrame) {
+				g_ShotFrame += sysArgGetInt("--zombies-shot-step", 10);
+			}
+
+			pos->x = at->x + sinf(a) * r;
+			pos->y = at->y + 120;
+			pos->z = at->z + cosf(a) * r;
+			look->x = at->x - pos->x;
+			look->y = at->y + 30 - pos->y;
+			look->z = at->z - pos->z;
+			guNormalize(&look->x, &look->y, &look->z);
+			up->x = 0;
+			up->y = 1;
+			up->z = 0;
+			player0f0c1840(pos, up, look, at, g_ZombieBoxFakeRooms[k]);
+
+			return 1;
 		}
 
 		// --zombies-test-follow N: the camera beside zombie N at its feet'

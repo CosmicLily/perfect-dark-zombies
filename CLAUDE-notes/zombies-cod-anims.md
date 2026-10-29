@@ -1142,3 +1142,16 @@ gun and sets up the right hand's model, but keeps its command list in
 `unk0dd0` is what draws hands on the gun. `zombiesHandsSetUp()` runs that list
 before the drink, throw or knife draws the hands. Test with
 `--zombies-test-hold 13 --zombies-test-third 0 --zombies-test-drink 0`.
+
+## The box's teddy facing out, and its fakes at the places it is not (2026-10-28)
+
+The teddy bear is drawn at the box's yaw + pi (it faced along the box before,
+then backwards). Black Ops II's zbarrier `zmcore_magicbox` has as its first piece
+`p6_anim_zm_magic_box_fake`: footlockers with a teddy on them, shown at each box
+place without the box. It is converted from Buried's `model_export` into
+`build-dabs/zombies/models/magicbox_fake/` (its pictures `~-gzombie_teddybear_c`
+and `~~-gp6_zm_footlocker_old_c-rg~8bd9e7e1` copied into the input's images/).
+`zombiesCacheBoxFakes()` stands the box at each place once (zombiesBoxPutAt())
+and puts it back; `zombiesRenderBoxFakes()` draws them from bg.c's room pass.
+`--zombies-test-fake K` circles place K. Not yet checked: the footlocker reads
+greyish and see-through, and it may want its own colour map looked at.
