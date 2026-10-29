@@ -1236,3 +1236,10 @@ nothing was repaired and the fall looped. It now repairs when any room found is
 not carried. The box's rays (`zombiesBoxRay()`) are refined by halving to under a
 unit, and the side rays are 25 degrees out: at 5-unit steps the wall's line came
 out a few degrees off and the box stood askew to Skedar's wall.
+**Stairs: the step measured from the floor, not the eased height (2026-10-28).**
+`vv_manground` follows `vv_ground` with a lag, and playerGetBbox() measured the
+step from it: up a flight the lag grew each step until a riser was over the 18
+inches from it, the player stopped till it caught up, and on some steps had to
+jump (F3: "bumpy, and I still have to jump"). On a Black Ops II map the step is
+now measured from `vv_ground` when that is above `vv_manground` and within a
+step of it.
