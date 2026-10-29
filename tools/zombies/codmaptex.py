@@ -10,6 +10,7 @@ full size - CLAUDE-notes/texture-packs.md, "The mod gets an index of its own").
 codmap.c reads textures/codmap.txt, a line a material: name, number.
 
     python3 tools/zombies/codmaptex.py <C2M's map folder> <the dump's t6/> <the mod's folder> <zone>...
+    (the newer C2M's export: pictures from its exported_images/, the props' with the map's)
     python3 tools/zombies/codmaptex.py --props <Greyhound's xmodels/> <x0> <x1> <y0> <y1> <C2M's map folder> <the mod's folder>
 
 The zones are the dump's folders looked in for the pictures, in order
@@ -203,7 +204,23 @@ def main():
     mapdir, dump, moddir = sys.argv[1], sys.argv[2], sys.argv[3]
     zones = sys.argv[4:]
     stem = os.path.basename(os.path.normpath(mapdir))
-    mats = json.load(open(os.path.join(mapdir, stem + "_matdata.json")))["Materials"]
+    images = None
+
+    # The newer C2M (2026-10-28): _materials.json, a material's colour map under
+    # Textures/colorMap/Name, the props' materials among the map's, and every
+    # picture already a PNG in exported_images/<game>/ beside exported_maps/
+    newer = os.path.join(mapdir, stem + "_materials.json")
+    if os.path.isfile(newer):
+        game = os.path.basename(os.path.dirname(os.path.normpath(mapdir)))
+        images = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.normpath(mapdir)))),
+                              "exported_images", game)
+        mats = {}
+        for name, mat in json.load(open(newer)).items():
+            tex = (mat.get("Textures") or {}).get("colorMap") or {}
+            mats[name] = {"Color Map": tex.get("Name")}
+    else:
+        mats = json.load(open(os.path.join(mapdir, stem + "_matdata.json")))["Materials"]
+
     outdir = os.path.join(moddir, "textures")
     os.makedirs(outdir, exist_ok=True)
 
@@ -231,7 +248,12 @@ def main():
             continue
 
         src = None
-        for z in zones:
+        for ext in (".PNG", ".png") if images else ():
+            p = os.path.join(images, colour + ext)
+            if os.path.isfile(p):
+                src = p
+                break
+        for z in zones if not src else ():
             p = os.path.join(dump, z, "images", colour + ".dds")
             if os.path.isfile(p):
                 src = p

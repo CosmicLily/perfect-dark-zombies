@@ -58,8 +58,13 @@ struct codmaprow {
 static const struct codmaprow g_CodMapRows[] = {
 	{ "bo2town", "Town (BO2)", "zm_transit", { -2168, 4785, -4578, 2416 }, -200, "town_standard_player_spawns",
 		// Tranzit's dusk: a brown haze closing in past a street or two, under a
-		// dull amber sky with a high, dirty cloud layer
-		"15 22000 0 0 0 992 1000 6b5a46 1 6000 0 8a7660 0 -5000 0 000000 0" },
+		// dull amber sky with a high, dirty cloud layer. fogmin and fogmax are
+		// depth-buffer fractions (a thousandth), z' = far(d - near) / (d(far -
+		// near)): 988 is about 1,200 units, 998 about 5,600, so the haze is whole
+		// well before the box's cut edge (8,800 from its middle) as Town's own
+		// hides the rest of Tranzit. 992 to 1000 was whole only at the far plane,
+		// and the cut showed through it
+		"15 22000 0 0 0 988 998 6b5a46 1 6000 0 8a7660 0 -5000 0 000000 0" },
 };
 
 /* ------------------------------------------------------------------------ */
@@ -360,6 +365,17 @@ static void codToOurs(const f32 cod[3], const f32 *centre, f32 out[3])
 	out[2] = -(cod[1] - centre[1]) * CODMAP_SCALE;
 }
 
+/**
+ * C2M's newer export (2026-10-28): the map's OBJ, its placements
+ * (_static_models.json: Position, RotationDegrees and ModelScale, each an
+ * object of X, Y and Z), _materials.json and _entities.txt beside it, every
+ * model in exported_models/<game>/ as <name>.obj and <name>_LOD1..3.obj, all of
+ * it in inches. The older export wrote the map in centimetres, _xmodels.json
+ * (PosX..RotZ, Scale) and _mapEnts.txt, its props from Greyhound in cm. Set by
+ * codmapConvertRow() from which placements file is there.
+ */
+static s32 g_NewC2m;
+
 // The OBJ's triangles whose middle is in the row's box, into g_Tris
 static s32 readObj(const char *path, const struct codmaprow *row, const f32 *centre)
 {
@@ -385,12 +401,14 @@ static s32 readObj(const char *path, const struct codmaprow *row, const f32 *cen
 
 			sscanf(line + 2, "%f %f %f", &verts[numverts * 3], &verts[numverts * 3 + 1], &verts[numverts * 3 + 2]);
 
-			// C2M writes the map in centimetres; its entities and placements,
+			// The older C2M wrote the map in centimetres; its entities and placements,
 			// and the row's box, are inches (read as inches, Town was 2.54 times
 			// its size and the box cut out somewhere else)
-			verts[numverts * 3] /= 2.54f;
-			verts[numverts * 3 + 1] /= 2.54f;
-			verts[numverts * 3 + 2] /= 2.54f;
+			if (!g_NewC2m) {
+				verts[numverts * 3] /= 2.54f;
+				verts[numverts * 3 + 1] /= 2.54f;
+				verts[numverts * 3 + 2] /= 2.54f;
+			}
 			numverts++;
 		} else if (line[0] == 'v' && line[1] == 't' && line[2] == ' ') {
 			if (numuvs == maxuvs) {
@@ -563,13 +581,27 @@ static struct cmodel *modelGet(const char *dir, const char *name, s32 detail)
 	// the second most detailed (LOD1: Town's props come to 337,000 triangles,
 	// against 146,000 at the least detailed, whose cars were boxes), else the
 	// least detailed there is
+	// (the newer C2M's are side by side in one folder, its most detailed with no
+	// _LOD in the name)
 	if (detail) {
-		snprintf(path, sizeof(path), "%s/%s/%s_LOD1.obj", dir, name, name);
+		if (g_NewC2m) {
+			snprintf(path, sizeof(path), "%s/%s_LOD1.obj", dir, name);
+		} else {
+			snprintf(path, sizeof(path), "%s/%s/%s_LOD1.obj", dir, name, name);
+		}
+
 		f = fopen(path, "rb");
 	}
 
 	for (lod = 7; lod >= 0 && !f; lod--) {
-		snprintf(path, sizeof(path), "%s/%s/%s_LOD%d.obj", dir, name, name, lod);
+		if (g_NewC2m && lod == 0) {
+			snprintf(path, sizeof(path), "%s/%s.obj", dir, name);
+		} else if (g_NewC2m) {
+			snprintf(path, sizeof(path), "%s/%s_LOD%d.obj", dir, name, lod);
+		} else {
+			snprintf(path, sizeof(path), "%s/%s/%s_LOD%d.obj", dir, name, name, lod);
+		}
+
 		f = fopen(path, "rb");
 	}
 
@@ -586,9 +618,12 @@ static struct cmodel *modelGet(const char *dir, const char *name, s32 detail)
 
 			sscanf(line + 2, "%f %f %f", &verts[numverts * 3], &verts[numverts * 3 + 1], &verts[numverts * 3 + 2]);
 
-			// Greyhound writes centimetres; the map's placements are inches
+			// Greyhound writes centimetres; the map's placements are inches, as
+			// the newer C2M's models are
 			for (i = 0; i < 3; i++) {
-				verts[numverts * 3 + i] /= 2.54f;
+				if (!g_NewC2m) {
+					verts[numverts * 3 + i] /= 2.54f;
+				}
 				lo[i] = verts[numverts * 3 + i] < lo[i] ? verts[numverts * 3 + i] : lo[i];
 				hi[i] = verts[numverts * 3 + i] > hi[i] ? verts[numverts * 3 + i] : hi[i];
 			}
@@ -712,7 +747,57 @@ static char *jsonValue(char *s)
 	return s;
 }
 
-// Every placement in the row's box (C2M's _xmodels.json, one object a prop)
+// An object's X, Y and Z after key in [s, end) (the newer C2M's placements)
+static void jsonXyz(const char *s, const char *end, const char *key, f32 out[3])
+{
+	static const char *const axes[] = { "\"X\"", "\"Y\"", "\"Z\"" };
+	const char *at = strstr(s, key);
+	const char *close;
+	s32 i;
+
+	if (!at || at >= end || (close = strchr(at, '}')) == NULL) {
+		return;
+	}
+
+	for (i = 0; i < 3; i++) {
+		const char *k = strstr(at, axes[i]);
+
+		if (k && k < close) {
+			out[i] = (f32)atof(jsonValue((char *)k + 3));
+		}
+	}
+}
+
+static void placeOne(const char *modeldir, const char *name, const f32 pos[3], const f32 rot[3], f32 scale,
+		const struct codmaprow *row, const f32 *centre, s32 *placed, s32 *missing, s32 *tris)
+{
+	const struct cmodel *m;
+
+	if (!name[0] || pos[0] < row->box[0] || pos[0] > row->box[1] || pos[1] < row->box[2] || pos[1] > row->box[3]
+			|| pos[2] < row->zmin) {
+		return;
+	}
+
+	m = modelGet(modeldir, name, 1);
+
+	if (!m) {
+		(*missing)++;
+		return;
+	}
+
+	*tris += propPlace(m, pos, rot, scale, centre, 0);
+
+	// its collision from its simplest model: LOD1's tiles were too many for
+	// the tiles file (convertTiles() overran)
+	if (m->solid && (m = modelGet(modeldir, name, 0)) != NULL) {
+		propPlace(m, pos, rot, scale, centre, 1);
+	}
+
+	(*placed)++;
+}
+
+// Every placement in the row's box (C2M's _xmodels.json, one object a prop;
+// the newer C2M's _static_models.json, one a "Name" to the next)
 static void readProps(const char *jsonpath, const char *modeldir, const struct codmaprow *row, const f32 *centre)
 {
 	FILE *f = fopen(jsonpath, "rb");
@@ -733,13 +818,32 @@ static void readProps(const char *jsonpath, const char *modeldir, const struct c
 	text[len] = 0;
 	fclose(f);
 
+	if (g_NewC2m) {
+		for (at = strstr(text, "\"Name\""); at; ) {
+			char *next = strstr(at + 6, "\"Name\"");
+			char *end = next ? next : text + len;
+			char name[96] = "";
+			f32 pos[3] = { 0, 0, 0 }, rot[3] = { 0, 0, 0 }, scale[3] = { 1, 1, 1 };
+
+			sscanf(jsonValue(at + 6), "%95[^\"]", name);
+			jsonXyz(at, end, "\"Position\"", pos);
+			jsonXyz(at, end, "\"RotationDegrees\"", rot);
+			jsonXyz(at, end, "\"ModelScale\"", scale);
+			placeOne(modeldir, name, pos, rot, scale[0], row, centre, &placed, &missing, &tris);
+			at = next;
+		}
+
+		free(text);
+		sysLogPrintf(LOG_NOTE, "codmap: %d props placed (%d triangles), %d with no model exported", placed, tris, missing);
+		return;
+	}
+
 	for (at = strchr(text, '{'); at; at = strchr(at + 1, '{')) {
 		char *end = strchr(at, '}');
 		char name[96] = "";
 		f32 pos[3] = { 0, 0, 0 }, rot[3] = { 0, 0, 0 }, scale = 1;
 		static const char *const keys[] = { "\"PosX\"", "\"PosY\"", "\"PosZ\"", "\"RotX\"", "\"RotY\"", "\"RotZ\"", "\"Scale\"" };
 		f32 *dst[] = { &pos[0], &pos[1], &pos[2], &rot[0], &rot[1], &rot[2], &scale };
-		const struct cmodel *m;
 		char *k;
 		s32 i;
 
@@ -765,27 +869,7 @@ static void readProps(const char *jsonpath, const char *modeldir, const struct c
 		}
 
 		*end = '}';
-
-		if (!name[0] || pos[0] < row->box[0] || pos[0] > row->box[1] || pos[1] < row->box[2] || pos[1] > row->box[3]
-				|| pos[2] < row->zmin) {
-			continue;
-		}
-
-		m = modelGet(modeldir, name, 1);
-
-		if (!m) {
-			missing++;
-			continue;
-		}
-
-		tris += propPlace(m, pos, rot, scale, centre, 0);
-
-		// its collision from its simplest model: LOD1's tiles were too many for
-		// the tiles file (convertTiles() overran)
-		if (m->solid && (m = modelGet(modeldir, name, 0)) != NULL) {
-			propPlace(m, pos, rot, scale, centre, 1);
-		}
-		placed++;
+		placeOne(modeldir, name, pos, rot, scale, row, centre, &placed, &missing, &tris);
 	}
 
 	free(text);
@@ -799,7 +883,7 @@ struct codspawn {
 	f32 yaw;
 };
 
-// The row's player spawns from the map's entities (C2M's _mapEnts.txt)
+// The row's player spawns from the map's entities (C2M's _entities.txt or _mapEnts.txt)
 static s32 readSpawns(const char *path, const struct codmaprow *row, const f32 *centre, struct codspawn *out, s32 max)
 {
 	FILE *f = fopen(path, "rb");
@@ -2239,6 +2323,30 @@ static s32 writeOut(const char *dir, const char *rel, const cbuf *b)
 	return 1;
 }
 
+// The map's entities: _entities.txt from the newer C2M, _mapEnts.txt the older
+static void codmapEntsPath(char *path, size_t size, const char *indir, const char *map)
+{
+	snprintf(path, size, "%s/%s/%s_%s.txt", indir, map, map, g_NewC2m ? "entities" : "mapEnts");
+}
+
+// indir's last folder: the game (C2M's exported_maps/black_ops_2)
+static const char *codmapGameOf(const char *indir)
+{
+	static char game[128];
+	size_t n = strlen(indir);
+	const char *s;
+
+	while (n > 0 && (indir[n - 1] == '/' || indir[n - 1] == '\\')) {
+		n--;
+	}
+
+	for (s = indir + n; s > indir && s[-1] != '/' && s[-1] != '\\'; s--);
+
+	snprintf(game, sizeof(game), "%.*s", (int)(indir + n - s), s);
+
+	return game;
+}
+
 static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, const char *outdir, cbuf *maps)
 {
 	char path[1024], rel[256];
@@ -2252,6 +2360,20 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 	g_NumTris = 0;
 	g_NumMats = 0;
+
+	// which C2M wrote it (g_NewC2m)
+	{
+		FILE *probe;
+
+		snprintf(path, sizeof(path), "%s/%s/%s_static_models.json", indir, row->map, row->map);
+		probe = fopen(path, "rb");
+		g_NewC2m = probe != NULL;
+
+		if (probe) {
+			fclose(probe);
+		}
+	}
+
 	snprintf(path, sizeof(path), "%s/textures/codmap.txt", outdir);
 	texTableRead(path);
 	snprintf(path, sizeof(path), "%s/%s/%s.obj", indir, row->map, row->map);
@@ -2260,13 +2382,26 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 		return 0;
 	}
 
-	// the props, where Greyhound's export of them is given
-	if (sysArgGetString("--codmap-props")) {
+	// the props: the newer C2M's own models (exported_models/<game>/, beside
+	// exported_maps/<game>/, unless --codmap-props says), else where Greyhound's
+	// export of them is given
+	if (g_NewC2m) {
+		char models[1024];
+
+		if (sysArgGetString("--codmap-props")) {
+			snprintf(models, sizeof(models), "%s", sysArgGetString("--codmap-props"));
+		} else {
+			snprintf(models, sizeof(models), "%s/../../exported_models/%s", indir, codmapGameOf(indir));
+		}
+
+		snprintf(path, sizeof(path), "%s/%s/%s_static_models.json", indir, row->map, row->map);
+		readProps(path, models, row, centre);
+	} else if (sysArgGetString("--codmap-props")) {
 		snprintf(path, sizeof(path), "%s/%s/%s_xmodels.json", indir, row->map, row->map);
 		readProps(path, sysArgGetString("--codmap-props"), row, centre);
 	}
 
-	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
+	codmapEntsPath(path, sizeof(path), indir, row->map);
 	numspawns = readSpawns(path, row, centre, spawns, ARRAYCOUNT(spawns));
 
 	if (numspawns == 0) {
@@ -2383,7 +2518,7 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 	bg = writeBg(rooms, numrooms, portals, numportals);
 	tiles = writeTiles(rooms, numrooms, &floors, &walls);
-	snprintf(path, sizeof(path), "%s/%s/%s_mapEnts.txt", indir, row->map, row->map);
+	codmapEntsPath(path, sizeof(path), indir, row->map);
 	readNodes(path, row, centre);
 	readLayout(path, row, centre, numspawns + g_NumNodes);
 	blockGridFree();

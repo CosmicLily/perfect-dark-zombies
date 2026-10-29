@@ -1155,3 +1155,24 @@ and `~~-gp6_zm_footlocker_old_c-rg~8bd9e7e1` copied into the input's images/).
 and puts it back; `zombiesRenderBoxFakes()` draws them from bg.c's room pass.
 `--zombies-test-fake K` circles place K. Not yet checked: the footlocker reads
 greyish and see-through, and it may want its own colour map looked at.
+**Town from the newer C2M (2026-10-28).** C2M's update writes, in
+`exported_maps/<game>/<map>/`, `<map>.obj` **in inches** (the old one was cm),
+`_static_models.json` (Name, then Position, RotationDegrees and ModelScale, each
+an object of X/Y/Z), `_materials.json` (a material's colour map at
+Textures/colorMap/Name, the props' materials with the map's) and
+`_entities.txt` (the old `_mapEnts.txt`'s format); every model goes flat into
+`exported_models/<game>/` as `<name>.obj` (LOD0) and `<name>_LOD1..3.obj`, in
+inches; the pictures as PNG in `exported_images/<game>/`. codmap.c sets
+`g_NewC2m` when `_static_models.json` is there and reads all of it, the models
+from `../../exported_models/<game>` by default; codmaptex.py takes the pictures
+from `exported_images` first (Town: 393 materials, none missing, no `--props`
+pass). Town: 1,272 props, 132 placements with no model (the lab's, which Town
+cannot reach). A standalone map (Nuketown) exports every model; a piece of a
+bigger one exports only what the game has loaded, and Town's 127 of 150 was all
+that is reachable. **The converter's window says "Not responding" for minutes
+while it works: closing it there loses the run silently.**
+**Town's fog.** A fog row's fogmin/fogmax are depth-buffer thousandths,
+z' = far(d - near) / (d(far - near)): `992 1000` with near 15 and far 22000 was
+whole only at the far plane, and the box's cut edge (8,800 units from its
+middle) showed through. `988 998` starts at about 1,200 units and is whole by
+5,600, as Town's own haze hides the rest of Tranzit.
