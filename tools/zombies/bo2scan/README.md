@@ -12,3 +12,7 @@ Zombies match. Files they write land in
   collides (`playerphysicstrace`) and as a bullet does (`bullettrace`).
 - `bo2scan_fs.gsc`: writes `bo2scan_test.txt`, if Plutonium's `fs_*` functions are
   there.
+- `bo2scan.gsc`: the scan. In a match, after spawning, the player is made
+  invulnerable and the map's box traced down every 16 inches with the player's
+  collision; `bo2scan_<map>.txt` holds each column's surfaces (format in the
+  script's head). Leave the game running till it says done.
