@@ -22734,15 +22734,15 @@ void zombiesTick(void)
 							RoomNum qr[21], qa[21];
 							f32 y;
 
-							q.x += gx * 20;
-							q.z += gz * 20;
+							q.x += gx * sysArgGetInt("--zombies-probe-step", 20);
+							q.z += gz * sysArgGetInt("--zombies-probe-step", 20);
 							q.y = sysArgGetInt("--zombies-probe-y", 600);
 							bgFindRoomsByPos(&q, qr, qa, 20, NULL);
 							y = cdFindGroundAtCyl(&q, sysArgGetInt("--zombies-probe-r", 5), qr, NULL, NULL);
 							len += snprintf(row + len, sizeof(row) - len, " %5.0f", y > -1000000.0f ? y : -9999.0f);
 						}
 
-						sysLogPrintf(LOG_NOTE, "zombies: probe z %+d:%s", gz * 20, row);
+						sysLogPrintf(LOG_NOTE, "zombies: probe z %+d:%s", gz * sysArgGetInt("--zombies-probe-step", 20), row);
 					}
 				}
 
@@ -22753,15 +22753,15 @@ void zombiesTick(void)
 						struct coord q = at;
 						RoomNum qr[21], qa[21];
 
-						q.x += gx * 20;
-						q.z += gz * 20;
+						q.x += gx * sysArgGetInt("--zombies-probe-step", 20);
+						q.z += gz * sysArgGetInt("--zombies-probe-step", 20);
 						q.y = 500; // over the street, under the roofs
 						bgFindRoomsByPos(&q, qr, qa, 20, NULL);
 						row[gx + 4] = cdFindGroundAtCyl(&q, 5, qr, NULL, NULL) > -1000000.0f ? '#' : '.';
 					}
 
 					row[9] = 0;
-					sysLogPrintf(LOG_NOTE, "zombies: probe z %+d: %s", gz * 20, row);
+					sysLogPrintf(LOG_NOTE, "zombies: probe z %+d: %s", gz * sysArgGetInt("--zombies-probe-step", 20), row);
 				}
 			}
 
