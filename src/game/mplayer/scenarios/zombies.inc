@@ -13463,11 +13463,11 @@ static void zombiesBoxPutAt(s32 padnum)
 		eye = pos;
 		eye.y += 30;
 
-		for (k = 0; k < 16; k++) {
-			f32 ang = k * (M_BADTAU / 16);
+		for (k = 0; k < 64; k++) { // fine enough to lie flat on a wall at any angle
+			f32 ang = k * (M_BADTAU / 64);
 			f32 d;
 
-			for (d = 10; d <= ZOMBIE_BOX_WALLREACH; d += 10) {
+			for (d = 5; d <= ZOMBIE_BOX_WALLREACH; d += 5) {
 				struct coord to;
 
 				to.x = eye.x + sinf(ang) * d;
