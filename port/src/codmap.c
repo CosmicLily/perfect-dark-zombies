@@ -1460,7 +1460,10 @@ static cbuf writeBg(struct croom *rooms, s32 numrooms, const struct cportal *por
  */
 static void tileEmit(cbuf *bodies, const f32 tp[3][3], u32 flags, s32 *floors, s32 *walls)
 {
-	const s32 wide = (flags & 0x0001) != 0;
+	// (and with the game's own collision read, its walls too: merged into runs
+	// hundreds of inches long, as 16-bit tiles they stopped a walk only some of
+	// the time - out of the bar's window at a walk, held at a run)
+	const s32 wide = (flags & 0x0001) != 0 || g_ScanCollision;
 	f32 lo[3], hi[3];
 	s32 ix0, ix1, iz0, iz1, ix, iz, c, k;
 	s16 p[3][3];

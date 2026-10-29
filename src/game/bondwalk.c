@@ -2737,10 +2737,10 @@ void bwalkApplyMoveData(struct movedata *data)
 			}
 			g_Vars.currentplayer->speedsideways = 0;
 
-			if (g_Vars.lvframenum % 20 == 0) {
-				sysLogPrintf(LOG_NOTE, "bwalk: --zombies-test-walk: frame %d at %.0f %.0f %.0f ground %.0f",
+			if (g_Vars.lvframenum % sysArgGetInt("--zombies-test-walk-every", 20) == 0) {
+				sysLogPrintf(LOG_NOTE, "bwalk: --zombies-test-walk: frame %d at %.0f %.0f %.0f ground %.0f man %.0f",
 						g_Vars.lvframenum, g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->prop->pos.y,
-						g_Vars.currentplayer->prop->pos.z, g_Vars.currentplayer->vv_ground);
+						g_Vars.currentplayer->prop->pos.z, g_Vars.currentplayer->vv_ground, g_Vars.currentplayer->vv_manground);
 			}
 		}
 #endif
