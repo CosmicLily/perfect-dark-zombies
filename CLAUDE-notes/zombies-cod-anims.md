@@ -1187,3 +1187,9 @@ height running away. `zombiesTickFallNet()` now looks the rooms up by position
 (`zombiesRoomsAt()`, bgFindRoomsByPos()) when there is no ground, before
 calling it a fall, and `zombiesPutBack()` uses the rooms found at the safe
 spot. Not reproduced by a test (a test teleport already looks rooms up).
+**Town's stairs (2026-10-28).** Black Ops II's stairs are walked on a clip ramp,
+and C2M's export has no clip surfaces at all (only `caulk_shadow_primary` and
+`shadowcaster`, which are dropped), so the player met each step and had to jump.
+`playerGetBbox()` (player.c) puts the bottom of the player's collision box 18
+inches (46 units) over the ground on a Black Ops II map, Black Ops II's own step
+height, where Perfect Dark's is 30 units.

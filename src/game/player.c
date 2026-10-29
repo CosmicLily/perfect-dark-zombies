@@ -55,6 +55,7 @@
 #include "optionsmenu.h"
 #include "gehud.h"
 #include "net/net.h"
+s32 codmapStageIs(s32 stagenum); // codmap.c
 #endif
 #ifndef PLATFORM_N64
 #include "game/modghost.h"
@@ -8471,6 +8472,14 @@ void playerGetBbox(struct prop *prop, f32 *radius, f32 *ymax, f32 *ymin)
 	*radius = geTankRadius(prop, *radius);
 #endif
 	*ymin = g_Vars.currentplayer->vv_manground + 30;
+#ifndef PLATFORM_N64
+	// A Black Ops II map steps as its own player does, 18 inches (46 units):
+	// its stairs are walked on a clip ramp C2M's export does not have, and up
+	// the steps themselves the player stuck at each and had to jump (codmap.c)
+	if (codmapStageIs(g_Vars.stagenum)) {
+		*ymin = g_Vars.currentplayer->vv_manground + 18 * 2.54f;
+	}
+#endif
 	*ymax = g_Vars.currentplayer->vv_manground + g_Vars.players[playernum]->vv_headheight;
 
 	if (g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK) {
