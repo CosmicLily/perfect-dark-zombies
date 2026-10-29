@@ -1330,3 +1330,4 @@ scan notes the top of anything solid two steps running (a floor-to-ceiling clip:
 a trace begun inside it was stepped through unrecorded, so the Juggernog landing's
 end was open). Checked with --zombies-test-walk/run: the bar's upper floor holds
 at its window (a 38-inch sill), the bus closes the west road.
+**The scan's janky first import (2026-10-29).** Three faults: 91,000 of 257,000 surfaces were under Town (Tranzit's lab), and through a gap the player stood under the map: layers under CODSCAN_GROUND (-100) are dropped. Every roof edge, awning and balcony was walled down to the street (the surface over a step above its neighbour): a surface more than CODSCAN_TALL (80) over the floor beside it is overhead and not walled. That leaves tall walls to bo2scan 2's note of solid from floor to ceiling, so a version-1 scan is not to be used for collision.

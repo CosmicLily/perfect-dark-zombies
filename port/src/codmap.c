@@ -2381,6 +2381,8 @@ static void addRamps(const struct codmaprow *row)
 #define CODSCAN_LAYERS 8
 #define CODSCAN_SLOPE  14 // inches between neighbouring samples on one floor
 #define CODSCAN_STEP   18 // Black Ops II's step
+#define CODSCAN_TALL   80   // over a floor by more than this, a surface is overhead
+#define CODSCAN_GROUND -100 // inches: Town's lowest walkable ground is the street at -55
 #define CODSCAN_INSET  0  // inches a floor square stops short of its halfway lines (2: the player could not move at all)
 
 struct scanwall {
@@ -2520,7 +2522,9 @@ static s32 readScan(const char *path, const struct codmaprow *row, const f32 *ce
 			s += used;
 
 			// nothing under the row's floor (Town: Tranzit's lab under it)
-			if (h >= row->zmin && g_ScanN[c] < CODSCAN_LAYERS) {
+			// nothing under the map's ground: the scan reaches Tranzit's lab under
+			// Town, and through a gap in a street the player stood on its roof
+			if (h >= CODSCAN_GROUND && g_ScanN[c] < CODSCAN_LAYERS) {
 				g_ScanH[c * CODSCAN_LAYERS + g_ScanN[c]++] = (s16)h;
 			}
 		}
@@ -2612,7 +2616,14 @@ static s32 readScan(const char *path, const struct codmaprow *row, const f32 *ce
 						const s32 h = g_ScanH[c * CODSCAN_LAYERS + l];
 						s32 lo;
 
-						if (scanMatch(bi, bj, h, CODSCAN_STEP) >= 0 || !scanUnder(bi, bj, h - CODSCAN_STEP, &lo)) {
+						// and only what stands in the way: a surface more than a
+						// player's height over the floor beside it is overhead (a
+						// roof's edge, an awning, a balcony), and walled to the
+						// street each was an invisible wall under it. Something solid
+						// from floor to ceiling has its own surface lower down
+						// (bo2scan 2's note of it)
+						if (scanMatch(bi, bj, h, CODSCAN_STEP) >= 0 || !scanUnder(bi, bj, h - CODSCAN_STEP, &lo)
+								|| h - lo > CODSCAN_TALL) {
 							continue;
 						}
 
