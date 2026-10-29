@@ -1205,3 +1205,16 @@ off a pillar or corner is not square to it (Skedar's stood at a slant):
 `zombiesBoxPutAt()` casts two more rays 15 degrees either side, squares the box
 to the line through their hits when it agrees with the first ray within 30
 degrees, and moves it the perpendicular distance.
+**Town's real holes: a merged material read as glass (2026-10-28).** The newer
+C2M (Merge By Material) names a surface base first and its laid-over layers
+after `__`: `concrete_sidewalk_dirty__glass_decal_broken_shards`. matFind()
+read "glass" in the whole name, and glass is drawn blended and never a tile, so
+the sidewalk in front of Town's shops was a hole (F3: "fell through the map" at
+-165 -755 over and over; `cdFindGroundAtCyl()`'s -4294967296 is its "found
+nothing", not an overflow). matFind() now classes a material by the part before
+`__` and still finds its texture by the whole name. `--zombies-test-at X,Z
+--zombies-test-probe` logs a 9x9 grid of floor found ('#') or not round the
+spot, which showed the hole's straight edge. Two things tried first and wrong:
+cutting big triangles smaller (a tiles file past 16 MB, the 24-bit length rzip
+writes: the game crashed loading Town), and float floor tiles (kept: floors are
+GEOTYPE_TILE_F now, 3.9 MB of tiles).

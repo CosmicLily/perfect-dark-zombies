@@ -22607,7 +22607,32 @@ void zombiesTick(void)
 				g_Vars.players[0]->vv_manground = at.y;
 				g_Vars.players[0]->vv_ground = -30000;
 			}
-			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-at: player at %.0f %.0f %.0f", at.x, at.y, at.z);
+			// --zombies-test-probe: the floor round it, a 9x9 grid 20 apart,
+			// '#' found and '.' none, rows along z
+			if (sysArgCheck("--zombies-test-probe")) {
+				s32 gx, gz;
+
+				for (gz = -4; gz <= 4; gz++) {
+					char row[16];
+
+					for (gx = -4; gx <= 4; gx++) {
+						struct coord q = at;
+						RoomNum qr[21], qa[21];
+
+						q.x += gx * 20;
+						q.z += gz * 20;
+						q.y = 500; // over the street, under the roofs
+						bgFindRoomsByPos(&q, qr, qa, 20, NULL);
+						row[gx + 4] = cdFindGroundAtCyl(&q, 5, qr, NULL, NULL) > -1000000.0f ? '#' : '.';
+					}
+
+					row[9] = 0;
+					sysLogPrintf(LOG_NOTE, "zombies: probe z %+d: %s", gz * 20, row);
+				}
+			}
+
+			sysLogPrintf(LOG_NOTE, "zombies: --zombies-test-at: player at %.0f %.0f %.0f, rooms %d %d %d %d", at.x, at.y, at.z,
+					rooms[0], rooms[1], rooms[0] >= 0 && rooms[1] >= 0 ? rooms[2] : -1, rooms[0] >= 0 && rooms[1] >= 0 && rooms[2] >= 0 ? rooms[3] : -1);
 		}
 	}
 

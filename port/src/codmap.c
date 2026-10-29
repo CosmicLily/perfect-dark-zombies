@@ -228,6 +228,7 @@ static s32 matFind(const char *name)
 	};
 	s32 i;
 	u32 h;
+	char kind[96];
 
 	for (i = 0; i < g_NumMats; i++) {
 		if (strcmp(g_Mats[i].name, name) == 0) {
@@ -248,6 +249,19 @@ static s32 matFind(const char *name)
 
 	g_Mats[g_NumMats].cut = 0;
 
+	// What a surface is - solid, glass, a decal, foliage - is its base
+	// material's: the newer C2M merges a surface's layers into one name, the
+	// base first and what is laid over it after "__"
+	// (concrete_sidewalk_dirty__glass_decal_broken_shards). Read whole, that
+	// sidewalk was glass, and glass is not walked on: Town had holes to fall
+	// through in front of its shops (F3 2026-10-28, -165 -755). The texture is
+	// still the whole name's
+	{
+		const char *layers = strstr(name, "__");
+
+		snprintf(kind, sizeof(kind), "%.*s", layers ? (int)(layers - name) : (int)strlen(name), name);
+	}
+
 	for (i = 0; i < g_NumTexNames; i++) {
 		if (strcmp(g_TexNames[i], name) == 0) {
 			g_Mats[g_NumMats].texnum = g_TexNums[i];
@@ -256,15 +270,15 @@ static s32 matFind(const char *name)
 			// meant to be seen through
 			// (branches and leaves are not wholly clear between twigs, and with
 			// no blend colour to test against they stayed slabs: hidden below)
-			g_Mats[g_NumMats].cut = g_TexCut[i] && (strstr(name, "fence") || strstr(name, "chain")
-					|| strstr(name, "barbed") || strstr(name, "_holes") || strstr(name, "leaf")
-					|| strstr(name, "branch") || strstr(name, "shrub") || strstr(name, "bush")
-					|| (strstr(name, "grass") && !strstr(name, "ground")));
+			g_Mats[g_NumMats].cut = g_TexCut[i] && (strstr(kind, "fence") || strstr(kind, "chain")
+					|| strstr(kind, "barbed") || strstr(kind, "_holes") || strstr(kind, "leaf")
+					|| strstr(kind, "branch") || strstr(kind, "shrub") || strstr(kind, "bush")
+					|| (strstr(kind, "grass") && !strstr(kind, "ground")));
 		}
 	}
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nosolid); i++) {
-		if (strstr(name, nosolid[i])) {
+		if (strstr(kind, nosolid[i])) {
 			g_Mats[g_NumMats].solid = 0;
 		}
 	}
@@ -282,12 +296,12 @@ static s32 matFind(const char *name)
 	// renderer, and drawn it was a black sheet; its posts and rails are props
 	// (chain-link, branches, leaves and grass are cut out now: above; glass
 	// and decals are blended, below)
-	g_Mats[g_NumMats].unseen = strstr(name, "gobo") != NULL;
-	g_Mats[g_NumMats].blend = strstr(name, "glass") ? 1 : strstr(name, "decal") || strstr(name, "_dec") ? 2 : 0;
-	g_Mats[g_NumMats].glow = strstr(name, "lava_molten") || strstr(name, "lava_cooling") || strstr(name, "atmos_glow");
+	g_Mats[g_NumMats].unseen = strstr(kind, "gobo") != NULL;
+	g_Mats[g_NumMats].blend = strstr(kind, "glass") ? 1 : strstr(kind, "decal") || strstr(kind, "_dec") ? 2 : 0;
+	g_Mats[g_NumMats].glow = strstr(kind, "lava_molten") || strstr(kind, "lava_cooling") || strstr(kind, "atmos_glow");
 
 	for (i = 0; i < (s32)ARRAYCOUNT(nodraw); i++) {
-		if (strstr(name, nodraw[i])) {
+		if (strstr(kind, nodraw[i])) {
 			g_Mats[g_NumMats].nodraw = 1;
 		}
 	}
@@ -1406,6 +1420,100 @@ static cbuf writeBg(struct croom *rooms, s32 numrooms, const struct cportal *por
  * writeTiles()): each triangle in every room it reaches into, its vertices
  * in the world's units
  */
+/**
+ * A collision tile's vertices are 16-bit whole numbers, and a floor's height
+ * under a point is worked out from them in whole numbers too: Tranzit's ground
+ * has triangles thousands of units across, and from one of those the height
+ * came out as -4294967296 (F3 2026-10-28, Town at -165 -755: the player fell,
+ * and fell again where they were put back). Perfect Dark's own levels have no
+ * tile near that size. A floor is written as GEOTYPE_TILE_F, its vertices
+ * floats (geconvert.c writes them for GoldenEye levels too wide for 16 bits),
+ * whose height is worked out in floats. Cutting the big triangles into small
+ * ones instead took Town's tiles file past the 16 MB a compressed file's
+ * 24-bit length can say, and the game crashed loading it (convertTiles()).
+ * Walls stay 16-bit: floats are 52 bytes a tile to their 32.
+ */
+static void tileEmit(cbuf *bodies, const f32 tp[3][3], u32 flags, s32 *floors, s32 *walls)
+{
+	const s32 wide = (flags & 0x0001) != 0;
+	f32 lo[3], hi[3];
+	s32 ix0, ix1, iz0, iz1, ix, iz, c, k;
+	s16 p[3][3];
+
+	for (c = 0; c < 3; c++) {
+		lo[c] = hi[c] = tp[0][c];
+
+		for (k = 1; k < 3; k++) {
+			lo[c] = tp[k][c] < lo[c] ? tp[k][c] : lo[c];
+			hi[c] = tp[k][c] > hi[c] ? tp[k][c] : hi[c];
+		}
+
+		for (k = 0; k < 3; k++) {
+			p[k][c] = s16of(tp[k][c]);
+		}
+	}
+
+	ix0 = (s32)floorf((lo[0] - CODMAP_REACH - g_GridX0) / CODMAP_CELL);
+	ix1 = (s32)floorf((hi[0] + CODMAP_REACH - g_GridX0) / CODMAP_CELL);
+	iz0 = (s32)floorf((lo[2] - CODMAP_REACH - g_GridZ0) / CODMAP_CELL);
+	iz1 = (s32)floorf((hi[2] + CODMAP_REACH - g_GridZ0) / CODMAP_CELL);
+
+	for (ix = ix0 < 0 ? 0 : ix0; ix <= ix1 && ix < g_GridX; ix++) {
+		for (iz = iz0 < 0 ? 0 : iz0; iz <= iz1 && iz < g_GridZ; iz++) {
+			cbuf *b = &bodies[1 + ix * g_GridZ + iz];
+			s32 mn[3], mx[3];
+
+			for (c = 0; c < 3; c++) {
+				mn[c] = mx[c] = 0;
+
+				for (k = 1; k < 3; k++) {
+					if (p[k][c] < p[mn[c]][c]) mn[c] = k;
+					if (p[k][c] > p[mx[c]][c]) mx[c] = k;
+				}
+			}
+
+			cbU8(b, wide ? 1 : 0);
+			cbU8(b, 3);
+			cbU16(b, flags);
+			cbU16(b, 0);
+
+			for (c = 0; c < 3; c++) {
+				cbU8(b, mn[c]);
+			}
+
+			for (c = 0; c < 3; c++) {
+				cbU8(b, mx[c]);
+			}
+
+			cbU16(b, 0x0fff);
+
+			if (wide) {
+				// GEOTYPE_TILE_F: two bytes to the floats' alignment, then a
+				// coord a vertex
+				cbU16(b, 0);
+
+				for (k = 0; k < 3; k++) {
+					for (c = 0; c < 3; c++) {
+						cbF32(b, tp[k][c]);
+					}
+				}
+			} else {
+				for (k = 0; k < 3; k++) {
+					for (c = 0; c < 3; c++) {
+						cbU16(b, (u16)p[k][c]);
+					}
+				}
+			}
+
+			if (flags & 0x0001) {
+				(*floors)++;
+			} else {
+				(*walls)++;
+			}
+		}
+	}
+}
+
 static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *outwalls)
 {
 	cbuf *bodies = calloc(numrooms + 1, sizeof(cbuf));
@@ -1416,9 +1524,6 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 
 	for (t = 0; t < g_NumTris; t++) {
 		const struct ctri *tri = &g_Tris[t];
-		f32 lo[3], hi[3];
-		s32 ix0, ix1, iz0, iz1, ix, iz, c, k;
-		s16 p[3][3];
 		u32 flags;
 
 		// A decal lying flat is ground too: in places it is the only floor
@@ -1435,66 +1540,7 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 			flags |= GEOFLAG_LAVA;
 		}
 
-		for (c = 0; c < 3; c++) {
-			lo[c] = hi[c] = tri->p[0][c];
-
-			for (k = 1; k < 3; k++) {
-				lo[c] = tri->p[k][c] < lo[c] ? tri->p[k][c] : lo[c];
-				hi[c] = tri->p[k][c] > hi[c] ? tri->p[k][c] : hi[c];
-			}
-
-			for (k = 0; k < 3; k++) {
-				p[k][c] = s16of(tri->p[k][c]);
-			}
-		}
-
-		ix0 = (s32)floorf((lo[0] - CODMAP_REACH - g_GridX0) / CODMAP_CELL);
-		ix1 = (s32)floorf((hi[0] + CODMAP_REACH - g_GridX0) / CODMAP_CELL);
-		iz0 = (s32)floorf((lo[2] - CODMAP_REACH - g_GridZ0) / CODMAP_CELL);
-		iz1 = (s32)floorf((hi[2] + CODMAP_REACH - g_GridZ0) / CODMAP_CELL);
-
-		for (ix = ix0 < 0 ? 0 : ix0; ix <= ix1 && ix < g_GridX; ix++) {
-			for (iz = iz0 < 0 ? 0 : iz0; iz <= iz1 && iz < g_GridZ; iz++) {
-				cbuf *b = &bodies[1 + ix * g_GridZ + iz];
-				s32 mn[3], mx[3];
-
-				for (c = 0; c < 3; c++) {
-					mn[c] = mx[c] = 0;
-
-					for (k = 1; k < 3; k++) {
-						if (p[k][c] < p[mn[c]][c]) mn[c] = k;
-						if (p[k][c] > p[mx[c]][c]) mx[c] = k;
-					}
-				}
-
-				cbU8(b, 0);
-				cbU8(b, 3);
-				cbU16(b, flags);
-				cbU16(b, 0);
-
-				for (c = 0; c < 3; c++) {
-					cbU8(b, mn[c]);
-				}
-
-				for (c = 0; c < 3; c++) {
-					cbU8(b, mx[c]);
-				}
-
-				cbU16(b, 0x0fff);
-
-				for (k = 0; k < 3; k++) {
-					for (c = 0; c < 3; c++) {
-						cbU16(b, (u16)p[k][c]);
-					}
-				}
-
-				if (flags & 0x0001) {
-					floors++;
-				} else {
-					walls++;
-				}
-			}
-		}
+		tileEmit(bodies, tri->p, flags, &floors, &walls);
 	}
 
 	cbU32(&out, (u32)(numrooms + 1));
