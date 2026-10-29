@@ -2258,22 +2258,43 @@ static void addRamps(const struct codmaprow *row)
 			g_Tris[g_NumTris - 1].solid = 1;
 		}
 
-		// and a rail along each side, over a step's height above it: beside a
+		// and a wall along each side, from the floor at its foot to a rail
+		// over a step's height above it, and one under its head: beside a
 		// flight there was no floor, or only one far over it, and running up
-		// the player slid off the edge through the "cracks" and under it
-		for (i = 0; i < 2; i++) {
-			const f32 x = i ? rp->x1 : rp->x0;
-			const f32 w[4][3] = {
-				{ x, rp->h0 - 10, rp->z0 }, { x, rp->h1 - 10, rp->z1 },
-				{ x, rp->h1 + CODMAP_RAMP_RAIL, rp->z1 }, { x, rp->h0 + CODMAP_RAMP_RAIL, rp->z0 },
-			};
+		// the player slid off the edge through the "cracks"; and from the floor
+		// beside it they walked in under it (F3 2026-10-28, -2011 124, eye 55
+		// under the Juggernog flight). The head's wall stops under the floor
+		// it meets, short of what a player there would bump
+		{
 			const f32 *uv[3] = { NULL, NULL, NULL };
+			f32 w[3][4][3];
 			s32 k;
 
-			for (k = 0; k < 2; k++) {
-				triAdd(w[0], w[1 + k], w[2 + k], uv, mat);
-				g_Tris[g_NumTris - 1].hide = 1;
-				g_Tris[g_NumTris - 1].solid = 1;
+			for (i = 0; i < 2; i++) {
+				const f32 x = i ? rp->x1 : rp->x0;
+				const f32 side[4][3] = {
+					{ x, rp->h0 - 10, rp->z0 }, { x, rp->h0 - 10, rp->z1 },
+					{ x, rp->h1 + CODMAP_RAMP_RAIL, rp->z1 }, { x, rp->h0 + CODMAP_RAMP_RAIL, rp->z0 },
+				};
+
+				memcpy(w[i], side, sizeof(side));
+			}
+
+			{
+				const f32 back[4][3] = {
+					{ rp->x0, rp->h0 - 10, rp->z1 }, { rp->x1, rp->h0 - 10, rp->z1 },
+					{ rp->x1, rp->h1 - 10, rp->z1 }, { rp->x0, rp->h1 - 10, rp->z1 },
+				};
+
+				memcpy(w[2], back, sizeof(back));
+			}
+
+			for (i = 0; i < 3; i++) {
+				for (k = 0; k < 2; k++) {
+					triAdd(w[i][0], w[i][1 + k], w[i][2 + k], uv, mat);
+					g_Tris[g_NumTris - 1].hide = 1;
+					g_Tris[g_NumTris - 1].solid = 1;
+				}
 			}
 		}
 
