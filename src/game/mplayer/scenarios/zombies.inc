@@ -19498,6 +19498,39 @@ static bool zombiesPlayerInBounds(struct player *player)
 	return lowest > 1e29f || player->vv_manground > lowest - ZOMBIE_BOUNDS_BELOW;
 }
 
+/**
+ * The rooms at pos, looked up by position (bgFindRoomsByPos()). Walking, a
+ * player's rooms follow them through the portals, and on a Black Ops II map
+ * they could come out of a doorway in a room that is not the one they stand
+ * in: the floor under them was not in it, they "fell" with the floor right
+ * there, and put back with those same rooms they fell again every frame, the
+ * view under the map and blank (F3's pd.log 2026-10-28: camera at -4294967040,
+ * "fell through the map" at one spot over and over, in more than one place).
+ * False when the lookup finds none.
+ */
+static bool zombiesRoomsAt(struct coord *pos, RoomNum *rooms)
+{
+	RoomNum above[8];
+
+	bgFindRoomsByPos(pos, rooms, above, 7, NULL);
+
+	return rooms[0] != -1;
+}
+
+// Back to where they last stood, in the rooms that are there
+static void zombiesPutBack(s32 playernum)
+{
+	struct player *player = g_Vars.players[playernum];
+	RoomNum rooms[8];
+
+	if (!zombiesRoomsAt(&g_ZombieSafePos[playernum], rooms)) {
+		roomsCopy(g_ZombieSafeRooms[playernum], rooms);
+	}
+
+	chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], rooms,
+			(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+}
+
 static void zombiesTickFallNet(s32 playernum)
 {
 	struct player *player = g_Vars.players[playernum];
@@ -19505,6 +19538,20 @@ static void zombiesTickFallNet(s32 playernum)
 
 	if (!player || !player->prop || !player->prop->chr || !codmapStageIs(g_Vars.stagenum)) {
 		return;
+	}
+
+	// Nothing under them: first the rooms they are really in, which may have
+	// the floor the rooms they carry did not
+	if (player->vv_ground <= -29999.0f) {
+		RoomNum rooms[8];
+		struct coord pos = player->prop->pos;
+
+		if (zombiesRoomsAt(&pos, rooms) && rooms[0] != player->prop->rooms[0]) {
+			sysLogPrintf(LOG_NOTE, "zombies: player %d's rooms put right at %.0f %.0f (room %d, not %d)",
+					playernum, pos.x, pos.z, rooms[0], player->prop->rooms[0]);
+			chrMoveToPos(player->prop->chr, &pos, rooms, (360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+			return;
+		}
 	}
 
 	// under the map or off its edge for a second: back where they last stood
@@ -19522,8 +19569,7 @@ static void zombiesTickFallNet(s32 playernum)
 					g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
 			g_ZombieOutOfBounds60[playernum] = 0;
 			g_ZombieFall60[playernum] = 0;
-			chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
-					(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+			zombiesPutBack(playernum);
 			player->isfalling = false;
 			player->bdeltapos.y = 0;
 			return;
@@ -19545,8 +19591,7 @@ static void zombiesTickFallNet(s32 playernum)
 	// at once with nothing under them at all; else after a long fall
 	if ((g_ZombieFall60[playernum] >= ZOMBIE_FALLNET60 || player->vv_ground <= -29999.0f) && g_ZombieSafeHave[playernum]) {
 		g_ZombieFall60[playernum] = 0;
-		chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
-				(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+		zombiesPutBack(playernum);
 		sysLogPrintf(LOG_NOTE, "zombies: player %d fell through the map at %.0f %.0f, put back at %.0f %.0f %.0f",
 				playernum, player->prop->pos.x, player->prop->pos.z,
 				g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
@@ -19568,8 +19613,7 @@ bool zombiesFallNetCatch(s32 playernum)
 	}
 
 	g_ZombieFall60[playernum] = 0;
-	chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], g_ZombieSafeRooms[playernum],
-			(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+	zombiesPutBack(playernum);
 	player->isfalling = false;
 	player->bdeltapos.y = 0;
 	sysLogPrintf(LOG_NOTE, "zombies: player %d's fall death caught, put back at %.0f %.0f %.0f", playernum,

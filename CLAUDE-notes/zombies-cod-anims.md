@@ -1176,3 +1176,14 @@ z' = far(d - near) / (d(far - near)): `992 1000` with near 15 and far 22000 was
 whole only at the far plane, and the box's cut edge (8,800 units from its
 middle) showed through. `988 998` starts at about 1,200 units and is whole by
 5,600, as Town's own haze hides the rest of Tranzit.
+**Town's blank view was a fall loop (2026-10-28).** F3 with `--log` (build-dabs'
+`pd-with-log.bat`): `bg: stage 0x51 draws 1 room(s) from 303 -4294967040 -4115`
+after "fell through the map at 303 -4115, put back at 303 -157 -4115" every
+frame, in several places. The floor is there (placed by `--zombies-test-at` the
+player stands): walking, the player's rooms follow the portals, and coming out
+of a doorway they were not the rooms under the player, so no ground; the fall
+net put them back with the same saved rooms and it repeated, the camera's
+height running away. `zombiesTickFallNet()` now looks the rooms up by position
+(`zombiesRoomsAt()`, bgFindRoomsByPos()) when there is no ground, before
+calling it a fall, and `zombiesPutBack()` uses the rooms found at the safe
+spot. Not reproduced by a test (a test teleport already looks rooms up).
