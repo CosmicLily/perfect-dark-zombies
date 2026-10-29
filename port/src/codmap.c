@@ -2225,9 +2225,52 @@ static const struct codramp g_CodMapRamps[] = {
 	{ "bo2town", -2090, -1825, -512, -142, 172, 305 },  // up to Juggernog, open treads
 };
 
+/**
+ * Invisible walls where Black Ops II has one the export lacks: an upright
+ * quad from (x0, z0) to (x1, z1), y0 to y1. The landing at the head of Town's
+ * Juggernog flight ends at z 725 over nothing at all, and walked along it the
+ * player fell off its end (F3 video 2026-10-28)
+ */
+struct codwall {
+	const char *key;
+	f32 x0, z0, x1, z1;
+	f32 y0, y1;
+};
+
+static const struct codwall g_CodMapWalls[] = {
+	{ "bo2town", -2140, 725, -1740, 725, 280, 480 }, // the end of the Juggernog flight's landing
+};
+
+static void addWalls(const struct codmaprow *row)
+{
+	s32 i, k;
+
+	for (i = 0; i < (s32)ARRAYCOUNT(g_CodMapWalls); i++) {
+		const struct codwall *wl = &g_CodMapWalls[i];
+		const f32 w[4][3] = {
+			{ wl->x0, wl->y0, wl->z0 }, { wl->x1, wl->y0, wl->z1 },
+			{ wl->x1, wl->y1, wl->z1 }, { wl->x0, wl->y1, wl->z0 },
+		};
+		const f32 *uv[3] = { NULL, NULL, NULL };
+		const s32 mat = matFind("codmap_ramp");
+
+		if (strcmp(wl->key, row->key) != 0) {
+			continue;
+		}
+
+		for (k = 0; k < 2; k++) {
+			triAdd(w[0], w[1 + k], w[2 + k], uv, mat);
+			g_Tris[g_NumTris - 1].hide = 1;
+			g_Tris[g_NumTris - 1].solid = 1;
+		}
+	}
+}
+
 static void addRamps(const struct codmaprow *row)
 {
 	s32 r;
+
+	addWalls(row);
 
 	for (r = 0; r < (s32)ARRAYCOUNT(g_CodMapRamps); r++) {
 		const struct codramp *rp = &g_CodMapRamps[r];

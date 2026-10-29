@@ -1308,3 +1308,4 @@ and the player stopped dead mid-flight. The floor is taken up to 200 over the
 eased height now. `--zombies-test-run` (with `--zombies-test-walk`) walks at the
 sprint's 1.5; both flights climb to the top so, straight and at 30 degrees.
 Each ramp's side walls now run from the floor at its foot up to the rail, and a wall closes under its head (to 10 under the floor it meets): from the floor beside the Juggernog flight a player walked in under it (F3 2026-10-28, -2011 124). From the side at floor level the walk now stops at the wall.
+**Invisible walls: `g_CodMapWalls` (2026-10-29).** An upright quad per row, (x0,z0)-(x1,z1), y0..y1, for a wall Black Ops II has and the export lacks. Town's Juggernog landing (305) ends at z 725 over nothing at all (probe: -9999 past it), and the player walked off its end (F3 video): a wall there, -2140..-1740, 280..480. Sprinting up the flight and along the landing the walk now stops at z 689.
