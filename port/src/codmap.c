@@ -2693,6 +2693,225 @@ static s32 readScan(const char *path, const struct codmaprow *row, const f32 *ce
 	return 1;
 }
 
+/**
+ * The map's own collision, exactly: Black Ops II's clipMap, exported by
+ * OpenAssetTools with tools/zombies/oat-clipmap (ClipMapDumperT6, written for
+ * this): <map>.d3dbsp.clip.txt holds
+ *   m <index> <name> <surfaceFlags> <contentFlags>
+ *   b <contents> <mins> <maxs> <numverts> <verts...> <numsides> <planes nx ny nz d...>
+ *   t <material> <three corners>     (collision triangles: terrain, buildings)
+ *   s <contents> <three corners>     (the static models' collision, in the world)
+ * Everything that stops a player - solid (0x1), glass (0x10) and player clip
+ * (0x10000, clip_player and clip) - inside the row's box and above its ground
+ * becomes the map's collision, invisible; zombie-only clip, triggers and the
+ * like are left out. A brush's faces are its axial box's six and its sides'
+ * planes, each the brush's corners that lie on it, in order round its middle.
+ * This is the collision the game itself walks the player on, stair ramps, the
+ * barriers round Survival Town and all: the scan before it (readScan()) only
+ * sampled it, and its walls and floors were guessed back from the samples
+ */
+#define CODCLIP_BLOCKS (0x1 | 0x10 | 0x10000)
+
+static s32 clipKeep(const f32 *a, const f32 *b, const f32 *c, const struct codmaprow *row)
+{
+	const f32 cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3;
+	const f32 top = MAX(MAX(a[2], b[2]), c[2]);
+
+	return cx >= row->box[0] && cx <= row->box[1] && cy >= row->box[2] && cy <= row->box[3] && top >= CODSCAN_GROUND;
+}
+
+// One face of a brush: the corners on plane (n, d), in order round their middle,
+// wound to face along n
+static s32 clipFace(const f32 (*v)[3], s32 numv, const f32 n[3], f32 d, const f32 *centre, s32 mat, const struct codmaprow *row)
+{
+	f32 on[64][3], ang[64], mid[3] = { 0, 0, 0 }, u[3], w[3], len;
+	s32 count = 0, i, j, tris = 0;
+
+	for (i = 0; i < numv && count < 64; i++) {
+		if (fabsf(v[i][0] * n[0] + v[i][1] * n[1] + v[i][2] * n[2] - d) < 0.5f) {
+			memcpy(on[count++], v[i], sizeof(on[0]));
+		}
+	}
+
+	if (count < 3) {
+		return 0;
+	}
+
+	for (i = 0; i < count; i++) {
+		for (j = 0; j < 3; j++) {
+			mid[j] += on[i][j] / count;
+		}
+	}
+
+	// a basis in the plane: u any line in it, w = n x u
+	u[0] = on[0][0] - mid[0];
+	u[1] = on[0][1] - mid[1];
+	u[2] = on[0][2] - mid[2];
+	len = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+	if (len < 1e-4f) {
+		return 0;
+	}
+
+	for (j = 0; j < 3; j++) {
+		u[j] /= len;
+	}
+
+	w[0] = n[1] * u[2] - n[2] * u[1];
+	w[1] = n[2] * u[0] - n[0] * u[2];
+	w[2] = n[0] * u[1] - n[1] * u[0];
+
+	for (i = 0; i < count; i++) {
+		const f32 px = on[i][0] - mid[0], py = on[i][1] - mid[1], pz = on[i][2] - mid[2];
+
+		ang[i] = atan2f(px * w[0] + py * w[1] + pz * w[2], px * u[0] + py * u[1] + pz * u[2]);
+	}
+
+	// round its middle, anticlockwise about n (insertion sort, few corners)
+	for (i = 1; i < count; i++) {
+		for (j = i; j > 0 && ang[j] < ang[j - 1]; j--) {
+			f32 t = ang[j];
+			f32 p[3];
+
+			ang[j] = ang[j - 1];
+			ang[j - 1] = t;
+			memcpy(p, on[j], sizeof(p));
+			memcpy(on[j], on[j - 1], sizeof(p));
+			memcpy(on[j - 1], p, sizeof(p));
+		}
+	}
+
+	for (i = 1; i + 1 < count; i++) {
+		if (clipKeep(on[0], on[i], on[i + 1], row)) {
+			scanTri(on[0], on[i], on[i + 1], centre, mat, 0);
+			tris++;
+		}
+	}
+
+	return tris;
+}
+
+static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(path, "rb");
+	static char line[1 << 16];
+	s32 *matcontents = NULL;
+	s32 nummats = 0;
+	s32 brushes = 0, brushtris = 0, worldtris = 0, modeltris = 0;
+	const s32 mat = matFind("codmap_clip");
+
+	if (!f) {
+		return 0;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		char *s = line + 2;
+		s32 used;
+
+		if (line[0] == 'm' && line[1] == ' ') {
+			s32 index, sflags, cflags;
+			char name[128];
+
+			if (sscanf(s, "%d %127s %d %d", &index, name, &sflags, &cflags) == 4 && index >= 0 && index < 65536) {
+				if (index >= nummats) {
+					matcontents = realloc(matcontents, sizeof(s32) * (index + 1));
+					memset(matcontents + nummats, 0, sizeof(s32) * (index + 1 - nummats));
+					nummats = index + 1;
+				}
+
+				matcontents[index] = cflags;
+			}
+		} else if (line[0] == 'b' && line[1] == ' ') {
+			s32 contents, numv, numsides, i;
+			f32 mins[3], maxs[3];
+			f32 (*v)[3];
+
+			if (sscanf(s, "%d %f %f %f %f %f %f %d%n", &contents, &mins[0], &mins[1], &mins[2],
+						&maxs[0], &maxs[1], &maxs[2], &numv, &used) != 8 || !(contents & CODCLIP_BLOCKS)) {
+				continue;
+			}
+
+			s += used;
+
+			// none of it in the box: past it
+			if (maxs[0] < row->box[0] || mins[0] > row->box[1] || maxs[1] < row->box[2] || mins[1] > row->box[3]
+					|| maxs[2] < CODSCAN_GROUND || numv < 4 || numv > 256) {
+				continue;
+			}
+
+			v = malloc(sizeof(*v) * numv);
+
+			for (i = 0; i < numv; i++) {
+				sscanf(s, "%f %f %f%n", &v[i][0], &v[i][1], &v[i][2], &used);
+				s += used;
+			}
+
+			// the six axial faces
+			for (i = 0; i < 6; i++) {
+				f32 n[3] = { 0, 0, 0 };
+
+				n[i % 3] = i < 3 ? -1.0f : 1.0f;
+				brushtris += clipFace(v, numv, n, i < 3 ? -mins[i % 3] : maxs[i % 3], centre, mat, row);
+			}
+
+			// and its sides' planes
+			if (sscanf(s, "%d%n", &numsides, &used) == 1) {
+				s += used;
+
+				for (i = 0; i < numsides; i++) {
+					f32 n[3], d;
+
+					if (sscanf(s, "%f %f %f %f%n", &n[0], &n[1], &n[2], &d, &used) != 4) {
+						break;
+					}
+
+					s += used;
+					brushtris += clipFace(v, numv, n, d, centre, mat, row);
+				}
+			}
+
+			free(v);
+			brushes++;
+		} else if ((line[0] == 't' || line[0] == 's') && line[1] == ' ') {
+			s32 tag;
+			f32 p[3][3];
+
+			if (sscanf(s, "%d %f %f %f %f %f %f %f %f %f", &tag, &p[0][0], &p[0][1], &p[0][2],
+						&p[1][0], &p[1][1], &p[1][2], &p[2][0], &p[2][1], &p[2][2]) != 10) {
+				continue;
+			}
+
+			// a triangle's contents are its material's, a model's its own
+			if (line[0] == 't' ? (tag < 0 || tag >= nummats || !(matcontents[tag] & CODCLIP_BLOCKS))
+					: !(tag & CODCLIP_BLOCKS)) {
+				continue;
+			}
+
+			if (!clipKeep(p[0], p[1], p[2], row)) {
+				continue;
+			}
+
+			// either face: a floor faces up (a ceiling taken for one is over
+			// the player, and the ground is what is under them)
+			scanTri(p[0], p[1], p[2], centre, mat, 1);
+
+			if (line[0] == 't') {
+				worldtris++;
+			} else {
+				modeltris++;
+			}
+		}
+	}
+
+	fclose(f);
+	free(matcontents);
+	g_ScanCollision = 1;
+	sysLogPrintf(LOG_NOTE, "codmap: %s: the map's own collision, %d brushes (%d triangles), %d world and %d model triangles",
+			path, brushes, brushtris, worldtris, modeltris);
+
+	return 1;
+}
+
 static void cbS32List(cbuf *b, const s32 *v, s32 n)
 {
 	s32 i;
@@ -3026,12 +3245,27 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 		if (sysArgGetString("--codmap-scan")) {
 			snprintf(scan, sizeof(scan), "%s", sysArgGetString("--codmap-scan"));
 		} else {
-			snprintf(scan, sizeof(scan), "%s/Plutonium/storage/t6/raw/scriptdata/bo2scan_%s.txt",
-					getenv("LOCALAPPDATA") ? getenv("LOCALAPPDATA") : ".", row->map);
+			// only when asked for: built from the scan, Town's collision let the
+			// player through nearly everything (F3 2026-10-29), so the drawn
+			// world, the ramps and the walls stay the default
+			scan[0] = 0;
 		}
 
-		if (!readScan(scan, row, centre)) {
-			addRamps(row);
+		// the map's own collision, exported (readClipMap()): --codmap-clip, else
+		// where export_town_collision.bat puts it beside OpenAssetTools
+		{
+			char clip[1024];
+
+			if (sysArgGetString("--codmap-clip")) {
+				snprintf(clip, sizeof(clip), "%s", sysArgGetString("--codmap-clip"));
+			} else {
+				snprintf(clip, sizeof(clip), "%s/Desktop/Git/OpenAssetTools/clipdump/%s/maps/mp/%s.d3dbsp.clip.txt",
+						getenv("USERPROFILE") ? getenv("USERPROFILE") : ".", row->map, row->map);
+			}
+
+			if (!readClipMap(clip, row, centre) && !readScan(scan, row, centre)) {
+				addRamps(row);
+			}
 		}
 	}
 
