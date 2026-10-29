@@ -2730,6 +2730,11 @@ void bwalkApplyMoveData(struct movedata *data)
 			// facing --zombies-test-walk degrees
 			g_Vars.currentplayer->vv_theta = sysArgGetInt("--zombies-test-walk", 0);
 			g_Vars.currentplayer->speedforwards = 1;
+
+			// --zombies-test-run: at Zombies' sprint
+			if (sysArgCheck("--zombies-test-run")) {
+				g_Vars.currentplayer->speedboost = 1.5f;
+			}
 			g_Vars.currentplayer->speedsideways = 0;
 
 			if (g_Vars.lvframenum % 20 == 0) {

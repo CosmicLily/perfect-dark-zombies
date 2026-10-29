@@ -8479,10 +8479,12 @@ void playerGetBbox(struct prop *prop, f32 *radius, f32 *ymax, f32 *ymin)
 	// - from the floor they are on: vv_manground follows it with a lag, to
 	// ease the view, and up a flight the lag grew a step at a time till the
 	// next riser was over the allowance from it: stop, catch up, go, and on
-	// some steps a jump (F3 2026-10-28, "bumpy, and I still have to jump")
+	// some steps a jump (F3 2026-10-28, "bumpy, and I still have to jump").
+	// Sprinting the lag is past a step (59 up the bar's stairs), so the floor
+	// is taken up to 200 over it, which a reading gone wrong is not
 	if (codmapStageIs(g_Vars.stagenum)) {
 		const f32 ground = g_Vars.currentplayer->vv_ground > g_Vars.currentplayer->vv_manground
-			&& g_Vars.currentplayer->vv_ground < g_Vars.currentplayer->vv_manground + 18 * 2.54f
+			&& g_Vars.currentplayer->vv_ground < g_Vars.currentplayer->vv_manground + 200
 			? g_Vars.currentplayer->vv_ground : g_Vars.currentplayer->vv_manground;
 
 		*ymin = ground + 18 * 2.54f;

@@ -1301,3 +1301,9 @@ running up slid off a ramp's edge and under the stairs. `addRamps()` adds an
 invisible wall along each side, from just under the slope to CODMAP_RAMP_RAIL
 (60) over it, past the 46 a player steps. Walked at 40 degrees into either side
 of either flight, the player is held at the edge and climbs to the top.
+**Sprinting up the ramps (2026-10-28).** At Zombies' sprint the eased height
+lagged the floor by 59 up the bar's stairs, past the 46 within which
+playerGetBbox() trusted `vv_ground`, so the step fell back to the lagging height
+and the player stopped dead mid-flight. The floor is taken up to 200 over the
+eased height now. `--zombies-test-run` (with `--zombies-test-walk`) walks at the
+sprint's 1.5; both flights climb to the top so, straight and at 30 degrees.
