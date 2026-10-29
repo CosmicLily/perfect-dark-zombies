@@ -1273,3 +1273,12 @@ C2M's `_materials.json` names only base materials, and a merged surface's name
 picture when the whole name has none. And every prop's picture was upside down
 and jumbled (a car's hood showed its dashboard): the newer C2M writes a model's
 t the other way up from its map's, and modelGet() turns it over for g_NewC2m.
+**Survival Town's road blocks (2026-10-28).** The roads out of Town are closed in
+Survival by models its script spawns: entities `script_struct` targetname
+`game_mode_object`, script_string containing `zstandard`, a `model` and
+`angles` (pitch yaw roll). Town has five (two `veh_t6_civ_smallwagon_dead`, two
+`veh_t6_civ_microbus_dead`, a `veh_t6_civ_movingtrk_cab_dead`); without them the
+west road ran on into Tranzit (F3: -2476 -1545). `readModeObjects()` places them
+as props, solid, the rotation x roll, y pitch, z yaw. The invisible collision
+`zm_collision_transit_town_survival` is a placeholder cube in every exporter
+(its shape is collision data only), so it is not used.

@@ -2144,6 +2144,61 @@ static void readLayout(const char *path, const struct codmaprow *row, const f32 
 	sysLogPrintf(LOG_NOTE, "codmap: Town's layout: %d spots", g_NumExtraPads);
 }
 
+/**
+ * What a Survival map's script stands in its roads: each `script_struct`
+ * `game_mode_object` whose script_string names zstandard, a model at an origin
+ * and angles (pitch, yaw, roll). Survival Town blocks its streets with wrecks
+ * so (two wagons, two buses, a truck's cab), and with none the roads ran on out
+ * of Town into the rest of Tranzit (F3 2026-10-28, -2476 -1545). Placed as the
+ * map's props are, solid
+ */
+static void readModeObjects(const char *path, const char *modeldir, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(path, "rb");
+	char line[512];
+	struct cent e;
+	s32 placed = 0, missing = 0, tris = 0;
+
+	if (!f) {
+		return;
+	}
+
+	memset(&e, 0, sizeof(e));
+
+	while (fgets(line, sizeof(line), f)) {
+		char key[64], value[256];
+
+		if (line[0] == '{') {
+			memset(&e, 0, sizeof(e));
+		} else if (line[0] == '}') {
+			f32 pos[3] = { 0, 0, 0 }, ang[3] = { 0, 0, 0 };
+
+			if (strcmp(e.targetname, "game_mode_object") == 0 && strstr(e.string, "zstandard") && e.model[0]
+					&& sscanf(e.origin, "%f %f %f", &pos[0], &pos[1], &pos[2]) == 3) {
+				f32 rot[3];
+
+				sscanf(e.angles, "%f %f %f", &ang[0], &ang[1], &ang[2]);
+
+				// Call of Duty's angles are pitch, yaw and roll; the
+				// placements' rotation is about x (roll), y (pitch), z (yaw)
+				rot[0] = ang[2];
+				rot[1] = ang[0];
+				rot[2] = ang[1];
+				placeOne(modeldir, e.model, pos, rot, 1, row, centre, &placed, &missing, &tris);
+			}
+		} else if (sscanf(line, " \"%63[^\"]\" \"%255[^\"]\"", key, value) == 2) {
+			if (strcmp(key, "origin") == 0) snprintf(e.origin, sizeof(e.origin), "%s", value);
+			else if (strcmp(key, "angles") == 0) snprintf(e.angles, sizeof(e.angles), "%s", value);
+			else if (strcmp(key, "targetname") == 0) snprintf(e.targetname, sizeof(e.targetname), "%s", value);
+			else if (strcmp(key, "script_string") == 0) snprintf(e.string, sizeof(e.string), "%s", value);
+			else if (strcmp(key, "model") == 0) snprintf(e.model, sizeof(e.model), "%s", value);
+		}
+	}
+
+	fclose(f);
+	sysLogPrintf(LOG_NOTE, "codmap: %d of Survival's own objects placed (%d triangles), %d with no model", placed, tris, missing);
+}
+
 static void cbS32List(cbuf *b, const s32 *v, s32 n)
 {
 	s32 i;
@@ -2458,6 +2513,10 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 
 		snprintf(path, sizeof(path), "%s/%s/%s_static_models.json", indir, row->map, row->map);
 		readProps(path, models, row, centre);
+
+		// and the wrecks Survival's script stands in the roads
+		codmapEntsPath(path, sizeof(path), indir, row->map);
+		readModeObjects(path, models, row, centre);
 	} else if (sysArgGetString("--codmap-props")) {
 		snprintf(path, sizeof(path), "%s/%s/%s_xmodels.json", indir, row->map, row->map);
 		readProps(path, sysArgGetString("--codmap-props"), row, centre);
