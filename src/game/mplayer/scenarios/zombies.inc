@@ -22720,6 +22720,29 @@ void zombiesTick(void)
 			if (sysArgCheck("--zombies-test-probe")) {
 				s32 gx, gz;
 
+				// --zombies-test-probe 2: the floor's height at each, from y 600 down
+				if (sysArgGetInt("--zombies-test-probe", 1) == 2) {
+					for (gz = -4; gz <= 4; gz++) {
+						char row[160];
+						s32 len = 0;
+
+						for (gx = -4; gx <= 4; gx++) {
+							struct coord q = at;
+							RoomNum qr[21], qa[21];
+							f32 y;
+
+							q.x += gx * 20;
+							q.z += gz * 20;
+							q.y = sysArgGetInt("--zombies-probe-y", 600);
+							bgFindRoomsByPos(&q, qr, qa, 20, NULL);
+							y = cdFindGroundAtCyl(&q, 5, qr, NULL, NULL);
+							len += snprintf(row + len, sizeof(row) - len, " %5.0f", y > -1000000.0f ? y : -9999.0f);
+						}
+
+						sysLogPrintf(LOG_NOTE, "zombies: probe z %+d:%s", gz * 20, row);
+					}
+				}
+
 				for (gz = -4; gz <= 4; gz++) {
 					char row[16];
 

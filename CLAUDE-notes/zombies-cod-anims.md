@@ -1243,3 +1243,12 @@ inches from it, the player stopped till it caught up, and on some steps had to
 jump (F3: "bumpy, and I still have to jump"). On a Black Ops II map the step is
 now measured from `vv_ground` when that is above `vv_manground` and within a
 step of it.
+**Walking a test: `--zombies-test-walk DEG` (2026-10-28).** bondwalk.c holds the
+stick forward from level frame 160, the player facing DEG (0 is +z), and logs
+the position and `vv_ground` every 20 frames. With `--zombies-test-at` it walks
+a flight of stairs: Town's at 2777 -3297 (facing 0) climbs 20 to 224 in some 50
+frames, also at 20 degrees either way, since the step is measured from the
+floor. `--zombies-test-probe 2 --zombies-probe-y Y` logs the floor's height on
+the 9x9 grid instead of '#'/'.' (the stairs: 20-unit risers, 40-unit treads).
+At 2700 -3297 the player lands on the staircase's side wall (129) and cannot
+step off it: where a jump up the old stairs could leave them.

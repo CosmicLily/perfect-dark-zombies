@@ -2701,6 +2701,23 @@ void bwalkApplyMoveData(struct movedata *data)
 			g_Vars.currentplayer->speedsideways = -1;
 		}
 
+#ifndef PLATFORM_N64
+		// --zombies-test-walk: forward at a walk from level frame 160, and
+		// where the player is every 20 frames, to see where a walk stops
+		if (sysArgCheck("--zombies-test-walk") && g_Vars.lvframenum >= 160) {
+			// facing --zombies-test-walk degrees
+			g_Vars.currentplayer->vv_theta = sysArgGetInt("--zombies-test-walk", 0);
+			g_Vars.currentplayer->speedforwards = 1;
+			g_Vars.currentplayer->speedsideways = 0;
+
+			if (g_Vars.lvframenum % 20 == 0) {
+				sysLogPrintf(LOG_NOTE, "bwalk: --zombies-test-walk: frame %d at %.0f %.0f %.0f ground %.0f",
+						g_Vars.lvframenum, g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->prop->pos.y,
+						g_Vars.currentplayer->prop->pos.z, g_Vars.currentplayer->vv_ground);
+			}
+		}
+#endif
+
 		g_Vars.currentplayer->speedforwards *= 1.08f;
 		g_Vars.currentplayer->speedforwards *= g_Vars.currentplayer->speedboost;
 
