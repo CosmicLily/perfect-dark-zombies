@@ -1310,3 +1310,23 @@ sprint's 1.5; both flights climb to the top so, straight and at 30 degrees.
 Each ramp's side walls now run from the floor at its foot up to the rail, and a wall closes under its head (to 10 under the floor it meets): from the floor beside the Juggernog flight a player walked in under it (F3 2026-10-28, -2011 124). From the side at floor level the walk now stops at the wall.
 **Invisible walls: `g_CodMapWalls` (2026-10-29).** An upright quad per row, (x0,z0)-(x1,z1), y0..y1, for a wall Black Ops II has and the export lacks. Town's Juggernog landing (305) ends at z 725 over nothing at all (probe: -9999 past it), and the player walked off its end (F3 video): a wall there, -2140..-1740, 280..480. Sprinting up the flight and along the landing the walk now stops at z 689.
 **Walling every floor edge over nothing: tried and reverted (2026-10-29).** An automatic pass walled each floor edge no other triangle shares with no floor 24 (then also 80) past it: 4,784-5,804 walls on Town. With them the player sprinted through the Juggernog landing's wall and off the bar's upper floor, both of which held without them (raising cdExamCylMove02's 20-wall list to 256 did not help, and made the bar's worse). Perfect Dark's slide (cd0002901c()) seems not to cope with many small walls together; not looked into further. Barriers are added by hand in `g_CodMapWalls` instead, a spot at a time from a report. The stop on the broken road at -102 -755 is a fence lying on the road, a solid prop, not an edge.
+**Town's collision from the game itself: bo2scan (2026-10-29).** No tool exports
+Black Ops II's clip (C2M/Husky read the drawn world; OpenAssetTools lists T6
+clipMap as unsupported; a CoD-RE fork's dumper is source-only with an
+undocumented .bin). `tools/zombies/bo2scan/bo2scan.gsc` runs in Plutonium
+(`%LOCALAPPDATA%\Plutonium\storage\t6\scripts\zm\`; `fs_fopen` writes to
+`storage\t6\raw\scriptdata\`): `playerphysicstrace` straight down every 16 inches
+over the row's box, each surface noted, the trace begun again 72 under it.
+`readScan()` (codmap.c) makes it the map's whole collision when the file is there
+(`--codmap-scan`, else Plutonium's scriptdata), and the hand ramps/walls are not
+laid: floors a square per sample centred on it (a floor between four samples left
+a crack before every edge; squares inset 2 inches froze the player entirely), flat
+runs along y merged; walls on the halfway line where one side's surface is over a
+step (18) above anything near it on the other, from the other's surface under it,
+runs merged. Only the scan and Survival's wrecks (`g_PropKeepCollision`: spawned
+by script, no physics trace sees them) are solid: every prop's own collision too
+made 180,000 wall tiles and the player walked through walls again. Version 2 of the
+scan notes the top of anything solid two steps running (a floor-to-ceiling clip:
+a trace begun inside it was stepped through unrecorded, so the Juggernog landing's
+end was open). Checked with --zombies-test-walk/run: the bar's upper floor holds
+at its window (a 38-inch sill), the bus closes the west road.

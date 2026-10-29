@@ -135,6 +135,7 @@ struct ctri {
 	s32 mat;
 	u8 solid;
 	u8 hide;       // solid but not drawn: a prop's simplest model, its collision
+	u8 scan;       // the collision bo2scan read out of the game (readScan())
 };
 
 struct cmat {
@@ -377,6 +378,7 @@ static void triAdd(const f32 a[3], const f32 b[3], const f32 c[3], const f32 *uv
 	t->mat = mat;
 	t->solid = g_Mats[mat].solid;
 	t->hide = 0;
+	t->scan = 0;
 	g_NumTris++;
 }
 
@@ -399,6 +401,12 @@ static void codToOurs(const f32 cod[3], const f32 *centre, f32 out[3])
  * codmapConvertRow() from which placements file is there.
  */
 static s32 g_NewC2m;
+
+// Town's collision is the game's own, read by bo2scan (readScan())
+static s32 g_ScanCollision;
+
+// a prop being placed keeps its collision beside the scan's (Survival's wrecks)
+static s32 g_PropKeepCollision;
 
 // The OBJ's triangles whose middle is in the row's box, into g_Tris
 static s32 readObj(const char *path, const struct codmaprow *row, const f32 *centre)
@@ -762,6 +770,7 @@ static s32 propPlace(const struct cmodel *m, const f32 pos[3], const f32 rot[3],
 		if (g_NumTris > 0) {
 			g_Tris[g_NumTris - 1].solid = collision && m->solid && g_Tris[g_NumTris - 1].solid;
 			g_Tris[g_NumTris - 1].hide = collision;
+			g_Tris[g_NumTris - 1].scan = collision && g_PropKeepCollision;
 		}
 	}
 
@@ -1542,6 +1551,12 @@ static cbuf writeTiles(struct croom *rooms, s32 numrooms, s32 *outfloors, s32 *o
 		const struct ctri *tri = &g_Tris[t];
 		u32 flags;
 
+		// with the game's own collision read (readScan()), it and Survival's wrecks'
+		// own (spawned by its script, they are in no scan) alone are solid
+		if (g_ScanCollision && !tri->scan) {
+			continue;
+		}
+
 		// A decal lying flat is ground too: in places it is the only floor
 		// the export has (the bank's papers), and walked on as nothing it was
 		// a hole to fall through. One on a wall stays nothing
@@ -2184,7 +2199,9 @@ static void readModeObjects(const char *path, const char *modeldir, const struct
 				rot[0] = ang[2];
 				rot[1] = ang[0];
 				rot[2] = ang[1];
+				g_PropKeepCollision = 1;
 				placeOne(modeldir, e.model, pos, rot, 1, row, centre, &placed, &missing, &tris);
+				g_PropKeepCollision = 0;
 			}
 		} else if (sscanf(line, " \"%63[^\"]\" \"%255[^\"]\"", key, value) == 2) {
 			if (strcmp(key, "origin") == 0) snprintf(e.origin, sizeof(e.origin), "%s", value);
@@ -2344,6 +2361,322 @@ static void addRamps(const struct codmaprow *row)
 		sysLogPrintf(LOG_NOTE, "codmap: ramp %d, %.0f..%.0f across, %.0f at %.0f to %.0f at %.0f",
 				r, rp->x0, rp->x1, rp->h0, rp->z0, rp->h1, rp->z1);
 	}
+}
+
+/**
+ * The game's own collision (tools/zombies/bo2scan): Black Ops II traced
+ * straight down with the player's own collision every `step` inches over the
+ * row's box, each column's surfaces from the top. That is every floor the
+ * player stands on there - clip ramps over stairs, barriers' tops, wrecks -
+ * which C2M's drawn world has not. With it, it is the map's whole collision:
+ * - floors between each four neighbouring samples whose surfaces meet within
+ *   CODSCAN_SLOPE (a ramp's next sample is 10 over), flat runs along y merged
+ *   into strips, sloped cells two triangles each;
+ * - walls on the line between two samples where one has a surface more than
+ *   a step (CODSCAN_STEP) over anything the other has near it, from the
+ *   other's highest surface under it up to it, runs along a line with the
+ *   same foot and head merged (many small walls defeated the slide before).
+ * Every drawn triangle stays drawn and is no longer solid.
+ */
+#define CODSCAN_LAYERS 8
+#define CODSCAN_SLOPE  14 // inches between neighbouring samples on one floor
+#define CODSCAN_STEP   18 // Black Ops II's step
+#define CODSCAN_INSET  0  // inches a floor square stops short of its halfway lines (2: the player could not move at all)
+
+struct scanwall {
+	s32 axis;   // 0: a line of x, 1: of y
+	s32 line;   // its index
+	s32 at;     // the index along it
+	s32 lo, hi; // inches
+};
+
+static s16 *g_ScanH;
+static u8 *g_ScanN;
+static s32 g_ScanW, g_ScanD, g_ScanStep;
+static f32 g_ScanX0, g_ScanY0;
+
+// the layer of column (i, j) nearest h within tol, -1 for none
+static s32 scanMatch(s32 i, s32 j, s32 h, s32 tol)
+{
+	const s32 c = i * g_ScanD + j;
+	s32 best = -1, bestd = tol + 1, l;
+
+	for (l = 0; l < g_ScanN[c]; l++) {
+		const s32 d = abs(g_ScanH[c * CODSCAN_LAYERS + l] - h);
+
+		if (d < bestd) {
+			bestd = d;
+			best = l;
+		}
+	}
+
+	return best;
+}
+
+// column (i, j)'s highest surface under h, or none
+static s32 scanUnder(s32 i, s32 j, s32 h, s32 *out)
+{
+	const s32 c = i * g_ScanD + j;
+	s32 l;
+
+	for (l = 0; l < g_ScanN[c]; l++) {
+		if (g_ScanH[c * CODSCAN_LAYERS + l] < h) {
+			*out = g_ScanH[c * CODSCAN_LAYERS + l];
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static void scanTri(const f32 a[3], const f32 b[3], const f32 c[3], const f32 *centre, s32 mat, s32 floor)
+{
+	const f32 *uv[3] = { NULL, NULL, NULL };
+	f32 pa[3], pb[3], pc[3];
+	const s32 before = g_NumTris;
+
+	codToOurs(a, centre, pa);
+	codToOurs(b, centre, pb);
+	codToOurs(c, centre, pc);
+	triAdd(pa, pb, pc, uv, mat);
+
+	if (g_NumTris == before) {
+		return;
+	}
+
+	// a floor faces up
+	if (floor && g_Tris[g_NumTris - 1].n[1] < 0) {
+		g_NumTris--;
+		triAdd(pa, pc, pb, uv, mat);
+	}
+
+	g_Tris[g_NumTris - 1].hide = 1;
+	g_Tris[g_NumTris - 1].solid = 1;
+	g_Tris[g_NumTris - 1].scan = 1;
+}
+
+static int scanWallCompare(const void *a, const void *b)
+{
+	const struct scanwall *p = a, *q = b;
+
+	if (p->axis != q->axis) return p->axis - q->axis;
+	if (p->line != q->line) return p->line - q->line;
+	if (p->lo / 4 != q->lo / 4) return p->lo / 4 - q->lo / 4;
+	if (p->hi / 4 != q->hi / 4) return p->hi / 4 - q->hi / 4;
+	return p->at - q->at;
+}
+
+static s32 readScan(const char *path, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(path, "rb");
+	char line[1024];
+	char map[64];
+	s32 ver, x0, y0, step, ztop, zbot;
+	s32 i, j, l, n;
+	s32 floors = 0, walls = 0;
+	struct scanwall *ws = NULL;
+	s32 numws = 0, maxws = 0;
+	const s32 mat = matFind("codmap_scan");
+
+	if (!f) {
+		return 0;
+	}
+
+	if (!fgets(line, sizeof(line), f)
+			|| sscanf(line, "bo2scan %d %63s %d %d %d %d %d", &ver, map, &x0, &y0, &step, &ztop, &zbot) != 7
+			|| strcmp(map, row->map) != 0 || step <= 0) {
+		fclose(f);
+		sysLogPrintf(LOG_WARNING, "codmap: %s is not a bo2scan of %s", path, row->map);
+		return 0;
+	}
+
+	g_ScanStep = step;
+	g_ScanX0 = x0;
+	g_ScanY0 = y0;
+	g_ScanW = (s32)((row->box[1] - x0) / step) + 1;
+	g_ScanD = (s32)((row->box[3] - y0) / step) + 1;
+	g_ScanH = calloc((size_t)g_ScanW * g_ScanD * CODSCAN_LAYERS, sizeof(s16));
+	g_ScanN = calloc((size_t)g_ScanW * g_ScanD, 1);
+
+	while (fgets(line, sizeof(line), f)) {
+		char *s = line;
+		s32 x, y, h, used;
+
+		if (sscanf(s, "%d %d%n", &x, &y, &used) != 2) {
+			continue;
+		}
+
+		i = (x - x0) / step;
+		j = (y - y0) / step;
+		s += used;
+
+		if (i < 0 || j < 0 || i >= g_ScanW || j >= g_ScanD) {
+			continue;
+		}
+
+		while (sscanf(s, "%d%n", &h, &used) == 1) {
+			const s32 c = i * g_ScanD + j;
+
+			s += used;
+
+			// nothing under the row's floor (Town: Tranzit's lab under it)
+			if (h >= row->zmin && g_ScanN[c] < CODSCAN_LAYERS) {
+				g_ScanH[c * CODSCAN_LAYERS + g_ScanN[c]++] = (s16)h;
+			}
+		}
+	}
+
+	fclose(f);
+
+	// Floors: each sample's own square, step across and centred on it, at its
+	// height, the runs along y at one height merged into strips. A floor laid
+	// between four samples left the last half step before every edge with no
+	// floor at all, a crack along each wall and drop to slip into (the bar's
+	// upper floor, the Juggernog landing); squares reach the halfway lines,
+	// where the walls stand. A ramp is small steps of its own, under the step
+	for (i = 0; i < g_ScanW; i++) {
+		s32 runh[32], runj[32], numruns = 0, k;
+
+		for (j = 0; j <= g_ScanD; j++) {
+			s32 here[CODSCAN_LAYERS], numhere = 0;
+
+			if (j < g_ScanD) {
+				const s32 c = i * g_ScanD + j;
+
+				for (l = 0; l < g_ScanN[c]; l++) {
+					here[numhere++] = g_ScanH[c * CODSCAN_LAYERS + l];
+				}
+			}
+
+			// the strips that do not go on through this sample end before it
+			for (k = 0; k < numruns; k++) {
+				s32 m, goes = 0;
+
+				for (m = 0; m < numhere; m++) {
+					if (here[m] == runh[k]) {
+						goes = 1;
+						here[m] = INT32_MIN;
+					}
+				}
+
+				if (!goes) {
+					// two inches short of the halfway lines: a square meeting a wall's
+					// line exactly was touched by a player's circle against the wall,
+					// and they were stepped up onto it (the bar's 38-inch sill)
+					const f32 xa = x0 + (i - 0.5f) * step + CODSCAN_INSET, xb = x0 + (i + 0.5f) * step - CODSCAN_INSET;
+					const f32 ya = y0 + (runj[k] - 0.5f) * step + CODSCAN_INSET, yb = y0 + (j - 0.5f) * step - CODSCAN_INSET;
+					const f32 p00[3] = { xa, ya, runh[k] };
+					const f32 p10[3] = { xb, ya, runh[k] };
+					const f32 p01[3] = { xa, yb, runh[k] };
+					const f32 p11[3] = { xb, yb, runh[k] };
+
+					scanTri(p00, p10, p11, centre, mat, 1);
+					scanTri(p00, p11, p01, centre, mat, 1);
+					floors += 2;
+					runh[k] = runh[--numruns];
+					runj[k] = runj[numruns];
+					k--;
+				}
+			}
+
+			for (n = 0; n < numhere; n++) {
+				if (here[n] != INT32_MIN && numruns < 32) {
+					runh[numruns] = here[n];
+					runj[numruns] = j;
+					numruns++;
+				}
+			}
+		}
+	}
+
+	// walls between neighbours a step apart, each line's runs merged
+	for (i = 0; i < g_ScanW; i++) {
+		for (j = 0; j < g_ScanD; j++) {
+			s32 axis;
+
+			for (axis = 0; axis < 2; axis++) {
+				const s32 ni = i + (axis == 0), nj = j + (axis == 1);
+				s32 side;
+
+				if (ni >= g_ScanW || nj >= g_ScanD) {
+					continue;
+				}
+
+				// each side's surfaces with nothing near them across the line
+				for (side = 0; side < 2; side++) {
+					const s32 ai = side ? ni : i, aj = side ? nj : j;
+					const s32 bi = side ? i : ni, bj = side ? j : nj;
+					const s32 c = ai * g_ScanD + aj;
+
+					for (l = 0; l < g_ScanN[c]; l++) {
+						const s32 h = g_ScanH[c * CODSCAN_LAYERS + l];
+						s32 lo;
+
+						if (scanMatch(bi, bj, h, CODSCAN_STEP) >= 0 || !scanUnder(bi, bj, h - CODSCAN_STEP, &lo)) {
+							continue;
+						}
+
+						if (numws == maxws) {
+							maxws = maxws ? maxws * 2 : 65536;
+							ws = realloc(ws, sizeof(*ws) * maxws);
+						}
+
+						ws[numws].axis = axis;
+						// halfway between the two samples, where the squares of floor
+						// either side end. Each side its own line
+						ws[numws].line = (axis == 0 ? i : j) * 2 + side;
+						ws[numws].at = axis == 0 ? j : i;
+						ws[numws].lo = lo;
+						ws[numws].hi = h;
+						numws++;
+					}
+				}
+			}
+		}
+	}
+
+	qsort(ws, numws, sizeof(*ws), scanWallCompare);
+
+	for (n = 0; n < numws; ) {
+		s32 m = n + 1;
+		f32 a[3], b[3], c[3], d[3];
+		f32 along0, along1, across;
+
+		while (m < numws && ws[m].axis == ws[n].axis && ws[m].line == ws[n].line
+				&& ws[m].lo / 4 == ws[n].lo / 4 && ws[m].hi / 4 == ws[n].hi / 4 && ws[m].at == ws[m - 1].at + 1) {
+			m++;
+		}
+
+		// halfway between the two samples, the run's cells' width
+		across = (ws[n].axis == 0 ? x0 : y0) + (ws[n].line / 2 + 0.5f) * step;
+		along0 = (ws[n].axis == 0 ? y0 : x0) + (ws[n].at - 0.5f) * step;
+		along1 = (ws[n].axis == 0 ? y0 : x0) + (ws[m - 1].at + 0.5f) * step;
+
+		if (ws[n].axis == 0) {
+			a[0] = across; a[1] = along0; a[2] = ws[n].lo;
+			b[0] = across; b[1] = along1; b[2] = ws[n].lo;
+		} else {
+			a[0] = along0; a[1] = across; a[2] = ws[n].lo;
+			b[0] = along1; b[1] = across; b[2] = ws[n].lo;
+		}
+
+		memcpy(c, b, sizeof(c));
+		memcpy(d, a, sizeof(d));
+		c[2] = d[2] = ws[n].hi;
+		scanTri(a, b, c, centre, mat, 0);
+		scanTri(a, c, d, centre, mat, 0);
+		walls++;
+		n = m;
+	}
+
+	free(ws);
+	free(g_ScanH);
+	free(g_ScanN);
+	g_ScanCollision = 1;
+	sysLogPrintf(LOG_NOTE, "codmap: %s: the game's own collision, %d floor triangles, %d walls (of %d pieces)",
+			path, floors, walls, numws);
+
+	return 1;
 }
 
 static void cbS32List(cbuf *b, const s32 *v, s32 n)
@@ -2669,8 +3002,24 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 		readProps(path, sysArgGetString("--codmap-props"), row, centre);
 	}
 
-	// slopes over the stairs, now every step is in g_Tris
-	addRamps(row);
+	// The game's own collision where bo2scan has read it (--codmap-scan, else
+	// Plutonium's scriptdata), else slopes over the stairs
+	{
+		char scan[1024];
+
+		g_ScanCollision = 0;
+
+		if (sysArgGetString("--codmap-scan")) {
+			snprintf(scan, sizeof(scan), "%s", sysArgGetString("--codmap-scan"));
+		} else {
+			snprintf(scan, sizeof(scan), "%s/Plutonium/storage/t6/raw/scriptdata/bo2scan_%s.txt",
+					getenv("LOCALAPPDATA") ? getenv("LOCALAPPDATA") : ".", row->map);
+		}
+
+		if (!readScan(scan, row, centre)) {
+			addRamps(row);
+		}
+	}
 
 	codmapEntsPath(path, sizeof(path), indir, row->map);
 	numspawns = readSpawns(path, row, centre, spawns, ARRAYCOUNT(spawns));

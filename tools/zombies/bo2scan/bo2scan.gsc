@@ -44,7 +44,7 @@ bo2scan_run(player)
 	map = getdvar("mapname");
 
 	f = fs_fopen("bo2scan_" + map + ".txt", "write");
-	fs_writeline(f, "bo2scan 1 " + map + " " + x0 + " " + y0 + " " + step + " " + ztop + " " + zbot);
+	fs_writeline(f, "bo2scan 2 " + map + " " + x0 + " " + y0 + " " + step + " " + ztop + " " + zbot);
 
 	rows = 0;
 
@@ -55,18 +55,37 @@ bo2scan_run(player)
 			line = "";
 			z = ztop;
 			tries = 0;
+			solidtop = 0;
+			solidrun = 0;
 
-			while (z > zbot && tries < 24)
+			while (z > zbot && tries < 48)
 			{
 				tries++;
 				hit = playerphysicstrace((x, y, z), (x, y, zbot - 10));
 
-				// begun inside something solid: a little lower
+				// begun inside something solid: a little lower. Solid two steps
+				// running (48 inches, more than a floor is thick) is a wall or
+				// clip from floor to ceiling, which no downward trace stops on:
+				// its top is noted as a surface, so it is walled like one
 				if (hit[2] >= z - 1)
 				{
+					if (solidrun == 0)
+					{
+						solidtop = z;
+					}
+
+					solidrun++;
+
+					if (solidrun == 2)
+					{
+						line = line + " " + int(solidtop);
+					}
+
 					z -= 24;
 					continue;
 				}
+
+				solidrun = 0;
 
 				// through to the bottom: nothing more under it
 				if (hit[2] <= zbot - 5)
