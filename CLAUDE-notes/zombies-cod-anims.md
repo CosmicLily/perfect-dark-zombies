@@ -1218,3 +1218,14 @@ spot, which showed the hole's straight edge. Two things tried first and wrong:
 cutting big triangles smaller (a tiles file past 16 MB, the 24-bit length rzip
 writes: the game crashed loading Town), and float floor tiles (kept: floors are
 GEOTYPE_TILE_F now, 3.9 MB of tiles).
+**The box a quarter turn off, and open into the next match (2026-10-28).**
+`g_ZombieBoxYaw` (the drawn Black Ops II box, the gun over it, the teddy) was the
+Perfect Dark crate's long axis, laid along the wall, and the Black Ops II mesh
+turned by it stood with its front edge along the wall and its long side straight
+out (Skedar, open: F3 screenshot). It is now set from the wall itself, back to
+the wall, front to the room (the pad's way with none near). Checked open on
+Skedar with `--zombies-test-box --zombies-test-boxspin 250`. The wall is chosen
+nearest first among 64 rays, the first whose line the box lies along with both
+ends clear (`zombiesBoxRay()`, `zombiesBoxWallLine()`). `zombiesResetBox()`
+clears the lid's and body's clips: a match ended with the box open began the
+next with its lid up.

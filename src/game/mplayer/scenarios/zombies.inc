@@ -13372,6 +13372,13 @@ static void zombiesResetBox(void)
 	g_ZombieBoxUser = -1;
 	g_ZombieBoxShown = -1;
 
+	// and its clips: a match ended with the box open (the player down while
+	// it offered a gun) began the next one with its lid up
+	g_ZombieBoxLidAnim = -1;
+	g_ZombieBoxLid60 = 0;
+	g_ZombieBoxBodyAnim = -1;
+	g_ZombieBoxBody60 = 0;
+
 	for (i = 0; i < MAX_PLAYERS; i++) {
 		g_ZombieNearBox[i] = false;
 		g_ZombieBoxHeld60[i] = 0;
@@ -13417,6 +13424,88 @@ static void zombiesBoxLoadGuns(void)
 	}
 }
 
+// How far a ray from eye at ang goes before the level stops it, 0 for maxd clear
+static f32 zombiesBoxRay(struct coord *eye, RoomNum *rooms, f32 ang, f32 maxd)
+{
+	f32 d;
+
+	for (d = 5; d <= maxd; d += 5) {
+		struct coord to;
+
+		to.x = eye->x + sinf(ang) * d;
+		to.y = eye->y;
+		to.z = eye->z + cosf(ang) * d;
+
+		if (!cdTestLos04(eye, rooms, &to, CDTYPE_BG)) {
+			return d;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * The wall a ray at ang met *dist away: its own line. The ray's direction is
+ * square to the wall only when what it met is the wall's face, and off a
+ * pillar or a corner the box stood at a slant. Two rays 15 degrees either side
+ * meet the wall at two points; the line through them gives *n (out of the
+ * wall, the ray's way) and *dist square to it, when it agrees with the ray to
+ * within 30 degrees (a doorway's far side is no wall line). Else the ray's own.
+ */
+static void zombiesBoxWallLine(struct coord *eye, RoomNum *rooms, f32 ang, f32 *dist, struct coord *n)
+{
+	const f32 spread = M_BADTAU / 24;
+	f32 hit[2][2];
+	s32 side;
+
+	n->x = sinf(ang);
+	n->y = 0;
+	n->z = cosf(ang);
+
+	for (side = 0; side < 2; side++) {
+		const f32 a = ang + (side ? spread : -spread);
+		const f32 d = zombiesBoxRay(eye, rooms, a, *dist * 1.5f + 20);
+
+		if (d <= 0) {
+			return;
+		}
+
+		hit[side][0] = eye->x + sinf(a) * d;
+		hit[side][1] = eye->z + cosf(a) * d;
+	}
+
+	{
+		const f32 ax = hit[1][0] - hit[0][0];
+		const f32 az = hit[1][1] - hit[0][1];
+		const f32 alen = sqrtf(ax * ax + az * az);
+		f32 nx, nz, perp;
+
+		if (alen <= 1) {
+			return;
+		}
+
+		nx = az / alen;
+		nz = -ax / alen;
+
+		if (nx * n->x + nz * n->z < 0) {
+			nx = -nx;
+			nz = -nz;
+		}
+
+		if (nx * n->x + nz * n->z <= 0.866f) {
+			return;
+		}
+
+		perp = (hit[0][0] - eye->x) * nx + (hit[0][1] - eye->z) * nz;
+		n->x = nx;
+		n->z = nz;
+
+		if (perp > 0 && perp < *dist) {
+			*dist = perp;
+		}
+	}
+}
+
 /**
  * The Mystery Box put at spawn pad padnum (one of g_ZombieBoxPads): backed
  * onto the wall nearest it and facing the room, and the lid's height noted
@@ -13441,6 +13530,7 @@ static void zombiesBoxPutAt(s32 padnum)
 		Mtxf mtx;
 		f32 walldist = ZOMBIE_BOX_WALLREACH + 1;
 		f32 halfdepth = 25;
+		f32 halflength = 50;
 		bool longx = true;
 		f32 len;
 		s32 k;
@@ -13457,96 +13547,76 @@ static void zombiesBoxPutAt(s32 padnum)
 
 			longx = xlen >= zlen;
 			halfdepth = (longx ? zlen : xlen) * 0.5f * obj->model->scale;
+			halflength = (longx ? xlen : zlen) * 0.5f * obj->model->scale;
 		}
 
 		// the nearest wall round the pad, a little over the floor
 		eye = pos;
 		eye.y += 30;
 
-		for (k = 0; k < 64; k++) { // fine enough to lie flat on a wall at any angle
-			f32 ang = k * (M_BADTAU / 64);
-			f32 d;
+		// Every wall round the pad, a little over the floor: a ray each 64th of
+		// a turn, fine enough to lie flat on a wall at any angle
+		{
+			f32 hits[64];
+			bool used[64];
+			bool have = false;
+			s32 tries;
 
-			for (d = 5; d <= ZOMBIE_BOX_WALLREACH; d += 5) {
-				struct coord to;
+			for (k = 0; k < 64; k++) {
+				hits[k] = zombiesBoxRay(&eye, rooms, k * (M_BADTAU / 64), ZOMBIE_BOX_WALLREACH);
+				used[k] = false;
+			}
 
-				to.x = eye.x + sinf(ang) * d;
-				to.y = eye.y;
-				to.z = eye.z + cosf(ang) * d;
+			// Nearest first, the first whose line the box can lie along with
+			// both its ends clear: on Skedar a pad in a corner of its angled
+			// walls stood the box square to one and sticking out across the
+			// other. With none clear, the nearest
+			for (tries = 0; tries < 64; tries++) {
+				struct coord n;
+				struct coord end;
+				f32 d;
+				f32 out;
+				s32 best = -1;
+				s32 side;
+				bool clear = true;
 
-				if (!cdTestLos04(&eye, rooms, &to, CDTYPE_BG)) {
-					if (d < walldist) {
-						walldist = d;
-						wall.x = sinf(ang);
-						wall.z = cosf(ang);
+				for (k = 0; k < 64; k++) {
+					if (!used[k] && hits[k] > 0 && (best < 0 || hits[k] < hits[best])) {
+						best = k;
 					}
+				}
 
+				if (best < 0) {
 					break;
 				}
-			}
-		}
 
-		// The wall's own line: the nearest ray's direction is square to the
-		// wall only when what it met is the wall's face, and off a pillar or
-		// a corner (Skedar's) the box stood at a slant. Two rays either side
-		// of it meet the wall at two points, and the box is squared to the
-		// line through them, when both find it near where the first did
-		if (walldist <= ZOMBIE_BOX_WALLREACH) {
-			const f32 base = atan2f(wall.x, wall.z);
-			const f32 spread = M_BADTAU / 24; // 15 degrees
-			f32 hit[2][2];
-			s32 side;
-			s32 found = 0;
+				used[best] = true;
+				d = hits[best];
+				zombiesBoxWallLine(&eye, rooms, best * (M_BADTAU / 64), &d, &n);
 
-			for (side = 0; side < 2; side++) {
-				const f32 ang = base + (side ? spread : -spread);
-				f32 d;
+				// where its middle would be, backed onto it, and its two ends
+				out = d - 10 - halfdepth;
+				out = out > 0 ? out : 0;
 
-				for (d = 5; d <= walldist * 1.5f + 20; d += 5) {
-					struct coord to;
+				for (side = -1; side <= 1; side += 2) {
+					end.x = eye.x + n.x * out + n.z * side * (halflength + 5);
+					end.y = eye.y;
+					end.z = eye.z + n.z * out - n.x * side * (halflength + 5);
 
-					to.x = eye.x + sinf(ang) * d;
-					to.y = eye.y;
-					to.z = eye.z + cosf(ang) * d;
-
-					if (!cdTestLos04(&eye, rooms, &to, CDTYPE_BG)) {
-						hit[side][0] = to.x;
-						hit[side][1] = to.z;
-						found++;
-						break;
+					if (!cdTestLos04(&eye, rooms, &end, CDTYPE_BG)) {
+						clear = false;
 					}
 				}
-			}
 
-			if (found == 2) {
-				// the wall's direction, and out of it towards the pad
-				f32 ax = hit[1][0] - hit[0][0];
-				f32 az = hit[1][1] - hit[0][1];
-				const f32 alen = sqrtf(ax * ax + az * az);
+				if (!have || clear) {
+					walldist = d;
+					wall.x = n.x;
+					wall.z = n.z;
+					have = true;
+				}
 
-				if (alen > 1) {
-					f32 nx = az / alen;
-					f32 nz = -ax / alen;
-
-					// the normal the side the first ray went
-					if (nx * wall.x + nz * wall.z < 0) {
-						nx = -nx;
-						nz = -nz;
-					}
-
-					// squared only when the two agree with the first ray to
-					// within 30 degrees: a doorway's far side is no wall line
-					if (nx * wall.x + nz * wall.z > 0.866f) {
-						// and how far the wall is that way, square to it
-						const f32 perp = (hit[0][0] - eye.x) * nx + (hit[0][1] - eye.z) * nz;
-
-						wall.x = nx;
-						wall.z = nz;
-
-						if (perp > 0 && perp < walldist) {
-							walldist = perp;
-						}
-					}
+				if (clear) {
+					break;
 				}
 			}
 		}
@@ -13601,12 +13671,17 @@ static void zombiesBoxPutAt(s32 padnum)
 
 		func0f06a730(obj, &pos, &mtx, rooms, &pos);
 
-		// which way the box is long, in the world, for the gun over it
+		// The drawn box's turn (its mesh, the gun over it, the teddy bear):
+		// its back to the wall and its front to the room, from the wall
+		// itself. It was the crate's long axis, which put the Black Ops II
+		// box's front edge along the wall and its long side straight out from
+		// it, a quarter turn off (F3 2026-10-28, Skedar). With no wall near,
+		// its front the pad's way
 		{
-			f32 *axis = longx ? obj->realrot[0] : obj->realrot[2];
-			f32 alen = sqrtf(axis[0] * axis[0] + axis[2] * axis[2]);
+			f32 tx = walldist <= ZOMBIE_BOX_WALLREACH ? wall.x : -pad.look.x;
+			f32 tz = walldist <= ZOMBIE_BOX_WALLREACH ? wall.z : -pad.look.z;
 
-			g_ZombieBoxYaw = alen > 0.0001f ? atan2f(axis[0] / alen, axis[2] / alen) : 0;
+			g_ZombieBoxYaw = tx * tx + tz * tz > 0.0001f ? atan2f(tx, tz) : 0;
 		}
 
 		sysLogPrintf(LOG_NOTE, "zombies: Mystery Box %s", walldist <= ZOMBIE_BOX_WALLREACH ? "backed onto a wall" : "on its pad, no wall near");
