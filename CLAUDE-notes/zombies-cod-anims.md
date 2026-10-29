@@ -1229,3 +1229,10 @@ nearest first among 64 rays, the first whose line the box lies along with both
 ends clear (`zombiesBoxRay()`, `zombiesBoxWallLine()`). `zombiesResetBox()`
 clears the lid's and body's clips: a match ended with the box open began the
 next with its lid up.
+**Rooms put right by the whole list; the box's wall line to a fraction (2026-10-28).**
+The fall net's room repair compared only the first room: at 655 406 the lookup
+found 171 and 172, the player carried only 171, and the floor was in 172, so
+nothing was repaired and the fall looped. It now repairs when any room found is
+not carried. The box's rays (`zombiesBoxRay()`) are refined by halving to under a
+unit, and the side rays are 25 degrees out: at 5-unit steps the wall's line came
+out a few degrees off and the box stood askew to Skedar's wall.

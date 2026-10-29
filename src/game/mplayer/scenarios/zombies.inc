@@ -13437,7 +13437,26 @@ static f32 zombiesBoxRay(struct coord *eye, RoomNum *rooms, f32 ang, f32 maxd)
 		to.z = eye->z + cosf(ang) * d;
 
 		if (!cdTestLos04(eye, rooms, &to, CDTYPE_BG)) {
-			return d;
+			// to a fraction of a unit: two hits a 5-unit step apart set the
+			// wall's line a few degrees off, and the box stood askew to it
+			f32 lo = d - 5;
+			f32 hi = d;
+			s32 i;
+
+			for (i = 0; i < 6; i++) {
+				const f32 mid = (lo + hi) * 0.5f;
+
+				to.x = eye->x + sinf(ang) * mid;
+				to.z = eye->z + cosf(ang) * mid;
+
+				if (cdTestLos04(eye, rooms, &to, CDTYPE_BG)) {
+					lo = mid;
+				} else {
+					hi = mid;
+				}
+			}
+
+			return hi;
 		}
 	}
 
@@ -13447,14 +13466,14 @@ static f32 zombiesBoxRay(struct coord *eye, RoomNum *rooms, f32 ang, f32 maxd)
 /**
  * The wall a ray at ang met *dist away: its own line. The ray's direction is
  * square to the wall only when what it met is the wall's face, and off a
- * pillar or a corner the box stood at a slant. Two rays 15 degrees either side
+ * pillar or a corner the box stood at a slant. Two rays 25 degrees either side
  * meet the wall at two points; the line through them gives *n (out of the
  * wall, the ray's way) and *dist square to it, when it agrees with the ray to
  * within 30 degrees (a doorway's far side is no wall line). Else the ray's own.
  */
 static void zombiesBoxWallLine(struct coord *eye, RoomNum *rooms, f32 ang, f32 *dist, struct coord *n)
 {
-	const f32 spread = M_BADTAU / 24;
+	const f32 spread = M_BADTAU * 25.0f / 360.0f;
 	f32 hit[2][2];
 	s32 side;
 
@@ -19718,7 +19737,21 @@ static void zombiesTickFallNet(s32 playernum)
 		RoomNum rooms[8];
 		struct coord pos = player->prop->pos;
 
-		if (zombiesRoomsAt(&pos, rooms) && rooms[0] != player->prop->rooms[0]) {
+		// any room there that they do not carry (171 and 172 were found where
+		// they carried only 171, the floor in 172: F3 2026-10-28 at 655 406)
+		bool missing = false;
+
+		if (zombiesRoomsAt(&pos, rooms)) {
+			s32 i, j;
+
+			for (i = 0; i < 7 && rooms[i] >= 0 && !missing; i++) {
+				for (j = 0; j < 7 && player->prop->rooms[j] >= 0 && player->prop->rooms[j] != rooms[i]; j++);
+
+				missing = j >= 7 || player->prop->rooms[j] != rooms[i];
+			}
+		}
+
+		if (missing) {
 			sysLogPrintf(LOG_NOTE, "zombies: player %d's rooms put right at %.0f %.0f (room %d, not %d)",
 					playernum, pos.x, pos.z, rooms[0], player->prop->rooms[0]);
 			chrMoveToPos(player->prop->chr, &pos, rooms, (360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
