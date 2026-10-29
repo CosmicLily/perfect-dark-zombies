@@ -13486,6 +13486,71 @@ static void zombiesBoxPutAt(s32 padnum)
 			}
 		}
 
+		// The wall's own line: the nearest ray's direction is square to the
+		// wall only when what it met is the wall's face, and off a pillar or
+		// a corner (Skedar's) the box stood at a slant. Two rays either side
+		// of it meet the wall at two points, and the box is squared to the
+		// line through them, when both find it near where the first did
+		if (walldist <= ZOMBIE_BOX_WALLREACH) {
+			const f32 base = atan2f(wall.x, wall.z);
+			const f32 spread = M_BADTAU / 24; // 15 degrees
+			f32 hit[2][2];
+			s32 side;
+			s32 found = 0;
+
+			for (side = 0; side < 2; side++) {
+				const f32 ang = base + (side ? spread : -spread);
+				f32 d;
+
+				for (d = 5; d <= walldist * 1.5f + 20; d += 5) {
+					struct coord to;
+
+					to.x = eye.x + sinf(ang) * d;
+					to.y = eye.y;
+					to.z = eye.z + cosf(ang) * d;
+
+					if (!cdTestLos04(&eye, rooms, &to, CDTYPE_BG)) {
+						hit[side][0] = to.x;
+						hit[side][1] = to.z;
+						found++;
+						break;
+					}
+				}
+			}
+
+			if (found == 2) {
+				// the wall's direction, and out of it towards the pad
+				f32 ax = hit[1][0] - hit[0][0];
+				f32 az = hit[1][1] - hit[0][1];
+				const f32 alen = sqrtf(ax * ax + az * az);
+
+				if (alen > 1) {
+					f32 nx = az / alen;
+					f32 nz = -ax / alen;
+
+					// the normal the side the first ray went
+					if (nx * wall.x + nz * wall.z < 0) {
+						nx = -nx;
+						nz = -nz;
+					}
+
+					// squared only when the two agree with the first ray to
+					// within 30 degrees: a doorway's far side is no wall line
+					if (nx * wall.x + nz * wall.z > 0.866f) {
+						// and how far the wall is that way, square to it
+						const f32 perp = (hit[0][0] - eye.x) * nx + (hit[0][1] - eye.z) * nz;
+
+						wall.x = nx;
+						wall.z = nz;
+
+						if (perp > 0 && perp < walldist) {
+							walldist = perp;
+						}
+					}
+				}
+			}
+		}
+
 		if (walldist <= ZOMBIE_BOX_WALLREACH) {
 			f32 move = walldist - 10 - halfdepth;
 
@@ -19529,6 +19594,25 @@ static void zombiesPutBack(s32 playernum)
 
 	chrMoveToPos(player->prop->chr, &g_ZombieSafePos[playernum], rooms,
 			(360.0f - player->vv_theta) * M_BADTAU / 360.0f, true);
+
+	// and the walk's own height with them: its ground, and the running sum
+	// the eye's height follows (bondwalk.c's bwalkKeepFinite() starts it
+	// again the same way). Moved without them, the camera stayed where the
+	// fall had taken it, at -4294967040 (F3 pd.log 2026-10-28), and the
+	// view was blank with the body back on the street
+	player->vv_ground = g_ZombieSafePos[playernum].y;
+	player->vv_manground = g_ZombieSafePos[playernum].y;
+	player->sumground = player->vv_manground / (PAL ? 0.054400026798248f : 0.045499980449677f);
+	player->bdeltapos.y = 0;
+	player->isfalling = false;
+}
+
+// A height no map has: the walk's ground run away (-4294967040 in F3's log)
+static bool zombiesHeightIsWild(struct player *player)
+{
+	// (the -30000 that says there is no ground at all is within this)
+	return !(player->vv_manground > -100000.0f && player->vv_manground < 100000.0f)
+		|| !(player->vv_ground > -100000.0f && player->vv_ground < 100000.0f);
 }
 
 static void zombiesTickFallNet(s32 playernum)
@@ -19537,6 +19621,19 @@ static void zombiesTickFallNet(s32 playernum)
 	bool inbounds;
 
 	if (!player || !player->prop || !player->prop->chr || !codmapStageIs(g_Vars.stagenum)) {
+		return;
+	}
+
+	// A height run away: back where they last stood, now
+	if (zombiesHeightIsWild(player)) {
+		if (g_ZombieSafeHave[playernum]) {
+			sysLogPrintf(LOG_NOTE, "zombies: player %d's height ran away (%.0f, ground %.0f), put back at %.0f %.0f %.0f",
+					playernum, player->vv_manground, player->vv_ground,
+					g_ZombieSafePos[playernum].x, g_ZombieSafePos[playernum].y, g_ZombieSafePos[playernum].z);
+			g_ZombieFall60[playernum] = 0;
+			zombiesPutBack(playernum);
+		}
+
 		return;
 	}
 

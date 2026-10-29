@@ -1193,3 +1193,15 @@ and C2M's export has no clip surfaces at all (only `caulk_shadow_primary` and
 `playerGetBbox()` (player.c) puts the bottom of the player's collision box 18
 inches (46 units) over the ground on a Black Ops II map, Black Ops II's own step
 height, where Perfect Dark's is 30 units.
+**The fall loop's camera, and the box square to its wall (2026-10-28).** The
+loop came back with the rooms right ("put right" never logged): the put-back
+moved the body and left the walk's own height (`vv_ground`, `vv_manground`,
+`sumground`) at -4294967040, a finite number the NaN net (bwalkKeepFinite())
+does not catch, so it fell again at once. `zombiesPutBack()` now sets those to
+the safe spot as bwalkKeepFinite() starts them, and `zombiesHeightIsWild()`
+(over 100,000 from zero) puts the player back at once. Where the height came
+from is not found. The Mystery Box faced the nearest ray that met a wall, which
+off a pillar or corner is not square to it (Skedar's stood at a slant):
+`zombiesBoxPutAt()` casts two more rays 15 degrees either side, squares the box
+to the line through their hits when it agrees with the first ray within 30
+degrees, and moves it the perpendicular distance.
