@@ -2218,6 +2218,8 @@ struct codramp {
 	f32 z1, h1;       // and its head
 };
 
+#define CODMAP_RAMP_RAIL 60.0f // its side rails over it: over the 46 a player steps
+
 static const struct codramp g_CodMapRamps[] = {
 	{ "bo2town", 2695, 2990, -3598, -142, -2988, 224 }, // the bar's, to its upper floor
 	{ "bo2town", -2090, -1825, -512, -142, 172, 305 },  // up to Juggernog, open treads
@@ -2254,6 +2256,25 @@ static void addRamps(const struct codmaprow *row)
 
 			g_Tris[g_NumTris - 1].hide = 1;
 			g_Tris[g_NumTris - 1].solid = 1;
+		}
+
+		// and a rail along each side, over a step's height above it: beside a
+		// flight there was no floor, or only one far over it, and running up
+		// the player slid off the edge through the "cracks" and under it
+		for (i = 0; i < 2; i++) {
+			const f32 x = i ? rp->x1 : rp->x0;
+			const f32 w[4][3] = {
+				{ x, rp->h0 - 10, rp->z0 }, { x, rp->h1 - 10, rp->z1 },
+				{ x, rp->h1 + CODMAP_RAMP_RAIL, rp->z1 }, { x, rp->h0 + CODMAP_RAMP_RAIL, rp->z0 },
+			};
+			const f32 *uv[3] = { NULL, NULL, NULL };
+			s32 k;
+
+			for (k = 0; k < 2; k++) {
+				triAdd(w[0], w[1 + k], w[2 + k], uv, mat);
+				g_Tris[g_NumTris - 1].hide = 1;
+				g_Tris[g_NumTris - 1].solid = 1;
+			}
 		}
 
 		sysLogPrintf(LOG_NOTE, "codmap: ramp %d, %.0f..%.0f across, %.0f at %.0f to %.0f at %.0f",

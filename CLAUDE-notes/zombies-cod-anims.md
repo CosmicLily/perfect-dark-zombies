@@ -1295,3 +1295,9 @@ between the Juggernog stairs' open treads to fall through. Town: the bar's
 box was tried first: furniture and landings in the box set it far off (the bar's
 foot came out at 122). `--zombies-test-walk 0` from the foot climbs either one
 without a stop.
+**The ramps' side rails (2026-10-28).** Beside Town's flights there is no floor
+(the bar's: nothing at all past x 3000) or only one far over it, and a player
+running up slid off a ramp's edge and under the stairs. `addRamps()` adds an
+invisible wall along each side, from just under the slope to CODMAP_RAMP_RAIL
+(60) over it, past the 46 a player steps. Walked at 40 degrees into either side
+of either flight, the player is held at the edge and climbs to the top.
