@@ -10394,9 +10394,15 @@ s32 zombiesCrosshair(f32 *spread)
 	k = dt * ZOMBIE_XHAIR_EASE;
 	g_ZombieXhairMove[playernum] += (move - g_ZombieXhairMove[playernum]) * (k > 1 ? 1 : k);
 
-	// at the sights, the sight's own (the count kept all the same); the Ray
-	// Gun's sight is the ring on its model, and the Phoenix's reticle it
-	// would borrow is not drawn over it
+	// at the sights, none: the gun's own iron sights are what is aimed with,
+	// as in Call of Duty (zombiesVmGunAds() puts them on the eye's line) - the
+	// Ray Gun's is the ring on its model. A scope's view keeps the game's
+	// sight, and so does aim mode with the gun not raised (COD Style Aiming
+	// off). The count is kept all the same
+	if (player->codaimfrac > 0.5f && !bgunScopeCoversView(weaponnum)) {
+		return 1;
+	}
+
 	if (player->insightaimmode || player->codaimfrac > 0.5f) {
 		return weaponnum == WEAPON_ZM_RAYGUN ? 1 : 0;
 	}
