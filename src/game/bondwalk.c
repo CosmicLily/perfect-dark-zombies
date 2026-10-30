@@ -239,6 +239,45 @@ static RoomNum *bwalkCdRooms(RoomNum *rooms, struct coord *pos, f32 radius, f32 
 {
 	s32 i;
 
+	// A Black Ops II map (codmap.c): its walls are filed under the squares of
+	// a grid they reach, but the rooms a walker carries come from the portal
+	// walk and can be a piece of a building alone (a room drawn with a grid
+	// square, holding no tiles at all) - walls then were not there, and
+	// Town's player walked through them (a room's 8-inch wall by the
+	// Juggernog street, F3 video 2026-10-29). The squares round the player
+	// are asked too: those whose boxes hold the middle or a point a radius
+	// out along x or z
+	if (codmapStageIs(g_Vars.stagenum)) {
+		s32 j, k, n = 0;
+
+		for (i = 0; n < maxlen - 1 && rooms[i] != -1; i++) {
+			out[n++] = rooms[i];
+		}
+
+		for (j = 0; j < 5; j++) {
+			struct coord q = *pos;
+			RoomNum inrooms[21], aboverooms[21];
+
+			q.x += j == 1 ? radius : j == 2 ? -radius : 0;
+			q.z += j == 3 ? radius : j == 4 ? -radius : 0;
+			bgFindRoomsByPos(&q, inrooms, aboverooms, 20, NULL);
+
+			for (k = 0; inrooms[k] != -1 && n < maxlen - 1; k++) {
+				s32 m;
+
+				for (m = 0; m < n && out[m] != inrooms[k]; m++);
+
+				if (m == n) {
+					out[n++] = inrooms[k];
+				}
+			}
+		}
+
+		out[n] = -1;
+
+		return out;
+	}
+
 	if (!geRoomActive()) {
 		return rooms;
 	}
@@ -2726,6 +2765,27 @@ void bwalkApplyMoveData(struct movedata *data)
 #ifndef PLATFORM_N64
 		// --zombies-test-walk: forward at a walk from level frame 160, and
 		// where the player is every 20 frames, to see where a walk stops
+		// --zombies-test-wallscan: walls along x round the player, '#' solid
+		// to a thin cylinder from 50 over the ground to the eye
+		if (sysArgCheck("--zombies-test-wallscan") && g_Vars.lvframenum == 161) {
+			char row[80];
+			s32 i;
+
+			for (i = 0; i < 61; i++) {
+				struct coord q = g_Vars.currentplayer->prop->pos;
+				RoomNum qr[21], qa[21];
+
+				q.x += (i - 30) * 10;
+				bgFindRoomsByPos(&q, qr, qa, 20, NULL);
+				row[i] = cdTestVolume(&q, 6, qr, CDTYPE_BG, CHECKVERTICAL_YES, 0,
+						g_Vars.currentplayer->vv_ground + 50 - q.y) == CDRESULT_COLLISION ? '#' : '.';
+			}
+
+			row[61] = 0;
+			sysLogPrintf(LOG_NOTE, "bwalk: walls x %.0f..%.0f: %s", g_Vars.currentplayer->prop->pos.x - 300,
+					g_Vars.currentplayer->prop->pos.x + 300, row);
+		}
+
 		if (sysArgCheck("--zombies-test-walk") && g_Vars.lvframenum >= 160) {
 			// facing --zombies-test-walk degrees
 			g_Vars.currentplayer->vv_theta = sysArgGetInt("--zombies-test-walk", 0);
