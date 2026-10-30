@@ -300,6 +300,29 @@ static MenuItemHandlerResult menuhandlerRadialMenuSpeed(s32 operation, struct me
 	return 0;
 }
 
+// Zombies' ADS Sensitivity, the look down the sights in percent of the hip's:
+// the mouse's on its page (param 0), the stick's on the Controller page (1)
+extern s32 g_ZombieCfgAdsSens[2]; // zombieperks.c
+
+static MenuItemHandlerResult menuhandlerAdsSensitivity(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 *v = &g_ZombieCfgAdsSens[item->param ? 1 : 0];
+
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (*v < 10 ? 10 : *v > 100 ? 100 : *v) - 10;
+		break;
+	case MENUOP_SET:
+		*v = data->slider.value + 10;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d%%", data->slider.value + 10);
+		break;
+	}
+
+	return 0;
+}
+
 struct menuitem g_ExtendedMouseMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -366,6 +389,14 @@ struct menuitem g_ExtendedMouseMenuItems[] = {
 		menuhandlerRadialMenuSpeed,
 	},
 	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"ADS Sensitivity (Zombies)",
+		90,
+		menuhandlerAdsSensitivity,
+	},
+	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
 		0,
@@ -398,6 +429,14 @@ static MenuItemHandlerResult menuhandlerStickDeadzone(s32 operation, struct menu
 static MenuItemHandlerResult menuhandlerInvertRightStick(s32 operation, struct menuitem *item, union handlerdata *data);
 
 struct menuitem g_ExtendedStickMenuItems[] = {
+	{
+		MENUITEMTYPE_SLIDER,
+		1,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"ADS Sensitivity (Zombies)",
+		90,
+		menuhandlerAdsSensitivity,
+	},
 	{
 		MENUITEMTYPE_SLIDER,
 		0,

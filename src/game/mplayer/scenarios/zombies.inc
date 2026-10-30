@@ -168,7 +168,7 @@ extern s32 g_ZombieCfgPowerups;
 extern s32 g_ZombieCfgRoundMusic;
 extern s32 g_ZombieCfgGroans;
 extern s32 g_ZombieCfgPerkLimit;
-extern s32 g_ZombieCfgAdsSens;
+extern s32 g_ZombieCfgAdsSens[2];
 #define ZOMBIE_POINTS_HIT      10
 #define ZOMBIE_POINTS_KILL     60  // the torso's: _zm_score's 50 and its 10 for torso_upper or torso_lower
 #define ZOMBIE_POINTS_LIMB     50  // an arm or a leg: the 50 alone
@@ -26735,32 +26735,15 @@ MenuItemHandlerResult menuhandlerZombiesPerkLimit(s32 operation, struct menuitem
 	return 0;
 }
 
-// ADS Sensitivity: the look down the sights, 10% to 100% of the hip's
-MenuItemHandlerResult menuhandlerZombiesAdsSens(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	switch (operation) {
-	case MENUOP_GETSLIDER:
-		data->slider.value = (g_ZombieCfgAdsSens < 10 ? 10 : g_ZombieCfgAdsSens > 100 ? 100 : g_ZombieCfgAdsSens) / 5 - 2;
-		break;
-	case MENUOP_SET:
-		g_ZombieCfgAdsSens = (data->slider.value + 2) * 5;
-		break;
-	case MENUOP_GETSLIDERLABEL:
-		sprintf(data->slider.label, "%d%%", (data->slider.value + 2) * 5);
-		break;
-	}
-
-	return 0;
-}
-
 /**
  * bondmove.c: the look's scale as the gun comes to the sights - the mouse's
- * and the stick's alike - by the Zombies Options page's ADS Sensitivity, as
+ * (pad 0) or the stick's (1) - by Controls' ADS Sensitivity on its Mouse and
+ * its Controller page, one each, as
  * later Call of Duty's own setting. Black Ops II's own slowing down the sights
  * (the zoom's, the stick's turn rates) was still quick, its aim assist's
  * slowdown over a target being none of Perfect Dark's: the player sets it
  */
-f32 zombiesAdsLookScale(void)
+f32 zombiesAdsLookScale(s32 pad)
 {
 	f32 frac;
 
@@ -26776,7 +26759,7 @@ f32 zombiesAdsLookScale(void)
 
 	frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
 
-	return 1 + (g_ZombieCfgAdsSens / 100.0f - 1) * frac;
+	return 1 + (g_ZombieCfgAdsSens[pad ? 1 : 0] / 100.0f - 1) * frac;
 }
 
 // A checkbox for one of the settings: param3 says which
@@ -26912,14 +26895,6 @@ struct menuitem g_ZombiesOptionsMenuItems[] = {
 		(uintptr_t)"Perk Limit\n",
 		98, // 1 to 99
 		menuhandlerZombiesPerkLimit,
-	},
-	{
-		MENUITEMTYPE_SLIDER,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"ADS Sensitivity\n",
-		18, // 10% to 100% in fives
-		menuhandlerZombiesAdsSens,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

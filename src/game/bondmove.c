@@ -59,7 +59,7 @@
 
 bool zombiesIsActive(void);
 bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
-f32 zombiesAdsLookScale(void); // zombies.inc
+f32 zombiesAdsLookScale(s32 pad); // zombies.inc: 0 the mouse, 1 the stick
 void zombiesKickTick(void); // zombies.inc
 void zombiesQuickMelee(void);
 bool zombiesTryDive(void);
@@ -2570,9 +2570,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				}
 
 #ifndef PLATFORM_N64
-				fVar25 = bmoveZombiesStick(1, fVar25, tmp);
-				fVar25 += movedata.freelookdy * mlookscale;
-				fVar25 *= zombiesAdsLookScale();
+				fVar25 = bmoveZombiesStick(1, fVar25, tmp) * zombiesAdsLookScale(1);
+				fVar25 += movedata.freelookdy * mlookscale * zombiesAdsLookScale(0);
 #endif
 
 				g_Vars.currentplayer->speedverta = -fVar25 * tmp;
@@ -2613,9 +2612,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		}
 
 #ifndef PLATFORM_N64
-		fVar25 = bmoveZombiesStick(0, fVar25, tmp);
-		fVar25 += movedata.freelookdx * mlookscale;
-		fVar25 *= zombiesAdsLookScale();
+		fVar25 = bmoveZombiesStick(0, fVar25, tmp) * zombiesAdsLookScale(1);
+		fVar25 += movedata.freelookdx * mlookscale * zombiesAdsLookScale(0);
 #endif
 
 		g_Vars.currentplayer->speedthetacontrol = fVar25 * tmp;

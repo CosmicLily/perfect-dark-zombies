@@ -110,12 +110,13 @@ s32 g_ZombieCfgPowerups = 1;
 s32 g_ZombieCfgRoundMusic = 1;
 s32 g_ZombieCfgGroans = 1;
 s32 g_ZombieCfgPerkLimit = 4; // perks a player may have at once, Black Ops II's four; 9 and over is all nine
-s32 g_ZombieCfgAdsSens = 60;  // the look down the sights, percent of the hip's (mouse and stick)
+s32 g_ZombieCfgAdsSens[2] = { 60, 60 }; // the look down the sights, percent of the hip's: the mouse's, the stick's (Controls)
 
 PD_CONSTRUCTOR static void zombieConfigInit(void)
 {
 	configRegisterInt("Game.ZombiesPerkLimit", &g_ZombieCfgPerkLimit, 1, 99);
-	configRegisterInt("Game.ZombiesAdsSensitivity", &g_ZombieCfgAdsSens, 10, 100);
+	configRegisterInt("Game.ZombiesAdsSensitivityMouse", &g_ZombieCfgAdsSens[0], 10, 100);
+	configRegisterInt("Game.ZombiesAdsSensitivityController", &g_ZombieCfgAdsSens[1], 10, 100);
 	configRegisterInt("Game.ZombiesStartPoints", &g_ZombieCfgStartPoints, 0, 1000000);
 	configRegisterInt("Game.ZombiesStartRound", &g_ZombieCfgStartRound, 1, 100);
 	configRegisterInt("Game.ZombiesPowerups", &g_ZombieCfgPowerups, 0, 1);
