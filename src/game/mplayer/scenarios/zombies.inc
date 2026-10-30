@@ -10314,6 +10314,8 @@ static s32 g_ZombieXhairBeat[MAX_PLAYERS];   // the fuse's beats so far, -1 none
 static f32 g_ZombieXhairFuse[MAX_PLAYERS];   // a beat's pop, falling
 
 f32 zombiesGunLowerFrac(void);
+bool modIsCodAimingOn(void);
+bool modIsWeaponAGun(s32 weaponnum);
 
 // Which beat of the fuse a grenade cooked this long is on, -1 before the pin
 static s32 zombiesFuseBeat(s32 cook)
@@ -10402,6 +10404,13 @@ s32 zombiesCrosshair(f32 *spread)
 	if (player->codaimfrac > 0.5f && !bgunScopeCoversView(weaponnum)) {
 		return 1;
 	}
+
+	// on the way up to them, Zombies' own cross until it goes: the game's
+	// sight - its square - flashed up for the first moment of the aim
+	if (player->insightaimmode && modIsCodAimingOn() && !bgunScopeCoversView(weaponnum)
+			&& player->hands[HAND_RIGHT].inuse && modIsWeaponAGun(weaponnum)) {
+		// (drawn below)
+	} else
 
 	if (player->insightaimmode || player->codaimfrac > 0.5f) {
 		return weaponnum == WEAPON_ZM_RAYGUN ? 1 : 0;

@@ -7096,6 +7096,18 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Zombies: down the sights a shot goes where the sights are, as Black
+	// Ops II's adsSpread of 0 has it - all but the shotgun's, whose spread is
+	// its own either way. Perfect Dark's is the hip's at the sights too, and
+	// the shots went wide of them
+	if (zombiesIsActive() && weaponHost(bgunGetWeaponNum2(handnum)) != WEAPON_SHOTGUN) {
+		const f32 frac = player->codaimfrac > 1 ? 1 : player->codaimfrac < 0 ? 0 : player->codaimfrac;
+
+		spread *= 1 - frac;
+	}
+#endif
+
 	scaledspread = 120.0f * spread / viGetFovY();
 
 	if (dorandom) {
