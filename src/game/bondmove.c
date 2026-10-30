@@ -489,6 +489,35 @@ void bmoveUpdateSpeedThetaControl(f32 value)
 }
 
 /**
+ * Zombies: the stick down the sights at Call of Duty's rate - its console
+ * aim_turnrate_yaw of 260 degrees a second from the hip and 90 down the
+ * sights, aim_turnrate_pitch 90 and 55 - blended in as the gun comes up
+ * (codaimfrac). Perfect Dark's own is the hip's times the zoom alone: none at
+ * all for a gun that does not zoom, the M1911's, and turning down the sights
+ * was as quick as from the hip. `fovscale` is the zoom's scaling, applied
+ * after this; Call of Duty's rate is the rate, so it is taken back out. The
+ * mouse keeps the zoom's scaling, Black Ops II's PC "relative" default.
+ */
+static f32 bmoveZombiesAdsStick(f32 adsrate, f32 fovscale)
+{
+	f32 frac = g_Vars.currentplayer->codaimfrac;
+
+	if (!zombiesIsActive() || frac <= 0) {
+		return 1;
+	}
+
+	if (frac > 1) {
+		frac = 1;
+	}
+
+	if (fovscale < 0.05f) {
+		fovscale = 0.05f;
+	}
+
+	return 1 + (adsrate / fovscale - 1) * frac;
+}
+
+/**
  * Apply crosshair swivel based on camera movement with input detection
  */
 static void bmoveApplyCrosshairSwivel(struct movedata *movedata, f32 mlookscale, f32 *x, f32 *y)
@@ -2497,6 +2526,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				}
 
 #ifndef PLATFORM_N64
+				fVar25 *= bmoveZombiesAdsStick(55.0f / 90.0f, tmp);
 				fVar25 += movedata.freelookdy * mlookscale;
 #endif
 
@@ -2538,6 +2568,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		}
 
 #ifndef PLATFORM_N64
+		fVar25 *= bmoveZombiesAdsStick(90.0f / 260.0f, tmp);
 		fVar25 += movedata.freelookdx * mlookscale;
 #endif
 
