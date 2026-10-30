@@ -402,8 +402,12 @@ void audioEndFrame(void)
 	}
 }
 
+// The Jukebox's No Music (setup.c, stagemusic.c): a match plays no music at all
+s32 g_JukeboxNoMusic = 0;
+
 PD_CONSTRUCTOR static void audioConfigInit(void)
 {
+	configRegisterInt("Audio.JukeboxNoMusic", &g_JukeboxNoMusic, 0, 1);
 	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.SurroundOutput", &surroundOutput, AUDIO_SURROUND_AUTO, AUDIO_SURROUND_HEADPHONES);

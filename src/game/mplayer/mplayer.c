@@ -3855,6 +3855,11 @@ bool mpIsTrackUnlocked(s32 tracknum)
 	bool unlocked = false;
 	u32 i;
 
+#ifndef PLATFORM_N64
+	// every track in the Soundtrack and the Jukebox, finished missions or not
+	return true;
+#endif
+
 	if (stageindex < 0 || stageindex > SOLOSTAGEINDEX_SKEDARRUINS) {
 		unlocked = true;
 	} else {

@@ -1078,6 +1078,10 @@ void musicTick(void)
 					musicQueueStopEvent(TRACKTYPE_MENU);
 					musicQueueStopEvent(TRACKTYPE_DEATH);
 					musicQueueStopEvent(TRACKTYPE_PRIMARY);
+#ifndef PLATFORM_N64
+					// none with the Jukebox's No Music (stagemusic.c)
+					if (stageGetPrimaryTrack(g_MusicStageNum) >= 0)
+#endif
 					musicQueueStartEvent(TRACKTYPE_PRIMARY, stageGetPrimaryTrack(g_MusicStageNum), 0, musicGetVolume());
 				}
 			}
@@ -1102,6 +1106,10 @@ void musicTick(void)
 					musicQueueStopEvent(TRACKTYPE_MENU);
 					musicQueueStopEvent(TRACKTYPE_DEATH);
 					musicQueueStopEvent(TRACKTYPE_PRIMARY);
+#ifndef PLATFORM_N64
+					// none with the Jukebox's No Music (stagemusic.c)
+					if (stageGetPrimaryTrack(g_MusicStageNum) >= 0)
+#endif
 					musicQueueStartEvent(TRACKTYPE_PRIMARY, stageGetPrimaryTrack(g_MusicStageNum), 0, musicGetVolume());
 				}
 			}

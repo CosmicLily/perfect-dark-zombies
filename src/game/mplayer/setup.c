@@ -5767,10 +5767,45 @@ static MenuDialogHandlerResult menudialogMpJukebox(s32 operation, struct menudia
 	return false;
 }
 
+extern s32 g_JukeboxNoMusic; // port/src/audio.c, saved
+
+static MenuItemHandlerResult menuhandlerMpJukeboxNoMusic(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_JukeboxNoMusic;
+	case MENUOP_SET:
+		g_JukeboxNoMusic = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+
+// the Soundtrack page's, and No Music
+struct menuitem g_MpJukeboxMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, 0, L_MPMENU_063, 0, NULL }, // "Current:"
+	{ MENUITEMTYPE_LABEL, 0, 0, L_OPTIONS_003, (uintptr_t)&mpMenuTextCurrentTrack, NULL },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG,
+		(uintptr_t)&mpMenuTextSelectTuneOrTunes,
+		0,
+		(void *)&g_MpSelectTunesMenuDialog,
+	},
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LOCKABLEMINOR, L_MPMENU_064, 0, menuhandlerMpMultipleTunes }, // "Multiple Tunes"
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"No Music", 0, menuhandlerMpJukeboxNoMusic },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, L_MPMENU_065, 0, NULL }, // "Back"
+	{ MENUITEMTYPE_END },
+};
+
 struct menudialogdef g_MpJukeboxMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	(uintptr_t)"Jukebox",
-	g_MpSoundtrackMenuItems,
+	g_MpJukeboxMenuItems,
 	menudialogMpJukebox,
 	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
 	NULL,

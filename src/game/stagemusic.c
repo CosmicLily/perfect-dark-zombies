@@ -14,6 +14,7 @@
 #include "gemusic.h"
 
 extern bool g_MpJukeboxChosen; // setup.c
+extern s32 g_JukeboxNoMusic; // port/src/audio.c
 #endif
 
 static struct stagemusic g_StageTracksDefault[] = {
@@ -64,6 +65,12 @@ s32 stageGetPrimaryTrack(s32 stagenum)
 #ifndef PLATFORM_N64
 	// a level of the GoldenEye remake plays what GoldenEye plays on it (gemusic.c)
 	const s32 ge = geMusicStageTrack(stagenum, GEMUSIC_MAIN);
+
+	// the Jukebox's No Music: none in a match, as Call of Duty's Zombies has
+	// none (-1: musicStartPrimary() starts nothing)
+	if (g_Vars.normmplayerisrunning && g_JukeboxNoMusic) {
+		return -1;
+	}
 
 	// the Jukebox's pick, once made, over a level's own (setup.c)
 	if (g_Vars.normmplayerisrunning && g_MpJukeboxChosen) {
