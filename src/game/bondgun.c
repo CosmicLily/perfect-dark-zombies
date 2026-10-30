@@ -10157,6 +10157,16 @@ void bgun0f0a5550(s32 handnum)
 		sp274.f[0] += (inx - func0f0b131c(handnum) - hand->codaimmuzzlex) * player->codaimfrac;
 		sp274.f[1] += (3.5f + gegunsCodAimLift(weaponnum)) * player->codaimfrac;
 		sp274.f[2] += 3.0f * player->codaimfrac;
+
+		// Zombies: held still at the sights, as Call of Duty's is - the gun's
+		// own lag and bob (damppos) gone as it comes up
+		if (zombiesIsActive()) {
+			const f32 frac = player->codaimfrac > 1 ? 1 : player->codaimfrac;
+
+			sp274.f[0] -= hand->damppos.f[0] * frac;
+			sp274.f[1] -= hand->damppos.f[1] * frac;
+			sp274.f[2] -= hand->damppos.f[2] * frac;
+		}
 	}
 #endif
 

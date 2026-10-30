@@ -15,6 +15,26 @@
 bool zombiesIsActive(void);
 #endif
 
+#ifndef PLATFORM_N64
+/**
+ * Zombies: how much of the head's motion is left as the gun comes to the
+ * sights - none at them. A gun down the sights in Call of Duty is held still;
+ * Perfect Dark's head goes on bobbing on the walk and drifting and rolling as
+ * it breathes standing, and the gun, held to the eye, went with it. Its sway
+ * against the view is taken out already (bondgun.c, codaimfrac)
+ */
+static f32 bheadZombiesSteady(void)
+{
+	f32 frac = g_Vars.currentplayer->codaimfrac;
+
+	if (g_Vars.currentplayer->insightaimmode && frac <= 0) {
+		frac = 1;
+	}
+
+	return frac >= 1 ? 0 : frac <= 0 ? 1 : 1 - frac;
+}
+#endif
+
 struct headanim g_HeadAnims[] = {
 	{ ANIM_002B, 9.5, 27, 0, 0,   1.5 },
 	{ ANIM_0029, 7.5, 17, 0, 1.5, 100 },
@@ -178,7 +198,7 @@ void bheadUpdate(f32 arg0, f32 arg1)
 		// Zombies: Call of Duty's gentle bob, a third of Perfect Dark's - the
 		// head's rise and fall and its sway, not its step (x and z are the
 		// walk itself)
-		const f32 bob = zombiesIsActive() ? 0.35f : 1.0f;
+		const f32 bob = zombiesIsActive() ? 0.35f * bheadZombiesSteady() : 1.0f;
 #else
 		const f32 bob = 1.0f;
 #endif
@@ -260,6 +280,18 @@ void bheadUpdate(f32 arg0, f32 arg1)
 
 			upvel.x *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
 			upvel.z *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+
+#ifndef PLATFORM_N64
+			// Zombies: none of the standing head's drift down the sights
+			if (zombiesIsActive()) {
+				const f32 steady = bheadZombiesSteady();
+
+				lookvel.x *= steady;
+				lookvel.y *= steady;
+				upvel.x *= steady;
+				upvel.z *= steady;
+			}
+#endif
 		}
 	}
 
