@@ -16164,8 +16164,11 @@ static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, con
 	f32 pulse;
 	s32 k;
 
+	// nothing to draw: asked whether there is, none (NULL); drawing, the list
+	// back as it came - NULL there was the display list lost, and the Ray
+	// Gun's bolts drawn after wrote through it while the box was away
 	if (!here || !zombiesBoxMesh()) {
-		return NULL;
+		return draw ? gdl : NULL;
 	}
 
 	if (!draw) {
