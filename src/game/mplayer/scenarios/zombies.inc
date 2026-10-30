@@ -26626,6 +26626,7 @@ struct menudialogdef g_ZombiesOptionsMenuDialog = {
  */
 extern struct menudialogdef g_CiOptionsViaPauseMenuDialog;
 extern struct menudialogdef g_CiControlOptionsMenuDialog;
+extern struct menudialogdef g_MpJukeboxMenuDialog; // setup.c: the music, picked
 void netClientLeave(void);
 
 // End Game, sure: a client leaves the room; anyone else ends it as Zombies'
@@ -26735,6 +26736,14 @@ struct menuitem g_ZombiesPauseMenuItems[] = {
 		(uintptr_t)"Resume Game",
 		0,
 		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Jukebox",
+		0,
+		(void *)&g_MpJukeboxMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

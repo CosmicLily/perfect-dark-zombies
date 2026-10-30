@@ -5744,6 +5744,39 @@ struct menudialogdef g_MpSoundtrackMenuDialog = {
 	NULL,
 };
 
+#ifndef PLATFORM_N64
+/**
+ * The Jukebox: the Soundtrack page from Game Setup and from Zombies' pause
+ * (zombies.inc). What is picked there is what the match plays, over an arena's
+ * own music too (a GoldenEye level's, a borrowed mod's: stageGetPrimaryTrack()),
+ * and in a match it plays from the moment the page closes
+ */
+bool g_MpJukeboxChosen = false;
+
+static MenuDialogHandlerResult menudialogMpJukebox(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_CLOSE) {
+		g_MpJukeboxChosen = true;
+
+		if (g_Vars.normmplayerisrunning) {
+			musicQueueStopEvent(TRACKTYPE_PRIMARY);
+			musicStartPrimary(0);
+		}
+	}
+
+	return false;
+}
+
+struct menudialogdef g_MpJukeboxMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Jukebox",
+	g_MpSoundtrackMenuItems,
+	menudialogMpJukebox,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+#endif
+
 struct menuitem g_MpChangeTeamNameMenuItems[] = {
 	{
 		MENUITEMTYPE_KEYBOARD,
@@ -7100,6 +7133,16 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		(uintptr_t)&mpMenuTextArenaName,
 		(void *)&g_MpArenaMenuDialog,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Jukebox\n",
+		(uintptr_t)&mpMenuTextCurrentTrack,
+		(void *)&g_MpJukeboxMenuDialog,
+	},
+#endif
 #ifdef PLATFORM_N64
 	// Zombies has no use for these: its guns are its own, its rounds never
 	// end on a limit, and its simulants are the zombies
