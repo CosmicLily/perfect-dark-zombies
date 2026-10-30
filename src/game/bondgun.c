@@ -84,6 +84,7 @@
 #endif
 
 bool zombiesIsActive(void);
+bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
 s32 zombiesHudNameBottom(s32 bottom);
 f32 zombiesGunLowerFrac(void);
 bool zombiesKnifeWantsTrigger(void);
@@ -15431,11 +15432,24 @@ void bgunTickGameplay(bool triggeron)
 			&& modIsWeaponAGun(player->gunctrl.weaponnum)
 			&& !bgunScopeCoversView(player->gunctrl.weaponnum) ? 1.0f : 0.0f;
 		f32 step = 0.6f * LVUPDATE60FREAL();
+		f32 adsin, adsout, adsfovy;
 
 		if (step > 1.0f) {
 			step = 1.0f;
 		}
 
+		// Zombies: in and out in the gun's own Black Ops II times, at an
+		// even rate (zombiesAdsInfo())
+		if (zombiesAdsInfo(player->gunctrl.weaponnum, &adsin, &adsout, &adsfovy)) {
+			const f32 secs = target > player->codaimfrac ? adsin : adsout;
+			const f32 d = LVUPDATE60FREAL() / (60.0f * (secs > 0.01f ? secs : 0.01f));
+
+			if (target > player->codaimfrac) {
+				player->codaimfrac = player->codaimfrac + d > target ? target : player->codaimfrac + d;
+			} else {
+				player->codaimfrac = player->codaimfrac - d < target ? target : player->codaimfrac - d;
+			}
+		} else
 		player->codaimfrac += (target - player->codaimfrac) * step;
 
 		if (player->codaimfrac < 0.01f) {

@@ -10623,6 +10623,89 @@ static const struct zombiecodgun g_ZombieCodGuns[] = {
 	{ WEAPON_CROSSBOW,         0, ZOMBIE_BALLISTA },
 };
 
+/**
+ * Down the sights as Black Ops II's: each gun's adsTransInTime and
+ * adsTransOutTime (seconds) and adsZoomFov1 from the same weapon file as its
+ * damage (g_ZombieCodGuns' pairs). COD Style Aiming's own were one for
+ * every gun - in to the sights in four ticks, the view to 0.8 of itself in
+ * six - and read as too quick, a rifle's the same as a pistol's.
+ */
+struct zombieads {
+	s32 weaponnum;
+	f32 in;
+	f32 out;
+	f32 fov; // Black Ops II's, horizontal at 4:3, of its own 65
+};
+
+static const struct zombieads g_ZombieAds[] = {
+	{ WEAPON_FALCON2,          0.1f,   0.1f,   65 }, // m1911
+	{ WEAPON_FALCON2_SILENCER, 0.1f,   0.1f,   60 }, // kard
+	{ WEAPON_FALCON2_SCOPE,    0.125f, 0.125f, 60 }, // fiveseven
+	{ WEAPON_PP9I,             0.125f, 0.125f, 60 },
+	{ WEAPON_CC13,             0.1f,   0.1f,   60 },
+	{ WEAPON_MAGSEC4,          0.125f, 0.125f, 60 }, // beretta93r
+	{ WEAPON_MAULER,           0.125f, 0.125f, 60 },
+	{ WEAPON_PHOENIX,          0.1f,   0.1f,   60 },
+	{ WEAPON_DY357MAGNUM,      0.15f,  0.15f,  65 }, // python
+	{ WEAPON_DY357LX,          0.15f,  0.15f,  65 },
+	{ WEAPON_CMP150,           0.2f,   0.2f,   50 }, // mp5k
+	{ WEAPON_DMC,              0.2f,   0.2f,   50 },
+	{ WEAPON_CYCLONE,          0.2f,   0.2f,   55 }, // pdw57
+	{ WEAPON_RCP45,            0.2f,   0.2f,   55 },
+	{ WEAPON_CALLISTO,         0.2f,   0.2f,   55 }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,        0.2f,   0.2f,   55 }, // qcw05
+	{ WEAPON_KL01313,          0.2f,   0.2f,   55 }, // uzi
+	{ WEAPON_ZZT,              0.2f,   0.2f,   50 }, // mp40
+	{ WEAPON_DRAGON,           0.25f,  0.25f,  50 }, // galil
+	{ WEAPON_K7AVENGER,        0.25f,  0.25f,  50 }, // scar
+	{ WEAPON_AR34,             0.25f,  0.25f,  50 }, // tar21
+	{ WEAPON_SUPERDRAGON,      0.25f,  0.25f,  50 }, // fnfal
+	{ WEAPON_KF7SPECIAL,       0.25f,  0.25f,  50 }, // type95
+	{ WEAPON_AR53,             0.25f,  0.25f,  50 }, // ak47
+	{ WEAPON_RCP120,           0.475f, 0.45f,  45 }, // lsat
+	{ WEAPON_REAPER,           0.35f,  0.35f,  50 }, // rpd
+	{ WEAPON_SHOTGUN,          0.25f,  0.25f,  55 }, // 870mcs
+	{ WEAPON_SNIPERRIFLE,      0.4f,   0.5f,   15 }, // dsr50
+	{ WEAPON_FARSIGHT,         0.4f,   0.6f,   15 }, // barretm82
+	{ WEAPON_CROSSBOW,         0.325f, 0.35f,  50 }, // ballista
+};
+
+// bondgun.c and bondmove.c: a gun's way to the sights and its zoom there (our
+// vertical fov, from the player's own), false for none of these
+bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy)
+{
+	s32 i;
+
+	if (!zombiesIsActive()) {
+		return false;
+	}
+
+	weaponnum = weaponHost(weaponnum);
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieAds); i++) {
+		if (g_ZombieAds[i].weaponnum == weaponnum) {
+			const f32 deg = (f32)M_PI / 180.0f;
+
+			*in = g_ZombieAds[i].in;
+			*out = g_ZombieAds[i].out;
+
+			// the zoom as Call of Duty's: the tangent of the half angle
+			// down by its fov's over its 65's, whatever the view's own
+			{
+				const f32 view = PLAYER_DEFAULT_FOV * 0.5f * deg;
+				const f32 ads = g_ZombieAds[i].fov * 0.5f * deg;
+				const f32 cod = 32.5f * deg;
+				const f32 t = (sinf(view) / cosf(view)) * (sinf(ads) / cosf(ads)) / (sinf(cod) / cosf(cod));
+
+				*fovy = 2 * atan2f(t, 1) / deg;
+			}
+			return true;
+		}
+	}
+
+	return false;
+}
+
 // chrDamage() asks, for a player's bullet on a zombie: damage as it is to
 // be taken, Double Tap's included
 f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, f32 damage)

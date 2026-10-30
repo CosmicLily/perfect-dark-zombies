@@ -57,6 +57,7 @@
 #endif
 
 bool zombiesIsActive(void);
+bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
 void zombiesQuickMelee(void);
 bool zombiesTryDive(void);
 void zombiesTickDive(void);
@@ -2311,6 +2312,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				&& modIsWeaponAGun(weaponnum)
 				&& !bgunScopeCoversView(weaponnum)) {
 			f32 adsfov = PLAYER_DEFAULT_FOV * 0.8f;
+			f32 adsin, adsout;
+
+			// Zombies: the gun's own Black Ops II zoom
+			zombiesAdsInfo(weaponnum, &adsin, &adsout, &adsfov);
 
 			if (zoomfov <= 0 || zoomfov > adsfov) {
 				zoomfov = adsfov;
@@ -2329,7 +2334,19 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		// two and a half times the Moonraker's six ticks to settle, and
 		// read as the gun being slow to come to the middle (F3
 		// 20260929-203351)
+		f32 adsin, adsout, adsfovy;
+
 		if (modIsCodAimingOn()
+				&& modIsWeaponAGun(weaponnum)
+				&& !bgunScopeCoversView(weaponnum)
+				&& !canmanualzoom
+				&& zombiesAdsInfo(weaponnum, &adsin, &adsout, &adsfovy)) {
+			// Zombies: the zoom in and out in the gun's own times, as the
+			// gun comes to the sights (bgunTick...)
+			if (playerGetZoomFovY() != zoomfov) {
+				playerSetZoomFovY(zoomfov, 60.0f * (g_Vars.currentplayer->insightaimmode ? adsin : adsout));
+			}
+		} else if (modIsCodAimingOn()
 				&& modIsWeaponAGun(weaponnum)
 				&& !bgunScopeCoversView(weaponnum)
 				&& !canmanualzoom) {
