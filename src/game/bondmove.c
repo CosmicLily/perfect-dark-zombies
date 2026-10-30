@@ -489,32 +489,56 @@ void bmoveUpdateSpeedThetaControl(f32 value)
 }
 
 /**
- * Zombies: the stick down the sights at Call of Duty's rate - its console
- * aim_turnrate_yaw of 260 degrees a second from the hip and 90 down the
- * sights, aim_turnrate_pitch 90 and 55 - blended in as the gun comes up
- * (codaimfrac). Perfect Dark's own is the hip's times the zoom alone: none at
- * all for a gun that does not zoom, the M1911's, and turning down the sights
- * was as quick as from the hip. `fovscale` is the zoom's scaling, applied
- * after this; Call of Duty's rate is the rate, so it is taken back out. The
- * mouse keeps the zoom's scaling, Black Ops II's PC "relative" default.
+ * Zombies: the stick at Call of Duty's console rates. Perfect Dark's turns
+ * 3.5 degrees a 60th at full tilt (210 a second) both ways, and at once.
+ * Call of Duty's default: aim_turnrate_yaw 260 a second and
+ * aim_turnrate_pitch 90 from the hip, 90 and 55 down the sights (blended in
+ * as the gun comes up, codaimfrac), and aim_accel_turnrate_lerp's 1200 a
+ * second a second up to the stick's rate - let go or eased back, it is that
+ * at once. Up and down was twice and more Call of Duty's, and quick off the
+ * mark: "it still feels fast". `value` is Perfect Dark's, its curve applied
+ * (1 at full tilt); `fovscale` the zoom's scaling, applied after this, which
+ * Call of Duty's rate has in it, so it is taken back out. The mouse is
+ * Call of Duty's already (0.022 a count times the sensitivity).
  */
-static f32 bmoveZombiesAdsStick(f32 adsrate, f32 fovscale)
-{
-	f32 frac = g_Vars.currentplayer->codaimfrac;
+static f32 g_ZombieStickRate[MAX_PLAYERS][2]; // degrees a second, as turning now
 
-	if (!zombiesIsActive() || frac <= 0) {
-		return 1;
+static f32 bmoveZombiesStick(s32 axis, f32 value, f32 fovscale)
+{
+	const f32 hip = axis == 0 ? 260.0f : 90.0f;
+	const f32 ads = axis == 0 ? 90.0f : 55.0f;
+	const s32 p = g_Vars.currentplayernum;
+	f32 frac = g_Vars.currentplayer->codaimfrac;
+	f32 target;
+	f32 *rate;
+
+	if (!zombiesIsActive() || p < 0 || p >= MAX_PLAYERS) {
+		return value;
 	}
 
-	if (frac > 1) {
-		frac = 1;
+	frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+	target = value * (hip + (ads - hip) * frac);
+	rate = &g_ZombieStickRate[p][axis];
+
+	// up to the stick's rate at 1200 a second a second; down to it at once
+	if (target == 0 || target * *rate < 0 || fabsf(target) <= fabsf(*rate)) {
+		*rate = target;
+	} else {
+		const f32 step = 1200.0f * g_Vars.lvupdate60freal / 60.0f;
+
+		*rate += target > *rate ? step : -step;
+
+		if ((target > 0 && *rate > target) || (target < 0 && *rate < target)) {
+			*rate = target;
+		}
 	}
 
 	if (fovscale < 0.05f) {
 		fovscale = 0.05f;
 	}
 
-	return 1 + (adsrate / fovscale - 1) * frac;
+	// Perfect Dark's 1 is 210 a second
+	return *rate / 210.0f / fovscale;
 }
 
 /**
@@ -2526,7 +2550,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				}
 
 #ifndef PLATFORM_N64
-				fVar25 *= bmoveZombiesAdsStick(55.0f / 90.0f, tmp);
+				fVar25 = bmoveZombiesStick(1, fVar25, tmp);
 				fVar25 += movedata.freelookdy * mlookscale;
 #endif
 
@@ -2568,7 +2592,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		}
 
 #ifndef PLATFORM_N64
-		fVar25 *= bmoveZombiesAdsStick(90.0f / 260.0f, tmp);
+		fVar25 = bmoveZombiesStick(0, fVar25, tmp);
 		fVar25 += movedata.freelookdx * mlookscale;
 #endif
 
