@@ -5796,8 +5796,13 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				}
 			}
 
-			// Handle chr boost
-			if (chr->aibot) {
+			// Handle chr boost. Not a zombie's: Call of Duty's are not pushed
+			// back by the shots that hit them
+			if (chr->aibot
+#ifndef PLATFORM_N64
+					&& !zombiesIsActive()
+#endif
+					) {
 				f32 boostscale;
 
 				if (ismelee && weaponHasFlag2(gset->weaponnum, WEAPONFLAG2_MINIGUN)) {
@@ -5923,7 +5928,12 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						// quarter of a second. The player side of this never
 						// had the problem: playerDieByShooter() runs before the
 						// flinch there, and chrIsDead() then turns it away.
-						chrPlayArghAnimation(chr, angle, hitpart);
+						// A zombie shot keeps coming, as Call of Duty's do:
+						// no hit animation to stop it (the flinch above, a
+						// twitch of its body, is all)
+						if (!zombiesIsActive()) {
+							chrPlayArghAnimation(chr, angle, hitpart);
+						}
 					}
 #endif
 

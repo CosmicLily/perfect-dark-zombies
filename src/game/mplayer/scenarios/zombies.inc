@@ -472,6 +472,26 @@ void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosi
 		return;
 	}
 
+	// A blast pays its 10 once: Perfect Dark's explosion hurts what is in it
+	// every frame it lasts (explosionInflictDamage()), and each frame was a
+	// hit - a grenade into a crowd paid hundreds. Black Ops II's damages once.
+	// One blast hit a zombie a second, then; the kill pays as ever
+	if (explosion && !killed && victim) {
+		static s32 blastpaid60[MAX_BOTS];
+		s32 i;
+
+		for (i = 0; i < g_BotCount && i < MAX_BOTS; i++) {
+			if (g_MpBotChrPtrs[i] == victim) {
+				if (blastpaid60[i] > g_Vars.lvframe60 - 60 && blastpaid60[i] <= g_Vars.lvframe60) {
+					return;
+				}
+
+				blastpaid60[i] = g_Vars.lvframe60;
+				break;
+			}
+		}
+	}
+
 	if (!killed) {
 		value = ZOMBIE_POINTS_HIT;
 	} else if (explosion) {
@@ -25157,8 +25177,10 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 				s32 popupright = portraitleft - 8 - popup->age60 * 2 / 3;
 
 				sprintf(popuptext, "%+d", popup->value);
+
+				// points spent, red, as Call of Duty's are; earned, yellow
 				gdl = zombiesDrawTextBR(gdl, popuptext, popupright, pointsbottom + popup->yoffset,
-						0xffff0000 | alpha, g_CharsHandelGothicXs, g_FontHandelGothicXs);
+						(popup->value < 0 ? 0xff303000 : 0xffff0000) | alpha, g_CharsHandelGothicXs, g_FontHandelGothicXs);
 			}
 		}
 	}
