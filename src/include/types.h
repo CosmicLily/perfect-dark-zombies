@@ -2468,6 +2468,12 @@ struct hand {
 	f32 codaimmuzzlex;
 
 	/**
+	 * ... and how far up it, as codaimmuzzlex: Zombies brings the barrel to the
+	 * middle of the view at the sights, its crosshair gone (bondgun.c)
+	 */
+	f32 codaimmuzzley;
+
+	/**
 	 * GoldenEye's shotguns: how many of the five shells on the side of the
 	 * gun are shown, as gunfire.c's numvisibleshells - the reserve left when
 	 * the gun was last loaded, at most five (gegunsShellsLoaded()).

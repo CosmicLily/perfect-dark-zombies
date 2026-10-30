@@ -85,6 +85,10 @@
 
 bool zombiesIsActive(void);
 bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
+
+// Zombies at the sights: the sights stand this far over the bore, which is put
+// under the middle of the view by as much (bgunTickHand...)
+#define ZOMBIE_ADS_SIGHT_OVER_BORE 1.0f
 s32 zombiesHudNameBottom(s32 bottom);
 f32 zombiesGunLowerFrac(void);
 bool zombiesKnifeWantsTrigger(void);
@@ -10172,17 +10176,23 @@ void bgun0f0a5550(s32 handnum)
 		// the gun off to one side and turned its flank to the eye (F3
 		// 20260929-042906, "cod aim. bonds hand looks wrong with the pp7")
 		sp274.f[0] += (inx - func0f0b131c(handnum) - hand->codaimmuzzlex) * player->codaimfrac;
-		sp274.f[1] += (3.5f + gegunsCodAimLift(weaponnum)) * player->codaimfrac;
 		sp274.f[2] += 3.0f * player->codaimfrac;
 
-		// Zombies: held still at the sights, as Call of Duty's is - the gun's
+		// Zombies: the barrel on the middle of the view at the sights, its
+		// height as its side is (codaimmuzzley), so the sights are on what
+		// the shots hit - the crosshair is gone there (zombiesCrosshair()).
+		// The lift of 3.5 every gun was given held the Falcon's sights a
+		// tenth of the screen under the middle, and its shots went over what
+		// they were put on. Held still too, as Call of Duty's is: the gun's
 		// own lag and bob (damppos) gone as it comes up
 		if (zombiesIsActive()) {
 			const f32 frac = player->codaimfrac > 1 ? 1 : player->codaimfrac;
 
 			sp274.f[0] -= hand->damppos.f[0] * frac;
-			sp274.f[1] -= hand->damppos.f[1] * frac;
 			sp274.f[2] -= hand->damppos.f[2] * frac;
+			sp274.f[1] += (-hand->codaimmuzzley - ZOMBIE_ADS_SIGHT_OVER_BORE - sp274.f[1]) * frac;
+		} else {
+			sp274.f[1] += (3.5f + gegunsCodAimLift(weaponnum)) * player->codaimfrac;
 		}
 	}
 #endif
@@ -10786,6 +10796,7 @@ void bgun0f0a5550(s32 handnum)
 				if (WEAPON_IS_GE(weaponnum)
 						|| (hand->state != HANDSTATE_RELOAD && hand->state != HANDSTATE_CHANGEFUNC)) {
 					hand->codaimmuzzlex = hand->muzzlemat.m[3][0] - hand->cammtx.m[3][0];
+					hand->codaimmuzzley = hand->muzzlemat.m[3][1] - hand->cammtx.m[3][1];
 
 					// The Reaper's muzzle is one of its three barrels in
 					// turn, another each frame (above): at the sights the
@@ -10859,6 +10870,7 @@ void bgun0f0a5550(s32 handnum)
 				hand->muzzlez = -((Mtxf *)((uintptr_t)mtxallocation + sp6c * sizeof(Mtxf)))->m[3][2];
 #ifndef PLATFORM_N64
 				hand->codaimmuzzlex = 0.0f;
+				hand->codaimmuzzley = 0.0f;
 #endif
 			} else {
 				hand->muzzlepos.x = hand->posmtx.m[3][0];
@@ -10870,6 +10882,7 @@ void bgun0f0a5550(s32 handnum)
 				hand->muzzlez = -hand->cammtx.m[3][2];
 #ifndef PLATFORM_N64
 				hand->codaimmuzzlex = 0.0f;
+				hand->codaimmuzzley = 0.0f;
 #endif
 			}
 		}

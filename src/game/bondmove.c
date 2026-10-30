@@ -54,6 +54,7 @@
 #ifndef PLATFORM_N64
 #include "getank.h"
 #include "sitchair.h"
+#include "system.h"
 #endif
 
 bool zombiesIsActive(void);
@@ -1156,6 +1157,14 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						g_Vars.currentplayer->insightaimmode = true;
 					}
 
+#ifndef PLATFORM_N64
+					// --zombies-test-ads F: the aim held from level frame F, to see a gun
+					// at its sights (with --screenshot-frame)
+					if (sysArgCheck("--zombies-test-ads") && g_Vars.lvframenum >= sysArgGetInt("--zombies-test-ads", 200)) {
+						g_Vars.currentplayer->insightaimmode = true;
+					}
+#endif
+
 					movedata.canswivelgun = !g_Vars.currentplayer->insightaimmode;
 					movedata.canmanualaim = g_Vars.currentplayer->insightaimmode;
 					movedata.canautoaim = !g_Vars.currentplayer->insightaimmode;
@@ -1526,6 +1535,14 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 					if (weaponHost(bgunGetWeaponNum(HAND_RIGHT)) == WEAPON_HORIZONSCANNER) {
 						g_Vars.currentplayer->insightaimmode = true;
 					}
+
+#ifndef PLATFORM_N64
+					// --zombies-test-ads F: the aim held from level frame F, to see a gun
+					// at its sights (with --screenshot-frame)
+					if (sysArgCheck("--zombies-test-ads") && g_Vars.lvframenum >= sysArgGetInt("--zombies-test-ads", 200)) {
+						g_Vars.currentplayer->insightaimmode = true;
+					}
+#endif
 
 					movedata.canswivelgun = !g_Vars.currentplayer->insightaimmode;
 					movedata.canmanualaim = g_Vars.currentplayer->insightaimmode;
