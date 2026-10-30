@@ -17,3 +17,7 @@ Black Ops II's map collision (clipMap) exported exactly, for port/src/codmap.c's
    `clipmap` (OAT's ASSET_TYPE_CLIPMAP_PVS; `clipmap_unused` is the other).
 
 The converter reads it from there by default (or `--codmap-clip <file>`).
+
+A submodel's (door's, vehicle's) brushes and triangles are in its own space and
+are written as `B <model> ...` and `T <model> ...`; the converter skips them.
+The first line, `# brushes: ...`, counts them (942 of Town's 21,814).

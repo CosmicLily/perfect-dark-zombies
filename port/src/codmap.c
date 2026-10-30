@@ -2797,7 +2797,7 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 	static char line[1 << 16];
 	s32 *matcontents = NULL;
 	s32 nummats = 0;
-	s32 brushes = 0, brushtris = 0, worldtris = 0, modeltris = 0;
+	s32 brushes = 0, brushtris = 0, worldtris = 0, modeltris = 0, localbrushes = 0;
 	const s32 mat = matFind("codmap_clip");
 
 	if (!f) {
@@ -2832,6 +2832,23 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 			}
 
 			s += used;
+
+			// a brush model's (a door's, the bus's) brushes are in its own space,
+			// round its middle, and its entity places it: at the map's origin they
+			// were walls and floors through the middle of Town. The exporter
+			// marks those it can tell (B lines); the rest are told by their
+			// shape, centred on an axis as nothing of Town's is: tall round
+			// height 0 (Town's street is at -55), or wide round x or y 0
+			{
+				const s32 symx = fabsf(mins[0] + maxs[0]) < 2, symy = fabsf(mins[1] + maxs[1]) < 2;
+				const s32 symz = fabsf(mins[2] + maxs[2]) < 2;
+
+				if ((symz && maxs[2] - mins[2] > 150) || symx + symy + symz >= 2
+						|| (symx && maxs[0] - mins[0] > 1000) || (symy && maxs[1] - mins[1] > 1000)) {
+					localbrushes++;
+					continue;
+				}
+			}
 
 			// none of it in the box: past it
 			if (maxs[0] < row->box[0] || mins[0] > row->box[1] || maxs[1] < row->box[2] || mins[1] > row->box[3]
@@ -2906,8 +2923,8 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 	fclose(f);
 	free(matcontents);
 	g_ScanCollision = 1;
-	sysLogPrintf(LOG_NOTE, "codmap: %s: the map's own collision, %d brushes (%d triangles), %d world and %d model triangles",
-			path, brushes, brushtris, worldtris, modeltris);
+	sysLogPrintf(LOG_NOTE, "codmap: %s: the map's own collision, %d brushes (%d triangles), %d world and %d model triangles; %d brushes a brush model's",
+			path, brushes, brushtris, worldtris, modeltris, localbrushes);
 
 	return 1;
 }
