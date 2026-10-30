@@ -11,6 +11,10 @@
 #include "data.h"
 #include "types.h"
 
+#ifndef PLATFORM_N64
+bool zombiesIsActive(void);
+#endif
+
 struct headanim g_HeadAnims[] = {
 	{ ANIM_002B, 9.5, 27, 0, 0,   1.5 },
 	{ ANIM_0029, 7.5, 17, 0, 1.5, 100 },
@@ -170,6 +174,15 @@ void bheadUpdate(f32 arg0, f32 arg1)
 	}
 
 	if (animspeed > 0) {
+#ifndef PLATFORM_N64
+		// Zombies: Call of Duty's gentle bob, a third of Perfect Dark's - the
+		// head's rise and fall and its sway, not its step (x and z are the
+		// walk itself)
+		const f32 bob = zombiesIsActive() ? 0.35f : 1.0f;
+#else
+		const f32 bob = 1.0f;
+#endif
+
 		g_Vars.currentplayer->bondheadmatrices[0].m[3][0] += arg1;
 		g_Vars.currentplayer->bondheadmatrices[0].m[3][2] *= arg0;
 
@@ -180,17 +193,17 @@ void bheadUpdate(f32 arg0, f32 arg1)
 
 		headpos.x = g_Vars.currentplayer->bondheadmatrices[0].m[3][0] * g_Vars.currentplayer->headamplitude;
 		headpos.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] - g_Vars.currentplayer->standheight) *
-			g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
+			g_Vars.currentplayer->headamplitude * bob + g_Vars.currentplayer->standheight;
 		headpos.z = g_Vars.currentplayer->bondheadmatrices[0].m[3][2] * g_Vars.currentplayer->headamplitude;
 
 		if (g_Vars.currentplayer->headanim >= 0) {
-			lookvel.x = g_Vars.currentplayer->bondheadmatrices[0].m[2][0] * g_Vars.currentplayer->sideamplitude;
-			lookvel.y = g_Vars.currentplayer->bondheadmatrices[0].m[2][1] * g_Vars.currentplayer->headamplitude;
-			lookvel.z = (g_Vars.currentplayer->bondheadmatrices[0].m[2][2] - 1.0f) * g_Vars.currentplayer->headamplitude + 1.0f;
+			lookvel.x = g_Vars.currentplayer->bondheadmatrices[0].m[2][0] * g_Vars.currentplayer->sideamplitude * bob;
+			lookvel.y = g_Vars.currentplayer->bondheadmatrices[0].m[2][1] * g_Vars.currentplayer->headamplitude * bob;
+			lookvel.z = (g_Vars.currentplayer->bondheadmatrices[0].m[2][2] - 1.0f) * g_Vars.currentplayer->headamplitude * bob + 1.0f;
 
-			upvel.x = g_Vars.currentplayer->bondheadmatrices[0].m[1][0] * g_Vars.currentplayer->headamplitude;
-			upvel.y = (g_Vars.currentplayer->bondheadmatrices[0].m[1][1] - 1.0f) * g_Vars.currentplayer->headamplitude + 1.0f;
-			upvel.z = g_Vars.currentplayer->bondheadmatrices[0].m[1][2] * g_Vars.currentplayer->headamplitude;
+			upvel.x = g_Vars.currentplayer->bondheadmatrices[0].m[1][0] * g_Vars.currentplayer->headamplitude * bob;
+			upvel.y = (g_Vars.currentplayer->bondheadmatrices[0].m[1][1] - 1.0f) * g_Vars.currentplayer->headamplitude * bob + 1.0f;
+			upvel.z = g_Vars.currentplayer->bondheadmatrices[0].m[1][2] * g_Vars.currentplayer->headamplitude * bob;
 
 			g_Vars.currentplayer->headwalkingtime60 += g_Vars.lvupdate60;
 

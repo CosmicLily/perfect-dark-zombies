@@ -512,6 +512,12 @@ static void bmoveApplyCrosshairSwivel(struct movedata *movedata, f32 mlookscale,
 		// Joystick only or no input - full sway
 		xscale = yscale = PLAYER_EXTCFG().crosshairsway;
 	}
+	// Zombies: the crosshair held in the middle as Call of Duty's is, and the
+	// gun, which points where it is, no longer swinging behind a turn
+	if (zombiesIsActive()) {
+		xscale = yscale = 0;
+	}
+
 	// Joystick x/y scaling
 	// 0.3f for x, 0.1f for y
 	*x = g_Vars.currentplayer->speedtheta * 0.3f * xscale + g_Vars.currentplayer->gunextraaimx;

@@ -2797,6 +2797,12 @@ void bwalkApplyMoveData(struct movedata *data)
 			}
 			g_Vars.currentplayer->speedsideways = 0;
 
+			// --zombies-test-strafe: to the right in place of forward
+			if (sysArgCheck("--zombies-test-strafe")) {
+				g_Vars.currentplayer->speedsideways = 1;
+				g_Vars.currentplayer->speedforwards = 0;
+			}
+
 			if (g_Vars.lvframenum % sysArgGetInt("--zombies-test-walk-every", 20) == 0) {
 				sysLogPrintf(LOG_NOTE, "bwalk: --zombies-test-walk: frame %d at %.0f %.0f %.0f ground %.0f man %.0f",
 						g_Vars.lvframenum, g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->prop->pos.y,
@@ -3076,6 +3082,21 @@ void bwalk0f0c69b8(void)
 
 		spdc = g_Vars.currentplayer->headpos.x;
 		spd8 = g_Vars.currentplayer->headpos.z;
+
+#ifndef PLATFORM_N64
+		// Zombies walks as Call of Duty does: at a steady pace straight from
+		// the stick or the keys. Perfect Dark's step is its head animation's,
+		// smoothed (bheadUpdatePos()): it surges and eases through each stride
+		// and takes a second to come up to speed and to stop - floaty, said
+		// the player. The pace is the animation's own average, measured on
+		// Town's street (--zombies-test-walk, --zombies-test-strafe): 8.55 a
+		// 60th at a walk's 1.08 and 12.7 at a sprint's 1.62 forward, 8.2 at
+		// a strafe's 1
+		if (zombiesIsActive() && !g_Vars.currentplayer->isdead) {
+			spd8 = (g_Vars.currentplayer->speedforwards * spc0 + spc8) * 7.9f;
+			spdc = (g_Vars.currentplayer->speedsideways * spc0 + spc4) * 8.2f;
+		}
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 		if (cheatIsActive(CHEAT_SMALLJO)) {
