@@ -2791,9 +2791,90 @@ static s32 clipFace(const f32 (*v)[3], s32 numv, const f32 n[3], f32 d, const f3
 	return tris;
 }
 
-static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 *centre)
+/**
+ * The brush models standing in Survival: a script_brushmodel's (entities'
+ * "model" "*N") at its origin, unless a zombie_door trigger opens it (the bar's,
+ * the bank's and the barber's buyable doors, the electric door: open, as
+ * Perfect Dark's doors are not here) or it is the lab's hatch or the mature
+ * content's blood. Its script_parameters name the modes it is gone from (Grief's
+ * meat_remove and the like), none of them Survival. The bank's vault doors and
+ * three blockers by the bar and the bank are what this places on Town
+ */
+#define CODCLIP_MODELS 1024
+
+static s32 readPlacedModels(const char *path, f32 (*at)[3], u8 *placed)
 {
 	FILE *f = fopen(path, "rb");
+	char line[512], classname[64] = "", model[32] = "", origin[128] = "", target[128] = "", targetname[128] = "";
+	char opened[64][128];
+	s32 numopened = 0, n = 0, i;
+	struct { s32 model; f32 o[3]; char name[128]; } cand[256];
+	s32 numcand = 0;
+
+	if (!f) {
+		return 0;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		if (line[0] == '{') {
+			classname[0] = model[0] = origin[0] = target[0] = targetname[0] = 0;
+		} else if (line[0] == '}') {
+			if (strcmp(targetname, "zombie_door") == 0 && target[0] && numopened < 64) {
+				snprintf(opened[numopened++], sizeof(opened[0]), "%s", target);
+			}
+
+			if (strcmp(classname, "script_brushmodel") == 0 && model[0] == '*' && numcand < 256
+					&& strcmp(targetname, "lab_secret_hatch") != 0 && strcmp(targetname, "mature_blood") != 0) {
+				cand[numcand].model = atoi(model + 1);
+				cand[numcand].o[0] = cand[numcand].o[1] = cand[numcand].o[2] = 0;
+				sscanf(origin, "%f %f %f", &cand[numcand].o[0], &cand[numcand].o[1], &cand[numcand].o[2]);
+				snprintf(cand[numcand].name, sizeof(cand[0].name), "%s", targetname);
+				numcand++;
+			}
+		} else {
+			char key[64], value[256];
+
+			if (sscanf(line, " \"%63[^\"]\" \"%255[^\"]\"", key, value) == 2) {
+				if (strcmp(key, "classname") == 0) {
+					snprintf(classname, sizeof(classname), "%s", value);
+				} else if (strcmp(key, "model") == 0) {
+					snprintf(model, sizeof(model), "%s", value);
+				} else if (strcmp(key, "origin") == 0) {
+					snprintf(origin, sizeof(origin), "%s", value);
+				} else if (strcmp(key, "target") == 0) {
+					snprintf(target, sizeof(target), "%s", value);
+				} else if (strcmp(key, "targetname") == 0) {
+					snprintf(targetname, sizeof(targetname), "%s", value);
+				}
+			}
+		}
+	}
+
+	fclose(f);
+
+	for (i = 0; i < numcand; i++) {
+		s32 j, door = 0;
+
+		for (j = 0; j < numopened && cand[i].name[0]; j++) {
+			door |= strcmp(opened[j], cand[i].name) == 0;
+		}
+
+		if (!door && cand[i].model > 0 && cand[i].model < CODCLIP_MODELS) {
+			memcpy(at[cand[i].model], cand[i].o, sizeof(at[0]));
+			placed[cand[i].model] = 1;
+			n++;
+		}
+	}
+
+	return n;
+}
+
+static s32 readClipMap(const char *path, const char *entspath, const struct codmaprow *row, const f32 *centre)
+{
+	FILE *f = fopen(path, "rb");
+	static f32 at[CODCLIP_MODELS][3];
+	static u8 placed[CODCLIP_MODELS];
+	s32 numplaced = 0, placedbrushes = 0;
 	static char line[1 << 16];
 	s32 *matcontents = NULL;
 	s32 nummats = 0;
@@ -2804,9 +2885,22 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 		return 0;
 	}
 
+	memset(placed, 0, sizeof(placed));
+	numplaced = readPlacedModels(entspath, at, placed);
+
 	while (fgets(line, sizeof(line), f)) {
 		char *s = line + 2;
-		s32 used;
+		s32 used, model = 0;
+
+		// a brush model's (B, T): in its own space, placed at its entity or left out
+		if ((line[0] == 'B' || line[0] == 'T') && line[1] == ' ') {
+			if (sscanf(s, "%d%n", &model, &used) != 1 || model <= 0 || model >= CODCLIP_MODELS || !placed[model]) {
+				continue;
+			}
+
+			s += used;
+			line[0] = line[0] == 'B' ? 'b' : 't';
+		}
 
 		if (line[0] == 'm' && line[1] == ' ') {
 			s32 index, sflags, cflags;
@@ -2833,6 +2927,13 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 
 			s += used;
 
+			if (model) {
+				for (i = 0; i < 3; i++) {
+					mins[i] += at[model][i];
+					maxs[i] += at[model][i];
+				}
+			}
+
 			// a brush model's (a door's, the bus's) brushes are in its own space,
 			// round its middle, and its entity places it: at the map's origin they
 			// were walls and floors through the middle of Town. The exporter
@@ -2843,8 +2944,8 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 				const s32 symx = fabsf(mins[0] + maxs[0]) < 2, symy = fabsf(mins[1] + maxs[1]) < 2;
 				const s32 symz = fabsf(mins[2] + maxs[2]) < 2;
 
-				if ((symz && maxs[2] - mins[2] > 150) || symx + symy + symz >= 2
-						|| (symx && maxs[0] - mins[0] > 1000) || (symy && maxs[1] - mins[1] > 1000)) {
+				if (!model && ((symz && maxs[2] - mins[2] > 150) || symx + symy + symz >= 2
+						|| (symx && maxs[0] - mins[0] > 1000) || (symy && maxs[1] - mins[1] > 1000))) {
 					localbrushes++;
 					continue;
 				}
@@ -2861,7 +2962,15 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 			for (i = 0; i < numv; i++) {
 				sscanf(s, "%f %f %f%n", &v[i][0], &v[i][1], &v[i][2], &used);
 				s += used;
+
+				if (model) {
+					v[i][0] += at[model][0];
+					v[i][1] += at[model][1];
+					v[i][2] += at[model][2];
+				}
 			}
+
+			placedbrushes += model != 0;
 
 			// the six axial faces
 			for (i = 0; i < 6; i++) {
@@ -2883,6 +2992,11 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 					}
 
 					s += used;
+
+					if (model) {
+						d += n[0] * at[model][0] + n[1] * at[model][1] + n[2] * at[model][2];
+					}
+
 					brushtris += clipFace(v, numv, n, d, centre, mat, row);
 				}
 			}
@@ -2896,6 +3010,14 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 			if (sscanf(s, "%d %f %f %f %f %f %f %f %f %f", &tag, &p[0][0], &p[0][1], &p[0][2],
 						&p[1][0], &p[1][1], &p[1][2], &p[2][0], &p[2][1], &p[2][2]) != 10) {
 				continue;
+			}
+
+			if (model) {
+				s32 k;
+
+				for (k = 0; k < 9; k++) {
+					p[k / 3][k % 3] += at[model][k % 3];
+				}
 			}
 
 			// a triangle's contents are its material's, a model's its own
@@ -2923,8 +3045,8 @@ static s32 readClipMap(const char *path, const struct codmaprow *row, const f32 
 	fclose(f);
 	free(matcontents);
 	g_ScanCollision = 1;
-	sysLogPrintf(LOG_NOTE, "codmap: %s: the map's own collision, %d brushes (%d triangles), %d world and %d model triangles; %d brushes a brush model's",
-			path, brushes, brushtris, worldtris, modeltris, localbrushes);
+	sysLogPrintf(LOG_NOTE, "codmap: %s: the map's own collision, %d brushes (%d triangles), %d world and %d model triangles; %d brushes a brush model's; %d brush models placed (%d brushes)",
+			path, brushes, brushtris, worldtris, modeltris, localbrushes, numplaced, placedbrushes);
 
 	return 1;
 }
@@ -3280,7 +3402,11 @@ static s32 codmapConvertRow(const struct codmaprow *row, const char *indir, cons
 						getenv("USERPROFILE") ? getenv("USERPROFILE") : ".", row->map, row->map);
 			}
 
-			if (!readClipMap(clip, row, centre) && !readScan(scan, row, centre)) {
+			char ents[1024];
+
+			codmapEntsPath(ents, sizeof(ents), indir, row->map);
+
+			if (!readClipMap(clip, ents, row, centre) && !readScan(scan, row, centre)) {
 				addRamps(row);
 			}
 		}
