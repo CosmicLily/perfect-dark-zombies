@@ -10529,8 +10529,11 @@ f32 zombiesBulletScale(struct prop *aprop)
  * guns takes the weapon file of the nearest Black Ops II one (the dump's
  * zm_*\/weapons/<gun>_zm and _upgraded_zm) - its damage up close, its
  * minDamage past minDamageRange (inches; a Perfect Dark unit is a
- * centimetre), straight between, and its locHead, locTorsoUpper,
- * locTorsoLower and arm multipliers. _zm.gsc's actor_damage_override passes
+ * centimetre), straight between, and its locHead, locTorsoMid,
+ * locTorsoLower and arm multipliers. The torso's is locTorsoMid, not
+ * locTorsoUpper: Perfect Dark's torso is the chest and the belly, and most
+ * body shots are Call of Duty's middle - with the upper chest's 1.25 the
+ * M1911 killed round 1's zombie (150) in 6 where Black Ops II's takes 8. _zm.gsc's actor_damage_override passes
  * that through untouched but for the perks. Perfect Dark's own numbers were
  * made for simulants, which have a twentieth of a zombie's health by round
  * 10 and none of its head multiplier: a rifle did the same as a pistol.
@@ -10558,11 +10561,11 @@ struct zombiecodgun {
 	struct zombiecodshot up;
 };
 
-#define ZOMBIE_M1911   { 20,   20,   500,  1300, 3.5f, 1.25f, 1.1f, 0.85f }, { 1000, 1000, 0,    0,    4,    1,    0.9f, 0.8f }
+#define ZOMBIE_M1911   { 20,   20,   500,  1300, 3.5f, 1,     1.1f, 0.85f }, { 1000, 1000, 0,    0,    4,    1,    0.9f, 0.8f }
 #define ZOMBIE_KAP40   { 150,  100,  700,  1800, 2.5f, 1,     1,    1     }, { 200,  140,  700,  1800, 2.5f, 1,    1,    1    }
 #define ZOMBIE_FIVE7   { 160,  90,   800,  1800, 3.5f, 1,     1,    1     }, { 300,  180,  800,  1800, 3.5f, 1,    1,    1    }
 #define ZOMBIE_B23R    { 160,  100,  500,  1800, 2,    1,     1,    1     }, { 200,  150,  500,  1800, 2,    1,    1,    1    }
-#define ZOMBIE_PYTHON  { 1000, 300,  384,  1200, 1.5f, 1,     1,    1     }, { 1000, 600,  384,  1200, 3,    1.5f, 1.5f, 1.25f }
+#define ZOMBIE_PYTHON  { 1000, 300,  384,  1200, 1.5f, 1,     1,    1     }, { 1000, 600,  384,  1200, 3,    1,    1.5f, 1.25f }
 #define ZOMBIE_MP5K    { 100,  50,   800,  1800, 4,    1,     1,    1     }, { 140,  80,   800,  1800, 5,    1,    1,    1    }
 #define ZOMBIE_PDW57   { 90,   90,   425,  1351, 4,    1,     1,    1     }, { 175,  100,  425,  1351, 5,    1,    1,    1    }
 #define ZOMBIE_SKORPION { 110, 40,   400,  851,  4,    1,     1,    1     }, { 210,  60,   400,  851,  5,    1,    1,    1    }
@@ -10570,7 +10573,7 @@ struct zombiecodgun {
 #define ZOMBIE_UZI     { 100,  60,   750,  1000, 4,    1,     1,    1     }, { 230,  80,   300,  1250, 4,    1,    1,    1    }
 #define ZOMBIE_MP40    { 110,  60,   800,  1800, 4,    1,     1,    1     }, { 200,  120,  800,  1800, 5,    1,    1,    1    }
 #define ZOMBIE_LSAT    { 195,  90,   1250, 3000, 3,    1,     1,    1     }, { 225,  120,  1250, 3000, 4,    1,    1,    1    }
-#define ZOMBIE_RPD     { 140,  100,  750,  1800, 3,    1,     1,    1     }, { 180,  140,  750,  1800, 3,    2,    1,    1    }
+#define ZOMBIE_RPD     { 140,  100,  750,  1800, 3,    1,     1,    1     }, { 180,  140,  750,  1800, 3,    1,    1,    1    }
 #define ZOMBIE_GALIL   { 150,  100,  1600, 3000, 4,    1,     1,    1     }, { 220,  150,  1600, 3000, 5,    1,    1,    1    }
 #define ZOMBIE_SCAR    { 210,  100,  2250, 3000, 3.5f, 1,     1,    1     }, { 300,  150,  2250, 3000, 4,    1,    1,    1    }
 #define ZOMBIE_MTAR    { 140,  100,  1600, 2500, 4,    1,     1,    1     }, { 195,  150,  1600, 2500, 5,    1,    1,    1    }
@@ -10578,9 +10581,9 @@ struct zombiecodgun {
 #define ZOMBIE_TYPE25  { 110,  70,   1200, 2750, 4,    1,     1,    1     }, { 160,  110,  1200, 2750, 5,    1,    1,    1    }
 #define ZOMBIE_AK47    { 150,  100,  1500, 2000, 3,    1,     1,    1     }, { 250,  200,  1500, 2000, 5,    1,    1,    1    }
 #define ZOMBIE_870     { 310,  15,   400,  900,  1,    1,     1,    1     }, { 600,  30,   400,  1000, 1,    1,    1,    1    }
-#define ZOMBIE_DSR50   { 800,  550,  4000, 5000, 10,   1.5f,  1.5f, 1.5f  }, { 1000, 1000, 4000, 5000, 10,   5,    3,    2.5f }
-#define ZOMBIE_BARRETT { 600,  500,  4000, 5000, 10,   1.5f,  1.1f, 1     }, { 900,  900,  4000, 5000, 10,   3,    3,    2.5f }
-#define ZOMBIE_BALLISTA { 150, 150,  3000, 3001, 4,    1.8f,  1,    1     }, { 400,  200,  4000, 4000, 10,   6,    1,    1    }
+#define ZOMBIE_DSR50   { 800,  550,  4000, 5000, 10,   1.5f,  1.5f, 1.5f  }, { 1000, 1000, 4000, 5000, 10,   1.5f, 3,    2.5f }
+#define ZOMBIE_BARRETT { 600,  500,  4000, 5000, 10,   1,     1.1f, 1     }, { 900,  900,  4000, 5000, 10,   1,    3,    2.5f }
+#define ZOMBIE_BALLISTA { 150, 150,  3000, 3001, 4,    1.5f,  1,    1     }, { 400,  200,  4000, 4000, 10,   2,    1,    1    }
 
 static const struct zombiecodgun g_ZombieCodGuns[] = {
 	// pistols: the Falcon 2 is the starting M1911, Mustang and Sally upgraded
