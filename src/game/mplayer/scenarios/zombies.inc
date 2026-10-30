@@ -10296,8 +10296,10 @@ f32 zombiesSprintGunFrac(void)
  */
 #define ZOMBIE_XHAIR_MOVE    1.5f  // out at a full run
 #define ZOMBIE_XHAIR_POP     0.8f  // out a round
-#define ZOMBIE_XHAIR_BEAT    2.0f  // out a beat of a grenade's fuse
+#define ZOMBIE_XHAIR_BEAT    4.0f  // out a beat of a grenade's fuse: a pop the eye catches
 #define ZOMBIE_XHAIR_MAX     4.0f
+#define ZOMBIE_XHAIR_FUSEMAX 7.0f  // the most with a grenade held
+#define ZOMBIE_XHAIR_FUSEFALL 4.5f // a beat's fall a second: slower than a shot's, so it is seen
 #define ZOMBIE_XHAIR_SETTLE  9.0f  // the pop's fall a second (a fraction of it)
 #define ZOMBIE_XHAIR_EASE    12.0f // the move's way to its target a second
 #define ZOMBIE_XHAIR_BEAT60  60    // a beat a second ...
@@ -10308,6 +10310,7 @@ static f32 g_ZombieXhairMove[MAX_PLAYERS];
 static s32 g_ZombieXhairAmmo[MAX_PLAYERS];   // the magazines as last seen, with ...
 static s32 g_ZombieXhairWeapon[MAX_PLAYERS]; // ... the gun they were (none at first: no pop)
 static s32 g_ZombieXhairBeat[MAX_PLAYERS];   // the fuse's beats so far, -1 none
+static f32 g_ZombieXhairFuse[MAX_PLAYERS];   // a beat's pop, falling
 
 f32 zombiesGunLowerFrac(void);
 
@@ -10369,10 +10372,17 @@ s32 zombiesCrosshair(f32 *spread)
 	beat = holding ? zombiesFuseBeat(g_ZombieCook60[playernum]) : -1;
 
 	if (beat > g_ZombieXhairBeat[playernum]) {
-		g_ZombieXhairPop[playernum] += ZOMBIE_XHAIR_BEAT;
+		g_ZombieXhairFuse[playernum] = ZOMBIE_XHAIR_BEAT;
 	}
 
 	g_ZombieXhairBeat[playernum] = beat;
+
+	if (!holding) {
+		g_ZombieXhairFuse[playernum] = 0;
+	}
+
+	k = dt * ZOMBIE_XHAIR_FUSEFALL;
+	g_ZombieXhairFuse[playernum] -= g_ZombieXhairFuse[playernum] * (k > 1 ? 1 : k);
 
 	// the pop settling, the move easing to how fast the player goes
 	k = dt * ZOMBIE_XHAIR_SETTLE;
@@ -10412,6 +10422,12 @@ s32 zombiesCrosshair(f32 *spread)
 	}
 
 	*spread = *spread > ZOMBIE_XHAIR_MAX ? ZOMBIE_XHAIR_MAX : *spread;
+
+	// a grenade's beat over it all, crouched or not
+	if (holding) {
+		*spread += g_ZombieXhairFuse[playernum];
+		*spread = *spread > ZOMBIE_XHAIR_FUSEMAX ? ZOMBIE_XHAIR_FUSEMAX : *spread;
+	}
 
 	return 2;
 }
