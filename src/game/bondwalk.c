@@ -3306,3 +3306,20 @@ void bwalkTick(void)
 	playerUpdatePerimInfo();
 	doorsCheckAutomatic();
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Where the player stands, logged with each screenshot (screenshot.c), so a
+ * report of being stuck comes with the spot to test it at
+ * (--zombies-test-at X,Z --zombies-test-at-y Y)
+ */
+void bwalkLogWhere(void)
+{
+	if (g_Vars.currentplayer && g_Vars.currentplayer->prop) {
+		sysLogPrintf(LOG_NOTE, "bwalk: the player at %.0f %.0f %.0f facing %.0f, ground %.0f man %.0f, stage 0x%x",
+				g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->prop->pos.y, g_Vars.currentplayer->prop->pos.z,
+				g_Vars.currentplayer->vv_theta, g_Vars.currentplayer->vv_ground, g_Vars.currentplayer->vv_manground,
+				g_Vars.stagenum);
+	}
+}
+#endif

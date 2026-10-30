@@ -77,6 +77,8 @@ static bool screenshotPickFilename(char *out, u32 outSize)
 	return false;
 }
 
+void bwalkLogWhere(void); // bondwalk.c: where the player stands
+
 /**
  * Runs with the frame drawn and not yet presented, which is the only point the
  * finished image is still readable.
@@ -114,6 +116,7 @@ static void screenshotPreSwap(void)
 	if (screenshotPickFilename(filename, sizeof(filename))
 			&& pngWrite(filename, rgb, width, height, 3, true)) {
 		sysLogPrintf(LOG_NOTE, "screenshot: %s", filename);
+		bwalkLogWhere();
 	}
 
 	free(rgb);
