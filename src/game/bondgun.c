@@ -10128,7 +10128,12 @@ void bgun0f0a5550(s32 handnum)
 	}
 #endif
 
-	if (hand->firing && shootfunc && g_Vars.lvupdate240 != 0 && shootfunc->recoilsettings != NULL) {
+	// (not Zombies': its shots kick the view, as Black Ops II's, zombiesKickTick())
+	if (hand->firing && shootfunc && g_Vars.lvupdate240 != 0 && shootfunc->recoilsettings != NULL
+#ifndef PLATFORM_N64
+			&& !zombiesIsActive()
+#endif
+			) {
 		sp274.x += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->xrange * hand->finalmult[0];
 		sp274.y += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->yrange * hand->finalmult[0];
 		sp274.z += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->zrange * hand->finalmult[0];

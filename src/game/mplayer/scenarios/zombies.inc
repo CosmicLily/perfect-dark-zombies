@@ -10448,6 +10448,174 @@ s32 zombiesCrosshair(f32 *spread)
 	return 2;
 }
 
+/**
+ * A shot's kick, as Black Ops II's: the view thrown up and to the side at a
+ * speed (degrees a second) between the gun's ViewKickPitchMin and Max and its
+ * ViewKickYawMin and Max, and pulled back to where it was at its
+ * ViewKickCenterSpeed (degrees a second a second) - a flick of half a degree
+ * or so that settles in a tenth of a second, the view coming back to its
+ * aim. The hip's and the sights' (hipViewKick*, adsViewKick*), blended as the
+ * gun comes up. Perfect Dark's own was the gun jolted to a new place at
+ * random every frame it fired (recoilsettings, left out for Zombies in
+ * bondgun.c): the sights shook rather than kicked.
+ */
+struct zombiekickset {
+	f32 pitchmin, pitchmax, yawmin, yawmax, center;
+};
+
+struct zombiekick {
+	s32 weaponnum;
+	struct zombiekickset hip;
+	struct zombiekickset ads;
+};
+
+static const struct zombiekick g_ZombieKicks[] = {
+	{ WEAPON_FALCON2,          { 25, 45, 35, -35, 1100 }, { 25, 45, 35, -35, 1100 } }, // m1911
+	{ WEAPON_FALCON2_SILENCER, { -15, 10, 25, -25, 1500 }, { -50, 75, 25, -25, 1500 } }, // kard
+	{ WEAPON_FALCON2_SCOPE,    { 5, 25, 15, -15, 1100 }, { 30, 55, 55, -30, 1100 } }, // fiveseven
+	{ WEAPON_PP9I,             { 5, 25, 15, -15, 1100 }, { 30, 55, 55, -30, 1100 } }, // fiveseven
+	{ WEAPON_CC13,             { -15, 10, 25, -25, 1500 }, { -50, 75, 25, -25, 1500 } }, // kard
+	{ WEAPON_MAGSEC4,          { -10, 55, 35, -35, 1100 }, { -10, 55, 35, -35, 1100 } }, // beretta93r
+	{ WEAPON_MAULER,           { 5, 25, 15, -15, 1100 }, { 30, 55, 55, -30, 1100 } }, // fiveseven
+	{ WEAPON_PHOENIX,          { -15, 10, 25, -25, 1500 }, { -50, 75, 25, -25, 1500 } }, // kard
+	{ WEAPON_DY357MAGNUM,      { 60, 80, -40, -50, 1500 }, { 60, 80, -40, -50, 1500 } }, // python
+	{ WEAPON_DY357LX,          { 60, 80, -40, -50, 1500 }, { 60, 80, -40, -50, 1500 } }, // python
+	{ WEAPON_CMP150,           { -30, 70, 70, -80, 1700 }, { -30, 70, 70, -80, 1700 } }, // mp5k
+	{ WEAPON_DMC,              { -30, 70, 70, -80, 1700 }, { -30, 70, 70, -80, 1700 } }, // mp5k
+	{ WEAPON_CYCLONE,          { -15, 32, -30, 15, 1550 }, { -35, 60, -60, 30, 1550 } }, // pdw57
+	{ WEAPON_RCP45,            { -15, 32, -30, 15, 1550 }, { -35, 60, -60, 30, 1550 } }, // pdw57
+	{ WEAPON_CALLISTO,         { -42.5f, 60, -50, 50, 1600 }, { -42.5f, 60, -50, 50, 1600 } }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,        { -22, 32, -27, 27, 1625 }, { -45, 55, -50, 50, 1625 } }, // qcw05
+	{ WEAPON_KL01313,          { -20, 60, 10, -60, 1700 }, { -20, 60, 10, -60, 1700 } }, // uzi
+	{ WEAPON_ZZT,              { -44, 100, 100, -100, 2538 }, { -44, 104, 104, -119, 2538 } }, // mp40
+	{ WEAPON_DRAGON,           { -20, 60, 10, -60, 1500 }, { -20, 60, 10, -60, 1500 } }, // galil
+	{ WEAPON_K7AVENGER,        { 15, 60, -57.5f, 25, 1500 }, { 15, 60, -57.5f, 25, 1500 } }, // scar
+	{ WEAPON_AR34,             { 15, 26, -22, 22, 1500 }, { 15, 65, -100, 100, 1500 } }, // tar21
+	{ WEAPON_SUPERDRAGON,      { -20, 70, 70, -50, 1400 }, { -20, 70, 70, -50, 1400 } }, // fnfal
+	{ WEAPON_KF7SPECIAL,       { -20, 28, -22, 7, 300 }, { -25, 45, -65, 65, 550 } }, // type95
+	{ WEAPON_AR53,             { -30, 60, 60, -60, 1500 }, { -30, 60, 60, -60, 1500 } }, // ak47
+	{ WEAPON_RCP120,           { -16, 30, -25, 25, 1750 }, { -35, 55, -50, 50, 1750 } }, // lsat
+	{ WEAPON_REAPER,           { -35, 60, -50, 50, 1700 }, { -35, 60, -50, 50, 1700 } }, // rpd
+	{ WEAPON_SHOTGUN,          { 38, 48, -48, -48, 1000 }, { 75, 95, -75, -95, 1000 } }, // 870mcs
+	{ WEAPON_SNIPERRIFLE,      { 80, 100, -50, -55, 200 }, { 67, 67, 10, -60, 300 } }, // dsr50
+	{ WEAPON_FARSIGHT,         { 80, 95, -80, -95, 800 }, { 70, 85, -65, 35, 500 } }, // barretm82
+	{ WEAPON_CROSSBOW,         { 40, 60, -50, -55, 500 }, { 40, 40, 25, -40, 500 } }, // ballista
+};
+
+static f32 g_ZombieKickAng[MAX_PLAYERS][2]; // pitch (up) and yaw, degrees off the aim
+static f32 g_ZombieKickVel[MAX_PLAYERS][2];
+static s32 g_ZombieKickAmmo[MAX_PLAYERS];
+static s32 g_ZombieKickWeapon[MAX_PLAYERS];
+
+// bondmove.c, a tick of the current player's look: the shots fired since the
+// last (the magazines down, the gun the same) kicked, the kick moved on and
+// put on the view
+void zombiesKickTick(void)
+{
+	struct player *player = g_Vars.currentplayer;
+	const s32 p = g_Vars.currentplayernum;
+	const struct zombiekick *row = NULL;
+	const f32 dt = g_Vars.lvupdate60freal / 60.0f;
+	f32 frac;
+	f32 center[2];
+	s32 weaponnum;
+	s32 ammo = 0;
+	s32 shots = 0;
+	s32 h;
+	s32 i;
+
+	if (!zombiesIsActive() || !player || p < 0 || p >= MAX_PLAYERS) {
+		return;
+	}
+
+	weaponnum = player->gunctrl.weaponnum;
+
+	for (h = 0; h < 2; h++) {
+		if (player->hands[h].inuse) {
+			ammo += player->hands[h].loadedammo[0] + player->hands[h].loadedammo[1];
+		}
+	}
+
+	if (weaponnum == g_ZombieKickWeapon[p] && g_ZombieKickAmmo[p] > ammo) {
+		shots = g_ZombieKickAmmo[p] - ammo;
+		shots = shots > 3 ? 3 : shots;
+	}
+
+	g_ZombieKickAmmo[p] = ammo;
+	g_ZombieKickWeapon[p] = weaponnum;
+
+	// --zombies-test-kick N: a shot every N frames, the kick logged with --zombies-log-kick
+	if (sysArgCheck("--zombies-test-kick") && g_Vars.lvframenum > 200 && g_Vars.lvframenum % sysArgGetInt("--zombies-test-kick", 60) == 0) {
+		shots = 1;
+	}
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieKicks); i++) {
+		if (g_ZombieKicks[i].weaponnum == weaponHost(weaponnum)) {
+			row = &g_ZombieKicks[i];
+			break;
+		}
+	}
+
+	frac = player->codaimfrac < 0 ? 0 : player->codaimfrac > 1 ? 1 : player->codaimfrac;
+	center[0] = center[1] = 1000;
+
+	if (row) {
+		const struct zombiekickset *a = &row->hip;
+		const struct zombiekickset *b = &row->ads;
+		const f32 pmin = a->pitchmin + (b->pitchmin - a->pitchmin) * frac;
+		const f32 pmax = a->pitchmax + (b->pitchmax - a->pitchmax) * frac;
+		const f32 ymin = a->yawmin + (b->yawmin - a->yawmin) * frac;
+		const f32 ymax = a->yawmax + (b->yawmax - a->yawmax) * frac;
+
+		center[0] = center[1] = a->center + (b->center - a->center) * frac;
+
+		for (i = 0; i < shots; i++) {
+			g_ZombieKickVel[p][0] += pmin + (pmax - pmin) * RANDOMFRAC();
+			g_ZombieKickVel[p][1] += ymin + (ymax - ymin) * RANDOMFRAC();
+		}
+	}
+
+	for (i = 0; i < 2; i++) {
+		const f32 old = g_ZombieKickAng[p][i];
+		f32 *ang = &g_ZombieKickAng[p][i];
+		f32 *vel = &g_ZombieKickVel[p][i];
+
+		if (*ang == 0 && *vel == 0) {
+			continue;
+		}
+
+		*ang += *vel * dt;
+
+		// pulled back towards the aim, and stopped on it
+		if (*ang > 0) {
+			*vel -= center[i] * dt;
+		} else if (*ang < 0) {
+			*vel += center[i] * dt;
+		}
+
+		if ((old > 0 && *ang <= 0) || (old < 0 && *ang >= 0)) {
+			*ang = 0;
+			*vel = 0;
+		}
+
+		if (i == 0) {
+			player->vv_verta += *ang - old;
+		} else {
+			player->vv_theta += *ang - old;
+
+			if (player->vv_theta >= 360) {
+				player->vv_theta -= 360;
+			} else if (player->vv_theta < 0) {
+				player->vv_theta += 360;
+			}
+		}
+
+		if (sysArgCheck("--zombies-log-kick") && *ang != 0) {
+			sysLogPrintf(LOG_NOTE, "zombies: kick %s %.2f (verta %.2f)", i == 0 ? "pitch" : "yaw", *ang, player->vv_verta);
+		}
+	}
+}
+
 // bondmove.c: the Sprint button pressed (BUTTON_SPRINT), for the next tick
 void zombiesSprintPress(void)
 {

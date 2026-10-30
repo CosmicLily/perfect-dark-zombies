@@ -59,6 +59,7 @@
 bool zombiesIsActive(void);
 bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
 f32 zombiesAdsLookScale(void); // zombies.inc
+void zombiesKickTick(void); // zombies.inc
 void zombiesQuickMelee(void);
 bool zombiesTryDive(void);
 void zombiesTickDive(void);
@@ -2424,6 +2425,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	// Zombies has Call of Duty's sprint in its place (zombies.inc)
 	if (zombiesIsActive()) {
 		zombiesSprintTick();
+		zombiesKickTick();
 	} else
 #endif
 	if (g_Vars.currentplayer->speedmaxtime60 >= TICKS(180)) {
