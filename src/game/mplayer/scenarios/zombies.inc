@@ -1444,7 +1444,7 @@ void zombiesAddSimulants(void)
 // machine 210 tall and 90 across
 #define ZOMBIE_JUGG_SCALE      23
 #define ZOMBIE_JUGG_COST       2500
-#define ZOMBIE_JUGG_HEALTH     2.5f   // healthscale: chrDamage() divides by it
+#define ZOMBIE_JUGG_HEALTH     1.6f   // healthscale, chrDamage() divides by it: _zm_perks.gsc's zombie_perk_juggernaut_health 160 of 100
 #define ZOMBIE_JUGG_RANGE      170.0f // how near the machine buying works
 #define ZOMBIE_JUGG_HOLD60     15     // how long B is held to buy
 
@@ -13190,9 +13190,15 @@ static void zombiesTickDowned(void)
 
 			continue;
 		}
+		// the bleed-out clock runs on while someone is at it, as
+		// _zm_laststand.gsc's laststand_bleedout() does; at nothing left it
+		// waits for a revive under way to finish
+		if (g_ZombieBleed60[i] > 0) {
+			g_ZombieBleed60[i] -= g_Vars.lvupdate60;
+		}
 
 		if (reviver >= 0) {
-			// the clock stops while someone is at it; twice as fast for a
+			// the bleed-out clock runs on meanwhile (laststand_bleedout()); twice as fast for a
 			// reviver with Quick Revive
 			g_ZombieRevive60[i] += g_Vars.lvupdate60
 				* (zombiesPlayerHasPerk(reviver, ZOMBIEPERK_QUICKREVIVE) ? 2 : 1);
@@ -13207,8 +13213,6 @@ static void zombiesTickDowned(void)
 
 			continue;
 		}
-
-		g_ZombieBleed60[i] -= g_Vars.lvupdate60;
 
 		if (g_ZombieBleed60[i] <= 0) {
 			// bled out: dead now, and back at the next round
@@ -19775,7 +19779,7 @@ static s32 zombiesBarrierPhase60(const struct zombiebarrierspot *spot, s32 k, s3
  */
 #define ZOMBIE_REACH_HITAT 0.45f
 #define ZOMBIE_REACH_DEPTH 75.0f   // how far out from the boards' face a player is in reach
-#define ZOMBIE_REACH_BLOW  0.60f   // of a player's health: Black Ops II's meleedamage 60 of 100 (250 with Juggernog)
+#define ZOMBIE_REACH_BLOW  0.60f   // of a player's health: Black Ops II's meleedamage 60 of 100 (160 with Juggernog)
 #define ZOMBIE_REACH_REST60 120    // between one swipe through the boards and the next, tearing at them meanwhile
 
 
@@ -19831,8 +19835,8 @@ static void zombiesReachHit(struct chrdata *zchr, s32 playernum)
 	guNormalize(&dir.x, &dir.y, &dir.z);
 
 	// chrDamage() takes a player's at an eighth, over its health scale, which
-	// is Juggernog's (2.5): a blow is half of a player's health without it
-	// and a fifth with it, two hits down or five, as Black Ops II's. It was
+	// is Juggernog's (1.6): a blow is 60% of a player's health without it
+	// and 37.5% with it, two hits down or three, as Black Ops II's. It was
 	// sent times the health scale, which chrDamage() took back off, and
 	// Juggernog did nothing against a blow. And on its way chrDamage() turned
 	// a fist's hit by its side (0.4 from the front, 0.7 the side), the torso
@@ -21525,9 +21529,9 @@ static bool zombiesBoxPrompt(s32 playernum, char *text)
  * Alone, fire or accept ends the scoreboard early.
  */
 #define ZOMBIE_GO_FALL60       75          // the fall to the floor
-#define ZOMBIE_GO_TEXT60       40          // GAME OVER fades in from here
-#define ZOMBIE_GO_TEXTIN60     45          // ... over this long
-#define ZOMBIE_GO_PAN60        330         // black, and the camera over the arena
+#define ZOMBIE_GO_TEXT60       6           // GAME OVER fades in from here (_zm.gsc end_game(): 0.1 s,
+#define ZOMBIE_GO_TEXTIN60     60          // over a second, held to 5.2 s, then the intermission)
+#define ZOMBIE_GO_PAN60        312         // black, and the camera over the arena
 #define ZOMBIE_GO_BLACK60      30          // the fade to black and the fade back each
 #define ZOMBIE_GO_SKIP60       (ZOMBIE_GO_PAN60 + 150) // alone, fire or accept ends it from here
 // how long until the end screens: the whole of Tranzit's game over song (21
@@ -24899,8 +24903,9 @@ static Gfx *zombiesRenderGameOver(Gfx *gdl)
 
 			gdl = text0f153628(gdl);
 
-			y = top + height * 34 / 100;
-			gdl = zombiesDrawCentred(gdl, "GAME OVER", centrex, y, 0xc8141400 | alpha, bigchars, bigfont, 2);
+			// white, 130 and 100 above the middle of 480, as end_game()'s hud elems
+			y = top + height * 23 / 100 - zombiesLineHeight(bigchars, bigfont);
+			gdl = zombiesDrawCentred(gdl, "GAME OVER", centrex, y, 0xffffff00 | alpha, bigchars, bigfont, 2);
 			y += zombiesLineHeight(bigchars, bigfont) * 2 + 6;
 
 			sprintf(text, "You Survived %d Round%s", g_ZombieRound, g_ZombieRound == 1 ? "" : "s");
