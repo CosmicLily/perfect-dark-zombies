@@ -17599,49 +17599,186 @@ static Gfx *zombiesRenderNukeFlash(Gfx *gdl)
 
 static Gfx *zombiesDrawTextBL(Gfx *gdl, char *text, s32 x, s32 bottomy, u32 colour, struct fontchar *chars, struct font *font);
 
-// Insta-Kill's, Double Points' and Fire Sale's time left, low in the middle of the view,
-// blinking for the last five seconds
+/**
+ * Hurt, the edges of the view go red, as Call of Duty's do, in place of
+ * Perfect Dark's flash over all of it (player.c leaves that out in Zombies):
+ * deeper the less health there is, and drawn back in as it comes back. A hit
+ * darkens them for a moment over that, and at a third of health or under they
+ * beat. Bands of a little red each, nested from the edge in, make the fade.
+ */
+#define ZOMBIE_HURT_BANDS 14
+
+static Gfx *zombiesRenderHurtEdges(Gfx *gdl)
+{
+	struct player *player = g_Vars.currentplayer;
+	const s32 l = viGetViewLeft();
+	const s32 t = viGetViewTop();
+	const s32 w = viGetViewWidth();
+	const s32 h = viGetViewHeight();
+	f32 frac;
+	f32 hurt;
+	f32 depth;
+	s32 alpha;
+	s32 i;
+
+	if (player == NULL || player->isdead) {
+		return gdl;
+	}
+
+	frac = playerGetHealthFrac();
+	hurt = 1 - frac;
+	hurt = hurt < 0 ? 0 : hurt > 1 ? 1 : hurt;
+
+	// a hit's darkening, gone in half a second
+	if (player->damageshowtime >= 0 && player->damageshowtime < 30) {
+		hurt += 0.35f * (30 - player->damageshowtime) / 30;
+	}
+
+	// the beat at low health, about once a second
+	if (frac <= 0.34f) {
+		hurt += 0.12f * (0.5f + 0.5f * sinf(g_Vars.lvframe60 * (2 * M_PI / 54.0f)));
+	}
+
+	if (hurt <= 0.02f) {
+		return gdl;
+	}
+
+	hurt = hurt > 1.2f ? 1.2f : hurt;
+
+	// how far in the red reaches, and how much each band adds
+	depth = 0.08f + 0.14f * (hurt > 1 ? 1 : hurt);
+	alpha = (s32)(hurt * 0x22);
+
+	if (alpha <= 0) {
+		return gdl;
+	}
+
+	gdl = text0f153628(gdl);
+
+	for (i = 0; i < ZOMBIE_HURT_BANDS; i++) {
+		f32 k = (f32)(ZOMBIE_HURT_BANDS - i) / ZOMBIE_HURT_BANDS;
+		s32 dx = (s32)(w * depth * k);
+		s32 dy = (s32)(h * depth * 1.2f * k);
+		u32 colour = 0x8a000000 | alpha;
+
+		gdl = text0f153a34(gdl, l, t, l + w, t + dy, colour);
+		gdl = text0f153a34(gdl, l, t + h - dy, l + w, t + h, colour);
+		gdl = text0f153a34(gdl, l, t + dy, l + dx, t + h - dy, colour);
+		gdl = text0f153a34(gdl, l + w - dx, t + dy, l + w, t + h - dy, colour);
+	}
+
+	gdl = text0f153780(gdl);
+
+	return gdl;
+}
+
+#ifndef PLATFORM_N64
+#include "menuimage.h"
+struct menuimage *zombiePowerupImage(s32 powerup);
+#endif
+
+#define ZOMBIE_POWERUP_ICON_SIZE 22 // a 240-line screen's pixels
+
+// Whether a power-up's icon is showing at this point of its time: Black Ops'
+// blink as it runs out, slow in the last ten seconds and fast in the last
+// five (the off and on halves 0.2 then 0.1 seconds long, as Black Ops'
+// _zombiemode_powerups.gsc waits them)
+static bool zombiesPowerupShowing(s32 left60)
+{
+	if (left60 < 300) {
+		return (left60 / 6) % 2 == 0;
+	}
+
+	if (left60 < 600) {
+		return (left60 / 12) % 2 == 0;
+	}
+
+	return true;
+}
+
+// Insta-Kill's, Double Points' and Fire Sale's icons in a row low in the
+// middle of the view while they last, as Black Ops II has them: no time
+// written, only the blink as each runs out. A power-up with no picture of the
+// player's (zombieperks.c) is its name in its colour.
 static Gfx *zombiesRenderPowerupTimers(Gfx *gdl)
 {
 	struct fontchar *chars = g_CharsHandelGothicSm;
 	struct font *font = g_FontHandelGothicSm;
-	char text[48];
-	s32 line = 0;
+	const f32 s = viGetViewHeight() / 240.0f;
+	const s32 size = (s32)(ZOMBIE_POWERUP_ICON_SIZE * s + 0.5f);
+	const s32 gap = (s32)(6 * s + 0.5f);
+	const s32 bottom = viGetViewTop() + viGetViewHeight() * 90 / 100;
+	const char *names[3] = { "INSTA-KILL", "DOUBLE POINTS", "FIRE SALE" };
+	const u32 colours[3] = { 0xff6060e0, 0xffe040e0, 0xff8040e0 };
+	s32 widths[3];
+	s32 total = 0;
+	s32 x;
 	s32 k;
 
 	for (k = 0; k < 3; k++) {
 		s32 left = k == 0 ? g_ZombieInstaKill60 : k == 1 ? g_ZombieDoublePoints60 : g_ZombieFireSale60;
-		u32 colour = k == 0 ? 0xff6060e0 : k == 1 ? 0xffe040e0 : 0xff8040e0;
-		s32 textwidth;
 		s32 textheight;
+
+		widths[k] = 0;
 
 		if (left <= 0) {
 			continue;
 		}
 
-		if (left < 300 && (left / 15) % 2) {
-			line++;
+#ifndef PLATFORM_N64
+		if (zombiePowerupImage(k)) {
+			widths[k] = size;
+		} else
+#endif
+		{
+			textMeasure(&textheight, &widths[k], (char *)names[k], chars, font, 0);
+		}
+
+		total += widths[k] + (total ? gap : 0);
+	}
+
+	if (total == 0) {
+		return gdl;
+	}
+
+#ifndef PLATFORM_N64
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+#endif
+
+	gdl = text0f153628(gdl);
+
+	// the row's place is kept while one blinks, so the others hold still
+	x = viGetViewLeft() + (viGetViewWidth() - total) / 2;
+
+	for (k = 0; k < 3; k++) {
+		s32 left = k == 0 ? g_ZombieInstaKill60 : k == 1 ? g_ZombieDoublePoints60 : g_ZombieFireSale60;
+
+		if (widths[k] == 0) {
 			continue;
 		}
 
-		sprintf(text, "%s %d", k == 0 ? "INSTA-KILL" : k == 1 ? "DOUBLE POINTS" : "FIRE SALE", (left + 59) / 60);
-
+		if (zombiesPowerupShowing(left)) {
 #ifndef PLATFORM_N64
-		gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+			struct menuimage *img = zombiePowerupImage(k);
+
+			if (img) {
+				gdl = menuImageDraw(gdl, img, x, bottom - size, x + size, bottom, 0xff);
+				gdl = text0f153628(gdl);
+			} else
 #endif
+			{
+				gdl = zombiesDrawTextBL(gdl, (char *)names[k], x, bottom, colours[k], chars, font);
+			}
+		}
 
-		gdl = text0f153628(gdl);
-		textMeasure(&textheight, &textwidth, text, chars, font, 0);
-		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
-				viGetViewTop() + viGetViewHeight() * 82 / 100 - line * 14, colour, chars, font);
-		gdl = text0f153780(gdl);
-
-#ifndef PLATFORM_N64
-		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
-#endif
-
-		line++;
+		x += widths[k] + gap;
 	}
+
+	gdl = text0f153780(gdl);
+
+#ifndef PLATFORM_N64
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
 
 	return gdl;
 }
@@ -24645,6 +24782,56 @@ static Gfx *zombiesRenderBottle(Gfx *gdl, s32 t, s32 perk)
 	return gdl;
 }
 
+// A buy prompt, "Hold E for ...", in the middle of the view below the sight,
+// the key as Call of Duty writes it: in brackets and yellow, the rest white
+// ("Hold ^3[{+activate}]^7 for ..."). Text that is not a held key's prompt
+// is drawn as it is.
+static Gfx *zombiesDrawPrompt(Gfx *gdl, s32 playernum, char *text)
+{
+	struct fontchar *chars = g_CharsHandelGothicSm;
+	struct font *font = g_FontHandelGothicSm;
+	const s32 y = viGetViewTop() + viGetViewHeight() * 62 / 100;
+	const char *key = zombiesUseName(playernum);
+	const s32 keylen = strlen(key);
+	char full[96];
+	char head[48];
+	char bracket[40];
+	char *rest;
+	s32 textwidth;
+	s32 textheight;
+	s32 headwidth;
+	s32 bracketwidth;
+	s32 restwidth;
+	s32 x;
+
+	if (strncmp(text, "Hold ", 5) != 0 || strncmp(text + 5, key, keylen) != 0 || text[5 + keylen] != ' ') {
+		textMeasure(&textheight, &textwidth, text, chars, font, 0);
+		return zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2, y,
+				0xffffffe0, chars, font);
+	}
+
+	rest = text + 5 + keylen + 1;
+	snprintf(bracket, sizeof(bracket), "[%s]", key);
+	snprintf(head, sizeof(head), "Hold %s", bracket);
+	snprintf(full, sizeof(full), "%s %s", head, rest);
+
+	// the pieces placed by the whole's measure, the spaces between them
+	// being the font's own
+	textMeasure(&textheight, &textwidth, full, chars, font, 0);
+	textMeasure(&textheight, &headwidth, head, chars, font, 0);
+	textMeasure(&textheight, &bracketwidth, bracket, chars, font, 0);
+	textMeasure(&textheight, &restwidth, rest, chars, font, 0);
+
+	x = viGetViewLeft() + (viGetViewWidth() - textwidth) / 2;
+
+	head[4] = '\0'; // "Hold"
+	gdl = zombiesDrawTextBL(gdl, head, x, y, 0xffffffe0, chars, font);
+	gdl = zombiesDrawTextBL(gdl, bracket, x + headwidth - bracketwidth, y, 0xffff40e0, chars, font);
+	gdl = zombiesDrawTextBL(gdl, rest, x + textwidth - restwidth, y, 0xffffffe0, chars, font);
+
+	return gdl;
+}
+
 // The machine's prompt, the drink and the perk's icon, for the player whose
 // view is being drawn.
 static Gfx *zombiesRenderJuggernog(Gfx *gdl)
@@ -24680,33 +24867,16 @@ static Gfx *zombiesRenderJuggernog(Gfx *gdl)
 		}
 	} else if (g_ZombieNearPerk[playernum] >= 0) {
 		s32 perk = g_ZombieNearPerk[playernum];
-		s32 textwidth;
-		s32 textheight;
 
 		sprintf(text, "Hold %s for %s [Cost: %d]", zombiesUseName(playernum), g_ZombiePerks[perk].name, zombiesPerkCost(perk));
-		textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
-				viGetViewTop() + viGetViewHeight() * 62 / 100, 0xffffffe0,
-				g_CharsHandelGothicSm, g_FontHandelGothicSm);
+		gdl = zombiesDrawPrompt(gdl, playernum, text);
 	} else if (g_ZombieNearJugg[playernum]) {
-		s32 textwidth;
-		s32 textheight;
-
 		// B is E on the keyboard by default (input.c)
 		sprintf(text, "Hold %s for Juggernog [Cost: %d]", zombiesUseName(playernum), ZOMBIE_JUGG_COST);
-		textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
-				viGetViewTop() + viGetViewHeight() * 62 / 100, 0xffffffe0,
-				g_CharsHandelGothicSm, g_FontHandelGothicSm);
+		gdl = zombiesDrawPrompt(gdl, playernum, text);
 	} else if (zombiesPapPrompt(playernum, text) || zombiesBoxPrompt(playernum, text) || zombiesWallBuyPrompt(playernum, text)
 			|| zombiesDoorPrompt(playernum, text) || zombiesBarrierPrompt(playernum, text)) {
-		s32 textwidth;
-		s32 textheight;
-
-		textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-		gdl = zombiesDrawTextBL(gdl, text, viGetViewLeft() + (viGetViewWidth() - textwidth) / 2,
-				viGetViewTop() + viGetViewHeight() * 62 / 100, 0xffffffe0,
-				g_CharsHandelGothicSm, g_FontHandelGothicSm);
+		gdl = zombiesDrawPrompt(gdl, playernum, text);
 	}
 
 	gdl = text0f153780(gdl);
@@ -25807,6 +25977,84 @@ static s32 zombiesRoundIntro(void)
 
 // The opening at t: the number (and "Round" over it) from the middle of the
 // screen to the corner, drawn under the left alignment the counter has
+/**
+ * Rounds one to five as Black Ops counts them: chalk tallies, not a number.
+ * Four strokes leaning a little right, and the fifth across them from the
+ * bottom left to the top right. From round six the number.
+ */
+#define ZOMBIE_TALLY_ROUNDS 5
+
+// A stroke thick in the HUD's units, square pieces along it a fraction of
+// their own size apart; the prim colour set
+static Gfx *zombiesHudStroke(Gfx *gdl, f32 x0, f32 y0, f32 x1, f32 y1, f32 thick)
+{
+	const f32 half = thick * 0.5f;
+	f32 dx = x1 - x0;
+	f32 dy = y1 - y0;
+	f32 step = thick * 0.3f < 0.25f ? 0.25f : thick * 0.3f;
+	s32 steps = (s32)((fabsf(dx) > fabsf(dy) ? fabsf(dx) : fabsf(dy)) / step);
+	s32 i;
+
+	if (steps > 2400) {
+		return gdl;
+	}
+
+	if (steps < 1) {
+		steps = 1;
+	}
+
+	for (i = 0; i <= steps; i++) {
+		f32 x = x0 + dx * i / steps;
+		f32 y = y0 + dy * i / steps;
+
+		gdl = zombiesFillQuarter(gdl, x - half, y - half, x + half, y + half);
+	}
+
+	return gdl;
+}
+
+// How wide the tallies for a round are when h tall
+static f32 zombiesTallyWidth(s32 round, f32 h)
+{
+	s32 n = round >= 4 ? 4 : round;
+
+	return (n - 1) * h * 0.3f + h * 0.2f + h * 0.12f;
+}
+
+// The tallies for round (1 to 5), their left at x and their feet at bottom,
+// h tall, in colour; under the HUD's alignment and text0f153628() as the
+// number is
+static Gfx *zombiesRenderTallies(Gfx *gdl, s32 round, f32 x, f32 bottom, f32 h, u32 colour)
+{
+	const f32 thick = h * 0.12f;
+	const f32 lean = h * 0.2f;
+	const f32 top = bottom - h;
+	s32 i;
+
+	gdl = textSetPrimColour(gdl, colour);
+
+	for (i = 0; i < round && i < 4; i++) {
+		f32 sx = x + thick * 0.5f + i * h * 0.3f;
+
+		// each a touch unlike the last, as a hand draws them
+		f32 t = top + h * (i & 1 ? 0.04f : 0);
+
+		gdl = zombiesHudStroke(gdl, sx, bottom, sx + lean, t, thick);
+	}
+
+	if (round >= 5) {
+		gdl = zombiesHudStroke(gdl, x - h * 0.1f, bottom - h * 0.22f,
+				x + zombiesTallyWidth(4, h) + h * 0.1f, top + h * 0.3f, thick);
+	}
+
+	return text0f153838(gdl);
+}
+
+// The tallies' height and feet for a line of the round number's font at a
+// size: as tall as its digits, on their line
+#define ZOMBIE_TALLY_HEIGHT(lineheight, size) ((lineheight) * (size) * 0.74f)
+#define ZOMBIE_TALLY_FEET(lineheight, size)   ((lineheight) * (size) * 0.1f)
+
 static Gfx *zombiesRenderRoundIntro(Gfx *gdl, s32 t, char *text, struct fontchar *chars, struct font *font,
 		u32 colour, s32 scale, s32 left, s32 bottom, s32 lineheight)
 {
@@ -25849,18 +26097,31 @@ static Gfx *zombiesRenderRoundIntro(Gfx *gdl, s32 t, char *text, struct fontchar
 		size = size < scale ? scale : size;
 	}
 
-	textMeasure(&textheight, &textwidth, text, chars, font, 0);
+	if (g_ZombieRound <= ZOMBIE_TALLY_ROUNDS) {
+		// the tallies the same way, but sized smoothly: they are lines, not
+		// a font's pixels
+		f32 sizef = ZOMBIE_INTRO_BIG + (scale - ZOMBIE_INTRO_BIG) * k;
+		f32 mx = cx - zombiesTallyWidth(g_ZombieRound, ZOMBIE_TALLY_HEIGHT(lineheight, ZOMBIE_INTRO_BIG)) * 0.5f;
+		f32 my = cy + lineheight * ZOMBIE_INTRO_BIG * 0.5f - ZOMBIE_TALLY_FEET(lineheight, ZOMBIE_INTRO_BIG);
+		f32 tx = mx + (left - mx) * k;
+		f32 ty = my + (bottom - ZOMBIE_TALLY_FEET(lineheight, scale) - my) * k;
 
-	// the number: from its place in the middle to the corner's
-	{
-		const f32 mx = cx - textwidth * size * 0.5f;
-		const f32 my = cy - lineheight * size * 0.5f;
+		gdl = zombiesRenderTallies(gdl, g_ZombieRound, tx, ty, ZOMBIE_TALLY_HEIGHT(lineheight, sizef),
+				(colour & 0xffffff00) | alpha);
+	} else {
+		textMeasure(&textheight, &textwidth, text, chars, font, 0);
 
-		x = (s32)(mx + (left - mx) * k);
-		y = (s32)(my + (bottom - lineheight * scale - my) * k);
+		// the number: from its place in the middle to the corner's
+		{
+			const f32 mx = cx - textwidth * size * 0.5f;
+			const f32 my = cy - lineheight * size * 0.5f;
+
+			x = (s32)(mx + (left - mx) * k);
+			y = (s32)(my + (bottom - lineheight * scale - my) * k);
+		}
+
+		gdl = textRenderScaled(gdl, x, y, text, chars, font, (colour & 0xffffff00) | alpha, size);
 	}
-
-	gdl = textRenderScaled(gdl, x, y, text, chars, font, (colour & 0xffffff00) | alpha, size);
 
 	// "Round" over it in the middle, going as it moves
 	if (k < 1) {
@@ -25894,6 +26155,9 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 	if (zombiesGameOverHidesHud()) {
 		return zombiesRenderGameOver(gdl);
 	}
+
+	// under everything else, as a hurt view is
+	gdl = zombiesRenderHurtEdges(gdl);
 
 	// the scoreboard button: the board, and none of the rest
 	if (zombiesScoreboardHeld()) {
@@ -25950,6 +26214,9 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 					// the opening camera still going round: nothing yet
 				} else if (at >= 0) {
 					gdl = zombiesRenderRoundIntro(gdl, at, text, chars, font, colour, scale, left, bottom, textheight);
+				} else if (g_ZombieRound <= ZOMBIE_TALLY_ROUNDS) {
+					gdl = zombiesRenderTallies(gdl, g_ZombieRound, left, bottom - ZOMBIE_TALLY_FEET(textheight, scale),
+							ZOMBIE_TALLY_HEIGHT(textheight, scale), colour);
 				} else {
 					gdl = textRenderScaled(gdl, left, bottom - textheight * scale, text,
 							chars, font, colour, scale);

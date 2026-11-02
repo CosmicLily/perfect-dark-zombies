@@ -98,6 +98,53 @@ struct menuimage *zombiePerkImage(s32 perk)
 }
 
 /**
+ * The timed power-ups' icons at the bottom of the screen, the same way:
+ * zombies/powerups/<power-up>.png when the player has one, the power-up's
+ * name when not. zombies.inc's order: Insta-Kill, Double Points, Fire Sale.
+ */
+#define ZOMBIEPOWERUP_COUNT 3
+
+static const char *const powerupFiles[ZOMBIEPOWERUP_COUNT] = {
+	"$E/zombies/powerups/instakill.png",
+	"$E/zombies/powerups/doublepoints.png",
+	"$E/zombies/powerups/firesale.png",
+};
+
+static u8 *zombiePowerupLoad0(s32 *w, s32 *h) { return pngRead(fsFullPath(powerupFiles[0]), w, h); }
+static u8 *zombiePowerupLoad1(s32 *w, s32 *h) { return pngRead(fsFullPath(powerupFiles[1]), w, h); }
+static u8 *zombiePowerupLoad2(s32 *w, s32 *h) { return pngRead(fsFullPath(powerupFiles[2]), w, h); }
+
+static struct menuimage powerupImages[ZOMBIEPOWERUP_COUNT] = {
+	{ NULL, 0, zombiePowerupLoad0, "zombies/powerups/instakill.png" },
+	{ NULL, 0, zombiePowerupLoad1, "zombies/powerups/doublepoints.png" },
+	{ NULL, 0, zombiePowerupLoad2, "zombies/powerups/firesale.png" },
+};
+
+static s32 powerupPresent[ZOMBIEPOWERUP_COUNT] = { -1, -1, -1 };
+
+PD_CONSTRUCTOR static void zombiePowerupsInit(void)
+{
+	s32 i;
+
+	for (i = 0; i < ZOMBIEPOWERUP_COUNT; i++) {
+		menuImageRegister(&powerupImages[i]);
+	}
+}
+
+struct menuimage *zombiePowerupImage(s32 powerup)
+{
+	if (powerup < 0 || powerup >= ZOMBIEPOWERUP_COUNT) {
+		return NULL;
+	}
+
+	if (powerupPresent[powerup] < 0) {
+		powerupPresent[powerup] = fsFileSize(powerupFiles[powerup]) > 0;
+	}
+
+	return powerupPresent[powerup] ? &powerupImages[powerup] : NULL;
+}
+
+/**
  * Zombies' own settings, in pd.ini's [Game] and on the Zombies Options page of
  * the Combat Simulator's setup (scenarios/zombies.inc's menu): how many points
  * a match starts with (Call of Duty's 500), the round it starts on, how many

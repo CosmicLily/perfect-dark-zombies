@@ -3777,8 +3777,10 @@ void playerTickDamageAndHealth(void)
 
 			g_Vars.currentplayer->damageshowtime += inc;
 
+			// Zombies reddens the view's edges instead (zombiesRenderHurtEdges())
 			if (g_Vars.currentplayer->damageshowtime >= g_DamageTypes[g_Vars.currentplayer->damagetype].flashstartframe
-					&& g_Vars.currentplayer->damageshowtime <= g_DamageTypes[g_Vars.currentplayer->damagetype].flashendframe) {
+					&& g_Vars.currentplayer->damageshowtime <= g_DamageTypes[g_Vars.currentplayer->damagetype].flashendframe
+					&& !zombiesIsActive()) {
 				f32 alpha;
 				f32 flashdoneframes = g_Vars.currentplayer->damageshowtime - g_DamageTypes[g_Vars.currentplayer->damagetype].flashstartframe;
 				f32 flashfullframe = g_DamageTypes[g_Vars.currentplayer->damagetype].flashfullframe;

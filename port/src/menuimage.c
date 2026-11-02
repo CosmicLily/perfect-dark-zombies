@@ -22,10 +22,11 @@
 #include "pngread.h"
 #include "menuimage.h"
 
-// A handful: the community packs' covers, the XBLA logo and Zombies' perk
-// icons (zombieperks.c). One past this is dropped without a word, and the
-// constructors that register them run in no fixed order.
-#define MENUIMAGE_MAX 16
+// A handful: the community packs' covers (six), the XBLA logo and Zombies' perk
+// and power-up icons (zombieperks.c, nine and three). One past this is dropped
+// without a word, and the constructors that register them run in no fixed
+// order: sixteen was exactly full before the power-ups'.
+#define MENUIMAGE_MAX 24
 
 static struct menuimage *images[MENUIMAGE_MAX];
 static s32 numImages;
