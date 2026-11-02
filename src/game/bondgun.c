@@ -113,13 +113,28 @@ bool zombiesGunViewmodelOwns(s32 handnum);
 void zombiesReloadStarted(s32 handnum);
 f32 zombiesSprintGunFrac(void);
 
+bool zombiesGunIsPistol(s32 weaponnum);
+
 // Zombies' sprint pose at its fullest (zombiesSprintGunFrac()): radians in the
-// camera's axes, and units across and down
-#define ZOMBIE_SPRINT_GUN_PITCH -0.35f
-#define ZOMBIE_SPRINT_GUN_YAW    0.55f
-#define ZOMBIE_SPRINT_GUN_ROLL   0.30f
-#define ZOMBIE_SPRINT_GUN_X     -1.5f
-#define ZOMBIE_SPRINT_GUN_Y      2.0f
+// camera's axes (pitch negative tips the muzzle down, yaw positive swings it
+// left, roll positive cants its top left), and units right and up. Black Ops
+// II's own, measured from its viewmodels' sprint_loop against their idle
+// (tag_weapon, averaged over the loop; zm_buried's dump): every two-handed
+// gun - M14, AK74u, AN94, Galil, MP5, PDW, 870, LSAT - tips down 15-22
+// degrees, swings left 13-25 and cants 25-33, and barely moves (an inch or
+// two left and down); every pistol - M1911, B23R, Five-seven, Kard, Executioner
+// - tips down 29, swings right 16, cants 20, and drops low to the right side,
+// 8 inches down and 7 across
+#define ZOMBIE_SPRINT_GUN_PITCH -0.30f
+#define ZOMBIE_SPRINT_GUN_YAW    0.31f
+#define ZOMBIE_SPRINT_GUN_ROLL   0.49f
+#define ZOMBIE_SPRINT_GUN_X     -1.3f
+#define ZOMBIE_SPRINT_GUN_Y     -1.5f
+#define ZOMBIE_SPRINT_PISTOL_PITCH -0.50f
+#define ZOMBIE_SPRINT_PISTOL_YAW   -0.29f
+#define ZOMBIE_SPRINT_PISTOL_ROLL   0.35f
+#define ZOMBIE_SPRINT_PISTOL_X      3.4f
+#define ZOMBIE_SPRINT_PISTOL_Y     -4.0f
 Gfx *zombiesCamoEnd(Gfx *gdl, s32 weaponnum);
 f32 zombiesKnifeAnimSpeed(void);
 void zombiesKnifeViewShift(struct coord *shift);
@@ -10391,25 +10406,28 @@ void bgun0f0a5550(s32 handnum)
 #ifndef PLATFORM_N64
 	// Zombies' sprint: the gun tipped down and swung across the body, as
 	// Call of Duty's are held at a sprint (zombiesSprintGunFrac()), turned
-	// in the camera's own axes about the gun's place and dropped a little
+	// in the camera's own axes about the gun's place and moved; a pistol
+	// held low at the side. The left hand's is the right's in a mirror
 	{
 		const f32 sprint = zombiesSprintGunFrac();
 
 		if (sprint > 0.0f) {
+			const bool pistol = zombiesGunIsPistol(player->gunctrl.weaponnum);
+			const f32 mirror = handnum == HAND_LEFT ? -1.0f : 1.0f;
 			struct coord rot;
 			Mtxf turn;
 			Mtxf turned;
 
-			rot.x = ZOMBIE_SPRINT_GUN_PITCH * sprint;
-			rot.y = ZOMBIE_SPRINT_GUN_YAW * sprint;
-			rot.z = ZOMBIE_SPRINT_GUN_ROLL * sprint;
+			rot.x = (pistol ? ZOMBIE_SPRINT_PISTOL_PITCH : ZOMBIE_SPRINT_GUN_PITCH) * sprint;
+			rot.y = (pistol ? ZOMBIE_SPRINT_PISTOL_YAW : ZOMBIE_SPRINT_GUN_YAW) * sprint * mirror;
+			rot.z = (pistol ? ZOMBIE_SPRINT_PISTOL_ROLL : ZOMBIE_SPRINT_GUN_ROLL) * sprint * mirror;
 
 			mtx4LoadRotation(&rot, &turn);
 			mtx4MultMtx4(&turn, &sp234, &turned);
 			mtx4Copy(&turned, &sp234);
 
-			sp274.f[0] += ZOMBIE_SPRINT_GUN_X * sprint;
-			sp274.f[1] += ZOMBIE_SPRINT_GUN_Y * sprint;
+			sp274.f[0] += (pistol ? ZOMBIE_SPRINT_PISTOL_X : ZOMBIE_SPRINT_GUN_X) * sprint * mirror;
+			sp274.f[1] += (pistol ? ZOMBIE_SPRINT_PISTOL_Y : ZOMBIE_SPRINT_GUN_Y) * sprint;
 		}
 	}
 #endif

@@ -98,7 +98,7 @@ f32 zombiesBulletScale(struct prop *aprop);
 f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, f32 damage);
 bool zombiesPhdShrugs(struct chrdata *chr);
 f32 zombiesBlowDamage(void);
-bool zombiesZombieSwipe(struct chrdata *zchr);
+bool zombiesZombieSwipe(struct chrdata *zchr, struct prop *vprop);
 bool zombiesCodOwnsBlows(void);
 s32 zombiesDeadshotHitpart(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, bool explosion);
 void zombiesAwardHit(struct prop *aprop, s32 hitpart, bool ismelee, bool explosion, bool killed, struct chrdata *victim);
@@ -5569,7 +5569,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			// Zombies: a zombie's blow lands - its attack cry - unless it is
 			// still behind a barrier's boards (zombies.inc)
 			if (aprop && aprop->type == PROPTYPE_CHR && aprop->chr && aprop->chr->aibot
-					&& zombiesZombieSwipe(aprop->chr)) {
+					&& zombiesZombieSwipe(aprop->chr, vprop)) {
 				return;
 			}
 #endif

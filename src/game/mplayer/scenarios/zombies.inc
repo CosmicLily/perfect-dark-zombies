@@ -410,9 +410,12 @@ f32 zombiesBlowDamage(void)
  * same zombie on every machine. True when the blow is stopped: a zombie still
  * tearing at a barrier's boards reaches no one through them, as in Call of
  * Duty (the barriers stand against Perfect Dark's walls, so it waits on the
- * player's side of them)
+ * player's side of them). A blow that lands slows the player it lands on
+ * (zombiesHitSlow()).
  */
-bool zombiesZombieSwipe(struct chrdata *zchr)
+static void zombiesHitSlow(s32 playernum);
+
+bool zombiesZombieSwipe(struct chrdata *zchr, struct prop *vprop)
 {
 	s32 vox;
 	s32 i;
@@ -425,6 +428,10 @@ bool zombiesZombieSwipe(struct chrdata *zchr)
 		if (g_MpBotChrPtrs[i] == zchr && g_ZombieAtBarrier[i] >= 0 && !g_ZombieReachThrough) {
 			return true;
 		}
+	}
+
+	if (vprop && vprop->type == PROPTYPE_PLAYER) {
+		zombiesHitSlow(playermgrGetPlayerNumByProp(vprop));
 	}
 
 	if (NET_CLIENT) {
@@ -10243,6 +10250,44 @@ static f32 zombiesGunMoveScale(void)
 	return move;
 }
 
+/**
+ * A zombie's blow slows the player it lands on, as Call of Duty's damage timer
+ * does (player_dmgtimer_*: 100 ms a point of damage, at most 750, the speed
+ * eased back from player_dmgtimer_minScale's 0 over it). A blow is 60, so
+ * every one is the whole 750 ms: stopped where it lands, back to full speed
+ * three quarters of a second on. The numbers are the IW engine's defaults;
+ * Black Ops II's own dvars are to be checked when they are to hand.
+ */
+#define ZOMBIE_HITSLOW60 45
+#define ZOMBIE_HITSLOW_MIN 0.0f
+
+static s32 g_ZombieHitSlowAt60[MAX_PLAYERS]; // lvframe60 of the last blow, 0 none
+
+static void zombiesHitSlow(s32 playernum)
+{
+	if (playernum >= 0 && playernum < MAX_PLAYERS) {
+		g_ZombieHitSlowAt60[playernum] = g_Vars.lvframe60 > 0 ? g_Vars.lvframe60 : 1;
+	}
+}
+
+static f32 zombiesHitSlowScale(s32 playernum)
+{
+	s32 since;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieHitSlowAt60[playernum] == 0) {
+		return 1;
+	}
+
+	since = g_Vars.lvframe60 - g_ZombieHitSlowAt60[playernum];
+
+	if (since < 0 || since >= ZOMBIE_HITSLOW60) {
+		g_ZombieHitSlowAt60[playernum] = 0;
+		return 1;
+	}
+
+	return ZOMBIE_HITSLOW_MIN + (1 - ZOMBIE_HITSLOW_MIN) * since / (f32) ZOMBIE_HITSLOW60;
+}
+
 // bondwalk.c asks: Call of Duty's legs, and Stamin-Up's quicker ones, for the
 // current player
 f32 zombiesMoveScale(void)
@@ -10264,7 +10309,8 @@ f32 zombiesMoveScale(void)
 	}
 
 	return ZOMBIE_COD_WALK * zombiesGunMoveScale()
-		* (zombiesPlayerHasPerk(g_Vars.currentplayernum, ZOMBIEPERK_STAMINUP) ? ZOMBIE_STAMINUP_SPEED : 1);
+		* (zombiesPlayerHasPerk(g_Vars.currentplayernum, ZOMBIEPERK_STAMINUP) ? ZOMBIE_STAMINUP_SPEED : 1)
+		* zombiesHitSlowScale(playernum);
 }
 
 /**
@@ -11797,6 +11843,110 @@ void zombiesTickDive(void)
 	}
 
 	g_ZombieWasFalling[playernum] = player->isfalling;
+}
+
+/**
+ * Black Ops II's gravity and jump (g_gravity 800 inches a second a second,
+ * jump_height 39 inches), at ZOMBIE_EYE_INCH units to the inch. Perfect
+ * Dark's gravity is 1000 units a second a second, under half of Call of
+ * Duty's 2120, and its jump reached 22 inches in 0.35 seconds: low and
+ * floaty. Call of Duty's reaches 39 in 0.31. A dive keeps Perfect Dark's,
+ * which its push and hop were made for (bwalkTryDive()). bondwalk.c asks,
+ * for the current player.
+ */
+#define ZOMBIE_EYE_INCH     2.65f  // a player's eye at 159 units, Call of Duty's at 60 inches
+#define ZOMBIE_COD_GRAVITY  (800.0f * ZOMBIE_EYE_INCH / 3600.0f) // units a 60th a 60th
+#define ZOMBIE_COD_JUMP     39.0f  // inches
+
+f32 zombiesGravityScale(void)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || g_ZombieDive60[playernum] > 0) {
+		return 1;
+	}
+
+	return ZOMBIE_COD_GRAVITY / 0.277777777f;
+}
+
+// The jump's lift, a 60th, for Perfect Dark's own (modGetJumpImpulse(), which
+// the Jump Height setting scales)
+f32 zombiesJumpImpulse(f32 impulse)
+{
+	if (!zombiesIsActive()) {
+		return impulse;
+	}
+
+	return impulse / JUMP_IMPULSE * sqrtf(2 * ZOMBIE_COD_GRAVITY * ZOMBIE_COD_JUMP * ZOMBIE_EYE_INCH);
+}
+
+/**
+ * Fall damage, as Call of Duty's (bg_fallDamageMinHeight, MaxHeight): none
+ * from under ZOMBIE_FALL_MIN inches, then rising in a line to a whole
+ * 100-point player's health at ZOMBIE_FALL_MAX, taken as a zombie's blow is
+ * (so Juggernog's 250 holds out), and none at all with PhD Flopper, whose
+ * landing is its blast instead. The heights are the IW engine's defaults (128
+ * and 300); Black Ops II's own are to be checked when its dvars are to hand.
+ * From bondwalk.c as the current player lands, `drop` units under where the
+ * fall's highest point was. The host's: a client's own fall is not hurt yet.
+ */
+#define ZOMBIE_FALL_MIN 128.0f
+#define ZOMBIE_FALL_MAX 300.0f
+
+void zombiesPlayerLanded(f32 drop)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	struct gset gset = { WEAPON_UNARMED, 0, 0, FUNC_PRIMARY };
+	struct coord dir = { 0, 1, 0 };
+	f32 inches = drop / ZOMBIE_EYE_INCH;
+	f32 health;
+
+	if (!zombiesIsActive() || NET_CLIENT || playernum < 0 || playernum >= MAX_PLAYERS
+			|| !player || !player->prop || !player->prop->chr
+			|| !zombiesPlayerIsUp(playernum) || g_ZombieDowned[playernum]
+			|| inches <= ZOMBIE_FALL_MIN
+			|| zombiesPlayerHasPerk(playernum, ZOMBIEPERK_PHDFLOPPER)) {
+		return;
+	}
+
+	health = (inches - ZOMBIE_FALL_MIN) / (ZOMBIE_FALL_MAX - ZOMBIE_FALL_MIN);
+
+	if (health > 1) {
+		health = 1;
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: player %d falls %.0f inches, %.0f damage", playernum, inches, health * 100);
+
+	g_ZombieReachThrough = true;
+	g_ZombieBlowDamage = health * 8.0f;
+	chrDamageByImpact(player->prop->chr, health * 8.0f, &dir, &gset, NULL, HITPART_GENERAL);
+	g_ZombieBlowDamage = -1;
+	g_ZombieReachThrough = false;
+}
+
+/**
+ * The sprint pose's class (bondgun.c): the pistols, which Black Ops II holds
+ * low at the side at a sprint, against the two-handed guns held across the
+ * chest. The Perfect Dark guns that stand in for its pistols (g_ZombieCodGuns).
+ */
+bool zombiesGunIsPistol(s32 weaponnum)
+{
+	switch (weaponnum) {
+	case WEAPON_FALCON2:
+	case WEAPON_FALCON2_SILENCER:
+	case WEAPON_FALCON2_SCOPE:
+	case WEAPON_PP9I:
+	case WEAPON_CC13:
+	case WEAPON_MAGSEC4:
+	case WEAPON_MAULER:
+	case WEAPON_PHOENIX:
+	case WEAPON_DY357MAGNUM:
+	case WEAPON_DY357LX:
+		return true;
+	}
+
+	return false;
 }
 
 /**

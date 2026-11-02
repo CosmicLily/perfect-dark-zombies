@@ -52,6 +52,69 @@ bool zombiesIsPlayerDowned(s32 playernum); // zombies.inc
 bool zombiesFallNetCatch(s32 playernum); // zombies.inc
 bool zombiesIsActive(void);
 f32 zombiesMoveScale(void);
+f32 zombiesGravityScale(void); // zombies.inc
+f32 zombiesJumpImpulse(f32 impulse);
+void zombiesPlayerLanded(f32 drop);
+
+/**
+ * Zombies moves in the air as Call of Duty does. A jump or a fall keeps the
+ * way it was going, and the keys only nudge it: PM_AirMove's accelerate of 1,
+ * a wish speed's worth a second, where on the ground they take hold at once
+ * (bwalkZombiesAirMove()). g_BwalkZombieAirVel is the move last taken, world
+ * units a 60th, flat; g_BwalkZombieJumped marks a jump until it lands, which
+ * counts as in the air from its first 60th (a drop counts once it is
+ * BWALK_ZOMBIE_AIRDROP over the floor, so a stair down is still walked).
+ *
+ * g_BwalkZombieAirTop is the highest a fall or jump reached, for fall damage
+ * (zombiesPlayerLanded()), and the landing dips the view as Call of Duty's
+ * does (bwalkZombieLandDip()): down over BWALK_ZOMBIE_DIP_DOWN seconds and
+ * back over BWALK_ZOMBIE_DIP_UP, deeper the harder the landing, in place of
+ * Perfect Dark's squat for a second (crouchfall), which at Call of Duty's
+ * gravity sank a plain jump's landing 65 units.
+ */
+#define BWALK_ZOMBIE_AIRACCEL 1.0f
+#define BWALK_ZOMBIE_AIRDROP  30.0f
+#define BWALK_ZOMBIE_DIP_DOWN 0.15f
+#define BWALK_ZOMBIE_DIP_UP   0.3f
+#define BWALK_ZOMBIE_DIP_PER  0.9f   // units of dip a unit a 60th of landing speed
+#define BWALK_ZOMBIE_DIP_MAX  20.0f  // units, some 7.5 inches
+
+static struct coord g_BwalkZombieAirVel[MAX_PLAYERS];
+static bool g_BwalkZombieJumped[MAX_PLAYERS];
+static f32 g_BwalkZombieAirTop[MAX_PLAYERS];
+static f32 g_BwalkZombieDip[MAX_PLAYERS];    // the landing's depth, units
+static f32 g_BwalkZombieDipAge[MAX_PLAYERS]; // seconds since it, past the end none
+
+static bool bwalkZombiesInAir(void)
+{
+	const s32 p = g_Vars.currentplayernum;
+
+	return (p >= 0 && p < MAX_PLAYERS && g_BwalkZombieJumped[p])
+		|| g_Vars.currentplayer->vv_manground - g_Vars.currentplayer->vv_ground > BWALK_ZOMBIE_AIRDROP;
+}
+
+// The landing dip under the eye, 0 or less (player.c, as the camera is placed)
+f32 bwalkZombieLandDip(void)
+{
+	const s32 p = g_Vars.currentplayernum;
+	f32 age;
+
+	if (p < 0 || p >= MAX_PLAYERS || g_BwalkZombieDip[p] <= 0 || !zombiesIsActive()) {
+		return 0;
+	}
+
+	age = g_BwalkZombieDipAge[p];
+
+	if (age < BWALK_ZOMBIE_DIP_DOWN) {
+		return -g_BwalkZombieDip[p] * age / BWALK_ZOMBIE_DIP_DOWN;
+	}
+
+	if (age < BWALK_ZOMBIE_DIP_DOWN + BWALK_ZOMBIE_DIP_UP) {
+		return -g_BwalkZombieDip[p] * (1 - (age - BWALK_ZOMBIE_DIP_DOWN) / BWALK_ZOMBIE_DIP_UP);
+	}
+
+	return 0;
+}
 #endif
 
 #ifndef PLATFORM_N64
@@ -766,13 +829,24 @@ void bwalkTryJump(void)
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// Zombies: Black Ops II's jump (zombies.inc)
+	const f32 impulse = zombiesJumpImpulse(modGetJumpImpulse());
+#else
 	const f32 impulse = modGetJumpImpulse();
+#endif
 
 	if (!bwalkCanMoveUpwards(impulse)) {
 		return;
 	}
 
 	g_Vars.currentplayer->bdeltapos.y = impulse;
+
+#ifndef PLATFORM_N64
+	if (zombiesIsActive() && g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+		g_BwalkZombieJumped[g_Vars.currentplayernum] = true;
+	}
+#endif
 }
 
 #ifndef PLATFORM_N64
@@ -1893,6 +1967,15 @@ void bwalkUpdateVertical(void)
 			multiplier = 0.277777777f;
 		}
 
+#ifndef PLATFORM_N64
+		// Zombies: Black Ops II's gravity (zombies.inc)
+		const f32 gravityscale = zombiesGravityScale();
+
+		multiplier *= gravityscale;
+#else
+		const f32 gravityscale = 1.0f;
+#endif
+
 		newfallspeed = fallspeed - g_Vars.lvupdate60freal * multiplier;
 		newmanground += g_Vars.lvupdate60freal * (fallspeed + newfallspeed) * 0.5f;
 		fallspeed = newfallspeed;
@@ -1903,7 +1986,7 @@ void bwalkUpdateVertical(void)
 
 			fallspeed = sqrtf(g_Vars.currentplayer->bdeltapos.y *
 					g_Vars.currentplayer->bdeltapos.y +
-					(((newfallspeed + newfallspeed) * 0.277777777f) / 60.0f) * 60.0f);
+					(((newfallspeed + newfallspeed) * 0.277777777f * gravityscale) / 60.0f) * 60.0f);
 			fallspeed = -fallspeed;
 		}
 
@@ -2008,6 +2091,23 @@ void bwalkUpdateVertical(void)
 			g_Vars.currentplayer->isfalling = false;
 		}
 
+#ifndef PLATFORM_N64
+		// Zombies: Call of Duty's fall damage and landing dip in place of
+		// the squat below
+		if (zombiesIsActive() && g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+			const s32 p = g_Vars.currentplayernum;
+			f32 dip = -g_Vars.currentplayer->bdeltapos.y * BWALK_ZOMBIE_DIP_PER;
+
+			zombiesPlayerLanded(g_BwalkZombieAirTop[p] - g_Vars.currentplayer->vv_ground);
+
+			if (g_Vars.currentplayer->bdeltapos.y < -3.0f) {
+				g_BwalkZombieDip[p] = dip > BWALK_ZOMBIE_DIP_MAX ? BWALK_ZOMBIE_DIP_MAX : dip;
+				g_BwalkZombieDipAge[p] = 0;
+			}
+
+			g_BwalkZombieJumped[p] = false;
+		} else
+#endif
 		// I suspect these crouch fields are related to the recovery during
 		// landing. Eg. The faster the fall speed, the longer Jo will take to
 		// stand back to full height again.
@@ -2061,6 +2161,25 @@ void bwalkUpdateVertical(void)
 
 		g_Vars.currentplayer->bdeltapos.y = 0;
 	}
+
+#ifndef PLATFORM_N64
+	// Zombies: the fall's highest point, and the landing dip's clock
+	if (zombiesIsActive() && g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+		const s32 p = g_Vars.currentplayernum;
+
+		if (g_Vars.currentplayer->vv_manground > g_Vars.currentplayer->vv_ground
+				|| g_Vars.currentplayer->bdeltapos.y > 0) {
+			if (g_Vars.currentplayer->vv_manground > g_BwalkZombieAirTop[p]) {
+				g_BwalkZombieAirTop[p] = g_Vars.currentplayer->vv_manground;
+			}
+		} else {
+			g_BwalkZombieAirTop[p] = g_Vars.currentplayer->vv_manground;
+			g_BwalkZombieJumped[p] = false;
+		}
+
+		g_BwalkZombieDipAge[p] += g_Vars.lvupdate60freal * (1.0f / 60.0f);
+	}
+#endif
 
 #ifndef PLATFORM_N64
 	// Mission Respawn's fallback spot for a death with no floor under it
@@ -2220,8 +2339,14 @@ void bwalkApplyCrouchSpeed(void)
 #endif
 
 	if (bmoveGetCrouchPos() == CROUCHPOS_DUCK) {
-		g_Vars.currentplayer->speedforwards *= 0.5f;
-		g_Vars.currentplayer->speedsideways *= 0.5f;
+#ifndef PLATFORM_N64
+		// Zombies: Call of Duty's player_duckedSpeedScale
+		const f32 duck = zombiesIsActive() && !zombiesIsPlayerDowned(g_Vars.currentplayernum) ? 0.65f : 0.5f;
+#else
+		const f32 duck = 0.5f;
+#endif
+		g_Vars.currentplayer->speedforwards *= duck;
+		g_Vars.currentplayer->speedsideways *= duck;
 	} else if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT) {
 #ifndef PLATFORM_N64
 		// Zombies' full crouch is a prone, crawled at a crawl's pace (zombies.inc)
@@ -2786,6 +2911,23 @@ void bwalkApplyMoveData(struct movedata *data)
 					g_Vars.currentplayer->prop->pos.x + 300, row);
 		}
 
+		// --zombies-test-jump F: a jump at level frame F, and its height over
+		// the floor and how far it has gone every frame of it
+		if (sysArgCheck("--zombies-test-jump")) {
+			const s32 at = sysArgGetInt("--zombies-test-jump", 300);
+
+			if (g_Vars.lvframenum == at) {
+				bwalkTryJump();
+			}
+
+			if (g_Vars.lvframenum >= at && g_Vars.lvframenum < at + 130) {
+				sysLogPrintf(LOG_NOTE, "bwalk: --zombies-test-jump: frame %d (%.3fs) up %.1f at %.0f %.0f dip %.1f",
+						g_Vars.lvframenum, g_Vars.lvframe60 / 60.0f,
+						g_Vars.currentplayer->vv_manground - g_Vars.currentplayer->vv_ground,
+						g_Vars.currentplayer->prop->pos.x, g_Vars.currentplayer->prop->pos.z, bwalkZombieLandDip());
+			}
+		}
+
 		if (sysArgCheck("--zombies-test-walk") && g_Vars.lvframenum >= 160) {
 			// facing --zombies-test-walk degrees
 			g_Vars.currentplayer->vv_theta = sysArgGetInt("--zombies-test-walk", 0);
@@ -2866,6 +3008,88 @@ void bwalkApplyMoveData(struct movedata *data)
 		g_Vars.currentplayer->eyesshut = data->eyesshut;
 	}
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Zombies' step, units a 60th forward and to the side in the player's look,
+ * as Call of Duty takes it: backwards at player_backSpeedScale (0.7), to the
+ * side at player_strafeSpeedScale (0.8, a sprint's player_sprintStrafeSpeedScale
+ * 0.667), and a diagonal no faster than the quicker of its two (it was both
+ * together, 41% over a walk). In the air the move goes on as it was, nudged
+ * (g_BwalkZombieAirVel).
+ */
+#define BWALK_ZOMBIE_BACK         0.7f
+#define BWALK_ZOMBIE_STRAFE       0.8f
+#define BWALK_ZOMBIE_SPRINTSTRAFE 0.667f
+
+static void bwalkZombiesShapeMove(f32 *fwd, f32 *side)
+{
+	struct player *player = g_Vars.currentplayer;
+	const s32 p = g_Vars.currentplayernum;
+	const f32 ux = player->bond2.unk00.f[0];
+	const f32 uz = player->bond2.unk00.f[2];
+	f32 f = *fwd;
+	f32 s = *side;
+	f32 most;
+	f32 len;
+
+	if (f < 0) {
+		f *= BWALK_ZOMBIE_BACK;
+	}
+
+	s *= player->speedmaxtime60 > 0 ? BWALK_ZOMBIE_SPRINTSTRAFE : BWALK_ZOMBIE_STRAFE;
+
+	most = fabsf(f) > fabsf(s) ? fabsf(f) : fabsf(s);
+	len = sqrtf(f * f + s * s);
+
+	if (len > most && len > 0) {
+		f *= most / len;
+		s *= most / len;
+	}
+
+	if (p < 0 || p >= MAX_PLAYERS) {
+		*fwd = f;
+		*side = s;
+		return;
+	}
+
+	if (bwalkZombiesInAir() && !bwalkIsRolling()) {
+		// what it carries, in this frame's look, and Quake's PM_Accelerate
+		// toward the keys' wish: only the share of the wish it lacks is added
+		struct coord *v = &g_BwalkZombieAirVel[p];
+		f32 cf = v->x * ux + v->z * uz;
+		f32 cs = -v->x * uz + v->z * ux;
+		f32 wish = sqrtf(f * f + s * s);
+
+		if (wish > 0) {
+			const f32 df = f / wish;
+			const f32 ds = s / wish;
+			const f32 add = wish - (cf * df + cs * ds);
+
+			if (add > 0) {
+				f32 acc = BWALK_ZOMBIE_AIRACCEL * wish * g_Vars.lvupdate60freal * (1.0f / 60.0f);
+
+				if (acc > add) {
+					acc = add;
+				}
+
+				cf += acc * df;
+				cs += acc * ds;
+			}
+		}
+
+		f = cf;
+		s = cs;
+	}
+
+	g_BwalkZombieAirVel[p].x = f * ux - s * uz;
+	g_BwalkZombieAirVel[p].y = 0;
+	g_BwalkZombieAirVel[p].z = f * uz + s * ux;
+
+	*fwd = f;
+	*side = s;
+}
+#endif
 
 void bwalkUpdateSpeedTheta(void)
 {
@@ -3095,6 +3319,7 @@ void bwalk0f0c69b8(void)
 		if (zombiesIsActive() && !g_Vars.currentplayer->isdead) {
 			spd8 = (g_Vars.currentplayer->speedforwards * spc0 + spc8) * 7.9f;
 			spdc = (g_Vars.currentplayer->speedsideways * spc0 + spc4) * 8.2f;
+			bwalkZombiesShapeMove(&spd8, &spdc);
 		}
 #endif
 
