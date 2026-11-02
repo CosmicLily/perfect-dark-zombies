@@ -85,6 +85,9 @@
 
 bool zombiesIsActive(void);
 bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
+s32 zombiesClipSize(s32 weaponnum, s32 pdclip); // zombies.inc
+f32 zombiesHipSpreadDeg(s32 weaponnum);
+void zombiesNoteTrigger(bool on);
 
 // Zombies at the sights: the sights stand this far over the bore, which is put
 // under the middle of the view by as much (bgunTickHand...)
@@ -7101,6 +7104,34 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	}
 
 #ifndef PLATFORM_N64
+	// Zombies: a gun with Black Ops II's hip spread (zombiesHipSpreadDeg()):
+	// a shot anywhere in the cone of that many degrees, gone down the sights
+	// but for the shotgun's, which is its own either way
+	{
+		f32 deg = zombiesHipSpreadDeg(bgunGetWeaponNum2(handnum));
+
+		if (deg >= 0) {
+			const f32 frac = player->codaimfrac > 1 ? 1 : player->codaimfrac < 0 ? 0 : player->codaimfrac;
+			const f32 halffov = viGetFovY() * 0.5f * (M_PI / 180.0f);
+			f32 r, th, off;
+
+			if (weaponHost(bgunGetWeaponNum2(handnum)) != WEAPON_SHOTGUN) {
+				deg *= 1 - frac;
+			}
+
+			r = (dorandom ? RANDOMFRAC() : 0) * deg * (M_PI / 180.0f);
+			th = RANDOMFRAC() * M_BADTAU;
+			off = (sinf(r) / cosf(r)) / (sinf(halffov) / cosf(halffov)) * camGetScreenHeight() * 0.5f;
+
+			crosspos[0] = player->crosspos[0] + cosf(th) * off;
+			crosspos[1] = player->crosspos[1] + sinf(th) * off;
+
+			goto spreaddone;
+		}
+	}
+#endif
+
+#ifndef PLATFORM_N64
 	// Zombies: down the sights a shot goes where the sights are, as Black
 	// Ops II's adsSpread of 0 has it - all but the shotgun's, whose spread is
 	// its own either way. Perfect Dark's is the hip's at the sights too, and
@@ -7131,6 +7162,10 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 
 	crosspos[1] = player->crosspos[1] + (randfactor * scaledspread * camGetScreenHeight())
 		/ viGetHeight();
+
+#ifndef PLATFORM_N64
+spreaddone:
+#endif
 
 	cam0f0b4c3c(crosspos, gundir2d, 1);
 
@@ -15428,6 +15463,17 @@ void bgunTickGameplay(bool triggeron)
 		triggeron = false;
 	}
 
+	// Zombies: the trigger pulled ends a sprint (zombiesSprintTick()), and the
+	// shot waits for the gun to come up out of it, as Black Ops II's
+	// sprintOutTime has it
+	if (zombiesIsActive()) {
+		zombiesNoteTrigger(triggeron);
+
+		if (zombiesSprintGunFrac() > 0.25f) {
+			triggeron = false;
+		}
+	}
+
 	// Zombies: the knife button's slash, held until it starts
 	if (zombiesKnifeWantsTrigger()) {
 		triggeron = true;
@@ -17231,6 +17277,12 @@ void bgun0f0abd30(s32 handnum)
 			hand->ammotypes[i] = weapon->ammos[i]->type;
 
 			hand->clipsizes[i] = weapon->ammos[i]->clipsize;
+#ifndef PLATFORM_N64
+			// Zombies: Black Ops II's magazine (zombiesClipSize())
+			if (i == 0) {
+				hand->clipsizes[i] = zombiesClipSize(hand->gset.weaponnum, hand->clipsizes[i]);
+			}
+#endif
 
 #ifndef PLATFORM_N64
 			// Zombies: a Pack-a-Punched gun's magazine is bigger

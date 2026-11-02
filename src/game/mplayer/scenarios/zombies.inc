@@ -10315,6 +10315,7 @@ static f32 g_ZombieXhairFuse[MAX_PLAYERS];   // a beat's pop, falling
 
 f32 zombiesGunLowerFrac(void);
 bool modIsCodAimingOn(void);
+f32 zombiesHipSpreadDeg(s32 weaponnum);
 bool modIsWeaponAGun(s32 weaponnum);
 
 // Which beat of the fuse a grenade cooked this long is on, -1 before the pin
@@ -10422,6 +10423,11 @@ s32 zombiesCrosshair(f32 *spread)
 
 	*spread = g_ZombieXhairMove[playernum] + g_ZombieXhairPop[playernum];
 
+	// a gun with Black Ops II's spread shows it: its arms where the cone is
+	if (!holding && zombiesHipSpreadDeg(weaponnum) >= 0) {
+		*spread = zombiesHipSpreadDeg(weaponnum) * 0.67f;
+	}
+
 	if (player->crouchpos == CROUCHPOS_SQUAT) {
 		*spread *= 0.55f;
 	} else if (player->crouchpos == CROUCHPOS_DUCK) {
@@ -10446,6 +10452,160 @@ s32 zombiesCrosshair(f32 *spread)
 	}
 
 	return 2;
+}
+
+/**
+ * Each gun's magazine and hip spread as Black Ops II's weapon file has them
+ * (the gun its damage is from, g_ZombieCodGuns): clipSize, maxAmmo (spare
+ * magazines), and the hip's spread - hipSpreadStandMin, DuckedMin and
+ * ProneMin, the Maxes, and the scale between them, which each shot pushes out
+ * by hipSpreadFireAdd, moving by hipSpreadMoveAdd a second at a run, and
+ * which falls at hipSpreadDecayRate (times the Ducked or Prone Decay)
+ * a second; in the air it is at its widest. Degrees, a shot anywhere in the
+ * cone. Perfect Dark's own spread never moved: a gun fired as straight on
+ * the run as standing, and a tenth round as the first.
+ */
+struct zombiehip {
+	s32 weaponnum;
+	s16 clip;
+	s16 spares;
+	f32 min[3]; // standing, crouched, prone
+	f32 max[3];
+	f32 decay;
+	f32 fireadd;
+	f32 moveadd;
+	f32 duckdecay;
+	f32 pronedecay;
+};
+
+static const struct zombiehip g_ZombieHip[] = {
+	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1 }, // m1911
+	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
+	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
+	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
+	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
+	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1 }, // beretta93r
+	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
+	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
+	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1 }, // python
+	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1 }, // python
+	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp5k
+	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp5k
+	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f }, // pdw57
+	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f }, // pdw57
+	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1 }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f }, // qcw05
+	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // uzi
+	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp40
+	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // galil
+	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f }, // scar
+	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f }, // tar21
+	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f }, // fnfal
+	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f }, // type95
+	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // ak47
+	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f }, // lsat
+	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // rpd
+	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f }, // 870mcs
+	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1 }, // dsr50
+	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1 }, // barretm82
+	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1 }, // ballista
+};
+
+static f32 g_ZombieSpreadScale[MAX_PLAYERS];
+
+#define ZOMBIE_AMMO_CLIPS 8 // (again below, where the ammunition is: the same)
+
+static const struct zombiehip *zombiesHipRow(s32 weaponnum)
+{
+	s32 i;
+
+	weaponnum = weaponHost(weaponnum);
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieHip); i++) {
+		if (g_ZombieHip[i].weaponnum == weaponnum) {
+			return &g_ZombieHip[i];
+		}
+	}
+
+	return NULL;
+}
+
+// bondgun.c, a hand given its gun: the magazine Black Ops II's has, or
+// Perfect Dark's (pdclip) for a gun with no row
+s32 zombiesClipSize(s32 weaponnum, s32 pdclip)
+{
+	const struct zombiehip *row = zombiesIsActive() ? zombiesHipRow(weaponnum) : NULL;
+
+	return row ? row->clip : pdclip;
+}
+
+// The spare magazines a full gun carries: Black Ops II's maxAmmo, or
+// ZOMBIE_AMMO_CLIPS for a gun with no row
+static s32 zombiesSpareClips(s32 weaponnum)
+{
+	const struct zombiehip *row = zombiesHipRow(weaponnum);
+
+	return row ? row->spares : ZOMBIE_AMMO_CLIPS;
+}
+
+static s32 zombiesStance(void)
+{
+	return g_Vars.currentplayer->crouchpos == CROUCHPOS_SQUAT ? 2
+		: g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK ? 1 : 0;
+}
+
+// zombiesKickTick(), a tick of the current player's: the scale moved on
+static void zombiesTickSpread(s32 p, s32 weaponnum, s32 shots, f32 dt)
+{
+	const struct zombiehip *row = zombiesHipRow(weaponnum);
+	struct player *player = g_Vars.currentplayer;
+	const s32 stance = zombiesStance();
+	f32 *scale = &g_ZombieSpreadScale[p];
+	f32 move;
+
+	if (!row) {
+		*scale = 0;
+		return;
+	}
+
+	move = sqrtf(player->speedforwards * player->speedforwards + player->speedsideways * player->speedsideways);
+	move = move > 1 ? 1 : move;
+
+	*scale += shots * row->fireadd;
+	*scale += row->moveadd * move * dt;
+	*scale -= row->decay * (stance == 2 ? row->pronedecay : stance == 1 ? row->duckdecay : 1) * dt;
+
+	if (!player->bondonground || player->bondmovemode != MOVEMODE_WALK) {
+		*scale = 1;
+	}
+
+	*scale = *scale < 0 ? 0 : *scale > 1 ? 1 : *scale;
+}
+
+// bondgun.c, a shot: the hip's spread in degrees for the current player's gun
+// as it is now, -1 for a gun with no row (Perfect Dark's own then)
+f32 zombiesHipSpreadDeg(s32 weaponnum)
+{
+	const struct zombiehip *row = zombiesIsActive() ? zombiesHipRow(weaponnum) : NULL;
+	const s32 p = g_Vars.currentplayernum;
+	const s32 stance = zombiesStance();
+
+	if (!row || p < 0 || p >= MAX_PLAYERS) {
+		return -1;
+	}
+
+	return row->min[stance] + (row->max[stance] - row->min[stance]) * g_ZombieSpreadScale[p];
+}
+
+// bondgun.c, every tick: the trigger as the player holds it, before Zombies
+// holds it back (a sprint's gun coming up): pulled, the sprint ends
+static bool g_ZombieTriggerWant[MAX_PLAYERS];
+
+void zombiesNoteTrigger(bool on)
+{
+	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS) {
+		g_ZombieTriggerWant[g_Vars.currentplayernum] = on;
+	}
 }
 
 /**
@@ -10543,6 +10703,8 @@ void zombiesKickTick(void)
 
 	g_ZombieKickAmmo[p] = ammo;
 	g_ZombieKickWeapon[p] = weaponnum;
+
+	zombiesTickSpread(p, weaponnum, shots, dt);
 
 	// --zombies-test-kick N: a shot every N frames, the kick logged with --zombies-log-kick
 	if (sysArgCheck("--zombies-test-kick") && g_Vars.lvframenum > 200 && g_Vars.lvframenum % sysArgGetInt("--zombies-test-kick", 60) == 0) {
@@ -10654,7 +10816,8 @@ void zombiesSprintTick(void)
 
 	can = player->crouchpos == CROUCHPOS_STAND && player->bondmovemode == MOVEMODE_WALK
 		&& player->speedgo > 0.5f && !player->insightaimmode
-		&& !player->hands[HAND_RIGHT].triggeron && !player->hands[HAND_LEFT].triggeron;
+		&& !player->hands[HAND_RIGHT].triggeron && !player->hands[HAND_LEFT].triggeron
+		&& !(playernum >= 0 && playernum < MAX_PLAYERS && g_ZombieTriggerWant[playernum]);
 
 	used = used < 0 ? 0 : used > breath ? breath : used;
 
@@ -13402,6 +13565,11 @@ static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip)
 	s32 mult = zombiesPapClipMult(weaponnum);
 	s32 j;
 
+	// a full gun's spares are its Black Ops II maxAmmo
+	if (clips == ZOMBIE_AMMO_CLIPS) {
+		clips = zombiesSpareClips(weaponnum);
+	}
+
 	if (weapon == NULL) {
 		return;
 	}
@@ -13420,7 +13588,8 @@ static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip)
 			continue;
 		}
 
-		clip = (ammo->clipsize > 0 ? ammo->clipsize : 1) * mult;
+		clip = (j == 0 ? zombiesClipSize(weaponnum, ammo->clipsize) : ammo->clipsize);
+		clip = (clip > 0 ? clip : 1) * mult;
 		want = clip * (clips + (loadclip ? 1 : 0));
 		cap = bgunGetCapacityByAmmotype(ammo->type);
 
@@ -13440,7 +13609,7 @@ s32 zombiesStartAmmo(s32 weaponnum)
 {
 	struct weapon *weapon = weaponFindById(weaponnum);
 	struct inventory_ammo *ammo = weapon ? weapon->ammos[0] : NULL;
-	s32 clip = ammo && ammo->clipsize > 0 ? ammo->clipsize : 8;
+	s32 clip = ammo && ammo->clipsize > 0 ? zombiesClipSize(weaponnum, ammo->clipsize) : 8;
 
 	return clip * (ZOMBIE_AMMO_START_CLIPS + 1);
 }
@@ -17572,8 +17741,9 @@ static bool zombiesGunIsFull(s32 weaponnum)
 			continue;
 		}
 
-		clip = (ammo->clipsize > 0 ? ammo->clipsize : 1) * zombiesPapClipMult(weaponnum);
-		want = clip * (zombiesPapClipMult(weaponnum) > 1 ? ZOMBIE_PAP_CLIPS_FILL : ZOMBIE_AMMO_CLIPS);
+		clip = (j == 0 ? zombiesClipSize(weaponnum, ammo->clipsize) : ammo->clipsize);
+		clip = (clip > 0 ? clip : 1) * zombiesPapClipMult(weaponnum);
+		want = clip * (zombiesPapClipMult(weaponnum) > 1 ? ZOMBIE_PAP_CLIPS_FILL : zombiesSpareClips(weaponnum));
 		cap = bgunGetCapacityByAmmotype(ammo->type);
 
 		if (want > cap) {
@@ -25481,6 +25651,41 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 #endif
 
 	gdl = zombiesRenderDropMarkers(gdl);
+
+	// Black Ops II's ammo prompts under the middle of the view: Reload with a
+	// quarter of the magazine or less and more to load, Low Ammo with none
+	// spare, No Ammo with nothing at all (the knife and grenades aside)
+	if (!g_ZombieGameOver && g_Vars.currentplayer->hands[HAND_RIGHT].inuse
+			&& modIsWeaponAGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
+		struct hand *hand = &g_Vars.currentplayer->hands[HAND_RIGHT];
+		const s32 type = hand->ammotypes[0];
+		const s32 loaded = hand->loadedammo[0];
+		const s32 spare = type >= 0 ? g_Vars.currentplayer->ammoheldarr[type] : 0;
+		const char *say = NULL;
+
+		if (hand->clipsizes[0] > 0) {
+			if (loaded + spare <= 0) {
+				say = "No Ammo";
+			} else if (spare <= 0 && loaded <= hand->clipsizes[0] / 4) {
+				say = "Low Ammo";
+			} else if (spare > 0 && loaded <= hand->clipsizes[0] / 4 && hand->state != HANDSTATE_RELOAD) {
+				say = "Reload";
+			}
+		}
+
+		if (say) {
+#ifndef PLATFORM_N64
+			gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+#endif
+			gdl = text0f153628(gdl);
+			gdl = zombiesDrawWords(gdl, (char *)say, centrex, viGetViewTop() + viGetViewHeight() * 59 / 100,
+					say[0] == 'R' ? 0xffffffd0 : 0xf0e060d0);
+			gdl = text0f153780(gdl);
+#ifndef PLATFORM_N64
+			gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+#endif
+		}
+	}
 
 	// where am I (zombiesTickWhere())
 	if (g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < MAX_PLAYERS && g_ZombieWhere[g_Vars.currentplayernum]
