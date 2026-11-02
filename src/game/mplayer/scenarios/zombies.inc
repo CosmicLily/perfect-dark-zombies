@@ -10493,39 +10493,41 @@ struct zombiehip {
 	f32 reload;      // reloadTime, seconds
 	f32 reloadempty; // reloadEmptyTime, the magazine run dry
 	s32 pierce;      // zombies a bullet goes through: penetrateType none 1, small 2, medium 3, large 4
+	s16 upclip;      // Pack-a-Punched: the _upgraded_zm file's clipSize
+	s16 upspares;    // and its maxAmmo (Mustang and Sally's 50 is rounds: 8 of its 6)
 };
 
 static const struct zombiehip g_ZombieHip[] = {
-	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // m1911
-	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
-	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
-	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
-	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
-	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // beretta93r
-	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
-	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
-	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3 }, // python
-	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3 }, // python
-	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2 }, // mp5k
-	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2 }, // mp5k
-	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3 }, // pdw57
-	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3 }, // pdw57
-	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1, 2, 2.5f, 2 }, // evoskorpion
-	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f, 2.1f, 2.7f, 3 }, // qcw05
-	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 3, 2 }, // uzi
-	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2, 2.55f, 2 }, // mp40
-	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.25f, 2.925f, 3 }, // galil
-	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f, 2.4f, 3, 4 }, // scar
-	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.5f, 2.967f, 3 }, // tar21
-	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.4f, 2.9f, 3 }, // fnfal
-	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.375f, 2.945f, 3 }, // type95
-	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.5f, 3.25f, 3 }, // ak47
-	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f, 7, 7, 4 }, // lsat
-	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 7.5f, 7.5f, 4 }, // rpd
-	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f, 0, 0, 1 }, // 870mcs (a shell at a time in Black Ops II: Perfect Dark's own reload)
-	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.4f, 4.25f, 4 }, // dsr50
-	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.2f, 3.5f, 4 }, // barretm82
-	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1, 3.1f, 3.75f, 4 }, // ballista
+	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2, 6, 8 }, // m1911
+	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2, 15, 12 }, // kard
+	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2, 20, 10 }, // fiveseven
+	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2, 20, 10 }, // fiveseven
+	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2, 15, 12 }, // kard
+	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2, 20, 9 }, // beretta93r
+	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2, 20, 10 }, // fiveseven
+	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2, 15, 12 }, // kard
+	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3, 12, 8 }, // python
+	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3, 12, 8 }, // python
+	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2, 40, 5 }, // mp5k
+	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2, 40, 5 }, // mp5k
+	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3, 50, 7 }, // pdw57
+	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3, 50, 7 }, // pdw57
+	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1, 2, 2.5f, 2, 40, 8 }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f, 2.1f, 2.7f, 3, 40, 5 }, // qcw05
+	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 3, 2, 25, 12 }, // uzi
+	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2, 2.55f, 2, 64, 4 }, // mp40
+	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.25f, 2.925f, 3, 35, 14 }, // galil
+	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f, 2.4f, 3, 4, 40, 11 }, // scar
+	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.5f, 2.967f, 3, 30, 12 }, // tar21
+	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.4f, 2.9f, 3, 30, 12 }, // fnfal
+	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.375f, 2.945f, 3, 30, 9 }, // type95
+	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.5f, 3.25f, 3, 30, 9 }, // ak47
+	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f, 7, 7, 4, 100, 6 }, // lsat
+	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 7.5f, 7.5f, 4, 125, 6 }, // rpd
+	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f, 0, 0, 1, 10, 7 }, // 870mcs (a shell at a time in Black Ops II: Perfect Dark's own reload)
+	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.4f, 4.25f, 4, 8, 12 }, // dsr50
+	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.2f, 3.5f, 4, 7, 6 }, // barretm82
+	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1, 3.1f, 3.75f, 4, 10, 12 }, // ballista
 };
 
 static f32 g_ZombieSpreadScale[MAX_PLAYERS];
@@ -10562,7 +10564,20 @@ s32 zombiesClipSize(s32 weaponnum, s32 pdclip)
 {
 	const struct zombiehip *row = zombiesIsActive() ? zombiesHipRow(weaponnum) : NULL;
 
+	if (row && zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+		return row->upclip;
+	}
+
 	return row ? row->clip : pdclip;
+}
+
+// A Pack-a-Punched gun's spare magazines: its upgrade's maxAmmo, or
+// ZOMBIE_PAP_CLIPS_FILL for a gun with no row
+static s32 zombiesPapSpareClips(s32 weaponnum)
+{
+	const struct zombiehip *row = zombiesHipRow(weaponnum);
+
+	return row ? row->upspares : 10;
 }
 
 // The spare magazines a full gun carries: Black Ops II's maxAmmo, or
@@ -13778,8 +13793,10 @@ static void zombiesFillGun(s32 weaponnum, s32 clips, bool loadclip)
 		return;
 	}
 
-	if (mult > 1 && clips < ZOMBIE_PAP_CLIPS_FILL) {
-		clips = ZOMBIE_PAP_CLIPS_FILL;
+	// Pack-a-Punched: never fewer than its upgrade's spares (Black Ops II's
+	// upgraded maxAmmo for a gun with a row)
+	if (zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum) && clips < zombiesPapSpareClips(weaponnum)) {
+		clips = zombiesPapSpareClips(weaponnum);
 	}
 
 	for (j = 0; j < ARRAYCOUNT(weapon->ammos); j++) {
@@ -15243,7 +15260,9 @@ const char *zombiesPapName(s32 weaponnum, const char *name)
 // magazine is
 s32 zombiesPapClipMult(s32 weaponnum)
 {
-	if (zombiesIsActive() && zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum)) {
+	// a gun with Black Ops II's row has its upgrade's own magazine instead
+	// (zombiesClipSize())
+	if (zombiesIsActive() && zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum) && !zombiesHipRow(weaponnum)) {
 		return ZOMBIE_PAP_CLIPMULT;
 	}
 
@@ -15450,7 +15469,8 @@ static void zombiesPapUpgrade(s32 playernum, s32 weaponnum)
 			struct weapon *weapon = weaponFindById(weaponnum);
 
 			if (weapon && weapon->ammos[j] && hand->ammotypes[j] >= 0 && weapon->ammos[j]->clipsize > 0) {
-				hand->clipsizes[j] = weapon->ammos[j]->clipsize * ZOMBIE_PAP_CLIPMULT;
+				hand->clipsizes[j] = (j == 0 ? zombiesClipSize(weaponnum, weapon->ammos[j]->clipsize) : weapon->ammos[j]->clipsize)
+					* zombiesPapClipMult(weaponnum);
 				hand->loadedammo[j] = hand->clipsizes[j];
 			}
 		}
@@ -17947,7 +17967,7 @@ static bool zombiesGunIsFull(s32 weaponnum)
 
 		clip = (j == 0 ? zombiesClipSize(weaponnum, ammo->clipsize) : ammo->clipsize);
 		clip = (clip > 0 ? clip : 1) * zombiesPapClipMult(weaponnum);
-		want = clip * (zombiesPapClipMult(weaponnum) > 1 ? ZOMBIE_PAP_CLIPS_FILL : zombiesSpareClips(weaponnum));
+		want = clip * (zombiesGunIsPapped(g_Vars.currentplayernum, weaponnum) ? zombiesPapSpareClips(weaponnum) : zombiesSpareClips(weaponnum));
 		cap = bgunGetCapacityByAmmotype(ammo->type);
 
 		if (want > cap) {
