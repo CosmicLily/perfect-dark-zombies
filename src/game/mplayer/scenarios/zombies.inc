@@ -773,23 +773,22 @@ static f32 g_ZombieHealth[MAX_BOTS]; // each zombie's maxdamage, 0 for none yet
 
 static s32 zombiesCodHealthForRound(s32 round)
 {
-	s32 health = ZOMBIE_COD_HEALTH;
+	s64 health = ZOMBIE_COD_HEALTH;
 	s32 i;
 
 	for (i = 2; i <= round; i++) {
-		if (i <= 9) {
-			health += 100;
-		} else {
-			health += health / 10;
-		}
+		s64 next = i <= 9 ? health + 100 : health + health / 10;
 
-		// far past where anyone gets to, and short of overflowing
-		if (health > 10000000) {
+		// ai_calculate_health() keeps the last health that did not wrap a
+		// 32-bit int (round 163 on): it was cut off at ten million, round 136
+		if (next > 0x7fffffff) {
 			break;
 		}
+
+		health = next;
 	}
 
-	return health;
+	return (s32)health;
 }
 
 static f32 zombiesHealthForRound(s32 round)
@@ -989,12 +988,15 @@ static void zombiesTickSpeedUp(s32 alive)
 #define ZOMBIE_FAILSAFE_TORE60   (8 * 60)
 #define ZOMBIE_FAILSAFE_FIGHT    330.0f // near enough a player to be swiping at them (twice the reach)
 #define ZOMBIE_UNSTICK60         (10 * 60) // stuck away from every player this long: sent back
+#define ZOMBIE_CLEANUP_FAR       (1500.0f * 2.54f) // farther than this from every player ...
+#define ZOMBIE_CLEANUP60         (5 * 60)  // ... and unseen this long: sent back to come in nearer
 
 static s32 g_ZombieFailsafe60[MAX_BOTS];      // since the last look, -1 not out
 static struct coord g_ZombieFailsafePos[MAX_BOTS];
 static s32 g_ZombieTore60[MAX_BOTS];          // since it last tore at boards
 static s32 g_ZombieUnstick60[MAX_BOTS];      // ... and the quicker look away from the players
 static struct coord g_ZombieUnstickPos[MAX_BOTS];
+static s32 g_ZombieFar60[MAX_BOTS];          // far from every player and unseen, this long
 static bool g_ZombiePerimOff[MAX_BOTS];      // its bot walked through while at a window in a wall (zombiesTickBarriers())
 void chrSetPerimEnabled(struct chrdata *chr, bool enable);
 static s32 g_ZombieDiedBehind[MAX_BOTS];     // the window in a wall it died at, -1 none: drawn there till it comes again
@@ -1176,7 +1178,33 @@ static void zombiesTickFailsafe(void)
 				g_ZombieFailsafePos[i] = zchr->prop->pos;
 				g_ZombieUnstick60[i] = 0;
 				g_ZombieUnstickPos[i] = zchr->prop->pos;
+				g_ZombieFar60[i] = 0;
 				continue;
+			}
+
+			// Far from every player and out of everyone's sight: sent back to
+			// come again at a window nearer them (zombiesBarrierPick()), as
+			// Black Ops II's big maps clean up the stragglers
+			if (nearest > ZOMBIE_CLEANUP_FAR * ZOMBIE_CLEANUP_FAR && nearest < 1e29f
+					&& (zchr->prop->flags & (PROPFLAG_ONANYSCREENTHISTICK | PROPFLAG_ONANYSCREENPREVTICK)) == 0
+					&& g_ZombieAtBarrier[i] < 0 && !g_ZombieClimb[i].on) {
+				g_ZombieFar60[i] += g_Vars.lvupdate60;
+
+				if (g_ZombieFar60[i] >= ZOMBIE_CLEANUP60) {
+					sysLogPrintf(LOG_NOTE, "zombies: zombie %d %.0f away from every player, sent back to come again nearer",
+							i, sqrtf(nearest));
+					chrDamageByMisc(zchr, 10000, &none, NULL, NULL);
+
+					if (g_ZombieSpawned > 0) {
+						g_ZombieSpawned--;
+					}
+
+					g_ZombieFailsafe60[i] = -1;
+					g_ZombieFar60[i] = 0;
+					continue;
+				}
+			} else {
+				g_ZombieFar60[i] = 0;
 			}
 
 			if (g_ZombieAtBarrier[i] < 0 && !g_ZombieClimb[i].on) {
@@ -1260,6 +1288,7 @@ static bool zombiesSpawnOne(void)
 			g_ZombieClimb[i].on = false;
 			g_ZombieHidden[i] = false;
 			g_ZombieFailsafe60[i] = -1;
+			g_ZombieFar60[i] = 0;
 			g_ZombieDiedBehind[i] = -1;
 			zombiesPickMoveClass(i);
 			botSpawn(zchr, true);
@@ -23369,10 +23398,13 @@ static void zombiesTickGroans(void)
 		s32 vox;
 
 		// Black Ops II's own voices where they are there (zmsfx.c): a
-		// running zombie's sprint, now and then a taunt, else its groan; at
+		// runner's or sprinter's sprint, a walker's groan (only sprinters had
+		// the sprint: the runners groaned as walkers), now and then a taunt; at
 		// their own pitch, give or take a little
+		const s32 bi = zombiesBotIndex(zchr);
+
 		vox = zmSfxPickVox(zombiesChrIsCrawler(zchr) ? ZMVOX_CRAWL : rngRandom() % 6 == 0 ? ZMVOX_TAUNT
-				: zombiesChrSpeedScale(zchr) > 0.8f ? ZMVOX_SPRINT : ZMVOX_AMB, rngRandom());
+				: bi >= 0 && g_ZombieMoveClass[bi] != ZOMBIE_WALKER ? ZMVOX_SPRINT : ZMVOX_AMB, rngRandom());
 
 		if (vox >= 0) {
 			sound = ZMSFX_NET(vox);
