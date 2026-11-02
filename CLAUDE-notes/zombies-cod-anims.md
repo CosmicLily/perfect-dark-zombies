@@ -1335,3 +1335,35 @@ at its window (a 38-inch sill), the bus closes the west road.
 **Town's collision from the clip map itself (2026-10-29).** `tools/zombies/oat-clipmap/`: an OpenAssetTools dumper for T6's clip map (asset type `clipmap`, OAT's ASSET_TYPE_CLIPMAP_PVS) writes every brush, collision triangle and static model's collision triangle; `readClipMap()` in codmap.c reads it by default, the scan (`--codmap-scan`) and the hand slopes only without it. The user runs Unlinker (the auto-mode classifier will not let a session run it). The trap: a brush model's (door, bus, the 329 submodels) brushes and triangles are in its own space, round its origin, and sit in the same lists as the world's; read as the world's, ~900 of them stood through the middle of Town as walls and floors (stuck at the Juggernog stairs' foot, a floor 4 feet over the bank's). The dumper marks them B/T (skipped) by walking each submodel's leaf brush node: a node is a leaf only with a count *above zero* (ZoneCode's clipMap_t.txt says so), any other has two children at offsets from itself, and a leaf's brush list is its own block, not inside `info.leafbrushes`. Walking the world's leaves instead reaches the submodels' brushes too (useless). The converter also drops a brush shaped like a local one (tall round height 0, or wide round x or y 0): 18 left after the marking. Tested: free at the stairs' foot, on the bank's floor and stopped at its walls. Brush models are not placed at their entities yet: doors and the bus have no collision.
 **Town's brush models placed (2026-10-29).** `readPlacedModels()`: a `script_brushmodel` entity's `"model" "*N"` at its origin (none of Town's has angles) becomes solid, its B/T lines moved by it; one a `zombie_door` trigger targets is left open (the bar's 750, the bank's 1000 and the barber's 750 doors, Tranzit's electric door: Town has no Perfect Dark door objects for zombies.inc's buyable doors to use), and so are `lab_secret_hatch` and `mature_blood`. `script_parameters` (meat_remove, race_remove, turned_remove) name the modes a piece is gone from, never Survival. Placed: 21 over the map, 10 brushes in Town (the bank's two vault doors, three blockers by the bar and the bank). The other submodels are triggers and `info_volume`s (zones, lava), not solid.
 **Walking through Town's walls: the rooms a move is tested in (2026-10-29).** The walls were in the tiles (`--zombies-test-wallscan`, a row of thin-cylinder `cdTestVolume()`s along x, finds them; its radius must be over half its 10-unit step or it misses a face lying between two samples), but the walk's own test (`cdExamCylMove02()`) asks only the rooms the walker carries, from the portal walk, and on a codmap stage those can be a building piece alone (a room drawn with a grid square, its tile body empty). So 8-inch walls were walked through (F3 video: a room off the Juggernog street, -1268 777). `bwalkCdRooms()` now adds, on a codmap stage, the grid rooms whose boxes hold the player's middle or a point a radius out along x or z - the same answer GoldenEye's converted levels got from `geRoomAddNear()`. The segfault at `--exit-frame` with OBS open is OBS's `graphics-hook64.dll` in `exit()`, not ours.
+
+## Moving as Black Ops II's player (2026-11-02)
+
+**Units.** Zombies' movement takes a player's eye (159 units, Call of Duty's 60 inches) as the
+scale: 2.65 units an inch (`ZOMBIE_EYE_INCH`). The barriers' `ZOMBIE_COD_INCH` (2.54) is a
+different scale for a different job; don't merge them. In those units Perfect Dark's gravity
+(0.2778 a 60th a 60th, 1000 units/s²) was under half of Black Ops II's g_gravity 800 (2120), so
+its jump (5.75) rose 22 inches in 0.35 s and floated. `zombiesGravityScale()` and
+`zombiesJumpImpulse()` give jump_height 39: measured with `--zombies-test-jump F` (bondwalk.c),
+apex 103.3 units at 0.30 s, 0.62 s in the air. A dive keeps Perfect Dark's gravity (its push and
+hop were made for it). Perfect Dark's landing squat (`crouchfall`) is skipped in Zombies: at Call
+of Duty's gravity a plain jump's landing sank the view 65 units for a second. The landing dip is
+`bwalkZombieLandDip()` instead (about 10 units for a jump).
+
+**The walk.** `bwalkZombiesShapeMove()` puts back 0.7 / strafe 0.8 (sprint strafe 0.667) on the
+step, caps a diagonal at its quicker axis (it had been both together, 41% over a walk), and in
+the air carries the last move, nudged by Quake's PM_Accelerate at 1. Its tables
+(`g_BwalkZombie*`) are not in netpredict's `bwalkNetSide()` yet, so a client's replays don't
+restore them.
+
+**Numbers not from Black Ops II's files.** The dump has no `_zm*.gsc` and no dvar list, so the
+damage slow (player_dmgtimer: 750 ms, min scale 0) and fall damage (128 to 300 inches) are the
+IW engine's defaults, marked in zombies.inc. Swap in Black Ops II's own when the user gives them.
+
+**The sprint pose from the viewmodels.** A gun's sprint pose is measurable: compose the arms'
+skeleton (`build-dabs/zombies/viewmodel/arms.zvm`) with an `xanim.py` clip and compare
+`tag_weapon` in `viewmodel_<gun>_sprint_loop` against `_idle`, averaged over the loop.
+zm_buried has 40-odd guns. Two-handed guns: pitch 15-22° down, yaw 13-25° left, roll 25-33°.
+Pistols (all the same rig): 29° down, 16° right, 20°, and the grip 8 inches down, 7 right.
+Perfect Dark's Falcon already sits 33° under the eye, so the full drop takes it off screen; half
+is used. `--zombies-test-hold` with `--zombies-test-third 0` draws no first-person gun in a
+headless run, so the pose has not been seen on screen yet.

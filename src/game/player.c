@@ -6534,6 +6534,8 @@ void playerTick(bool arg0)
 #ifndef PLATFORM_N64
 		// a climb up one of GoldenEye's links, seen eased as GoldenEye eases it
 		spf4.y += bwalkGeClimbEyeLag();
+		// Zombies: the landing dip, as Call of Duty's
+		spf4.y += bwalkZombieLandDip();
 #endif
 
 		// The eye position and both basis vectors in bond2 are left alone, so
