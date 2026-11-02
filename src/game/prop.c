@@ -68,6 +68,7 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms);
 bool zombiesIsActive(void);
 #endif
 
+s32 zombiesPenetration(struct gset *gset, s32 penetration);
 bool zombiesKnifeStrike(bool landing);
 
 s16 *g_RoomPropListChunkIndexes;
