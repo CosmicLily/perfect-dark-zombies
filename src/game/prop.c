@@ -1,5 +1,8 @@
 #include <ultra64.h>
 #ifndef PLATFORM_N64
+s32 zombiesBulletPierce(s32 weaponnum); // zombies.inc
+#endif
+#ifndef PLATFORM_N64
 #include <stdlib.h>
 #endif
 #include "constants.h"
@@ -866,6 +869,13 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 	if (isshooting) {
 		shotdata.penetration = gsetGetSinglePenetration(&shotdata.gset);
+
+#ifndef PLATFORM_N64
+		// Zombies: through as many zombies as Black Ops II's gun goes
+		if (zombiesBulletPierce(shotdata.gset.weaponnum) > shotdata.penetration) {
+			shotdata.penetration = zombiesBulletPierce(shotdata.gset.weaponnum);
+		}
+#endif
 	} else {
 		shotdata.penetration = 1;
 	}

@@ -10486,39 +10486,40 @@ struct zombiehip {
 	f32 pronedecay;
 	f32 reload;      // reloadTime, seconds
 	f32 reloadempty; // reloadEmptyTime, the magazine run dry
+	s32 pierce;      // zombies a bullet goes through: penetrateType none 1, small 2, medium 3, large 4
 };
 
 static const struct zombiehip g_ZombieHip[] = {
-	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // m1911
-	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
-	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
-	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
-	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
-	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // beretta93r
-	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
-	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
-	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1 }, // python
-	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1 }, // python
-	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f }, // mp5k
-	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f }, // mp5k
-	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f }, // pdw57
-	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f }, // pdw57
-	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1, 2, 2.5f }, // evoskorpion
-	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f, 2.1f, 2.7f }, // qcw05
-	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 3 }, // uzi
-	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2, 2.55f }, // mp40
-	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.25f, 2.925f }, // galil
-	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f, 2.4f, 3 }, // scar
-	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.5f, 2.967f }, // tar21
-	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.4f, 2.9f }, // fnfal
-	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.375f, 2.945f }, // type95
-	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.5f, 3.25f }, // ak47
-	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f, 7, 7 }, // lsat
-	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 7.5f, 7.5f }, // rpd
-	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f, 0, 0 }, // 870mcs (a shell at a time in Black Ops II: Perfect Dark's own reload)
-	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.4f, 4.25f }, // dsr50
-	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.2f, 3.5f }, // barretm82
-	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1, 3.1f, 3.75f }, // ballista
+	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // m1911
+	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
+	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
+	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
+	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
+	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // beretta93r
+	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f, 2 }, // fiveseven
+	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f, 2 }, // kard
+	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3 }, // python
+	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1, 3 }, // python
+	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2 }, // mp5k
+	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f, 2 }, // mp5k
+	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3 }, // pdw57
+	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f, 3 }, // pdw57
+	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1, 2, 2.5f, 2 }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f, 2.1f, 2.7f, 3 }, // qcw05
+	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 3, 2 }, // uzi
+	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2, 2.55f, 2 }, // mp40
+	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.25f, 2.925f, 3 }, // galil
+	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f, 2.4f, 3, 4 }, // scar
+	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.5f, 2.967f, 3 }, // tar21
+	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.4f, 2.9f, 3 }, // fnfal
+	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.375f, 2.945f, 3 }, // type95
+	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.5f, 3.25f, 3 }, // ak47
+	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f, 7, 7, 4 }, // lsat
+	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 7.5f, 7.5f, 4 }, // rpd
+	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f, 0, 0, 1 }, // 870mcs (a shell at a time in Black Ops II: Perfect Dark's own reload)
+	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.4f, 4.25f, 4 }, // dsr50
+	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.2f, 3.5f, 4 }, // barretm82
+	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1, 3.1f, 3.75f, 4 }, // ballista
 };
 
 static f32 g_ZombieSpreadScale[MAX_PLAYERS];
@@ -10538,6 +10539,15 @@ static const struct zombiehip *zombiesHipRow(s32 weaponnum)
 	}
 
 	return NULL;
+}
+
+// prop.c, a player's shot: how many zombies (or things) the bullet goes
+// through, as Black Ops II's penetrateType lets it, 0 for Perfect Dark's own
+s32 zombiesBulletPierce(s32 weaponnum)
+{
+	const struct zombiehip *row = zombiesIsActive() ? zombiesHipRow(weaponnum) : NULL;
+
+	return row ? row->pierce : 0;
 }
 
 // bondgun.c, a hand given its gun: the magazine Black Ops II's has, or
