@@ -10116,6 +10116,8 @@ static void zombiesGivePerkEx(s32 playernum, s32 perk, bool quiet)
 	}
 }
 
+static f32 zombiesReloadRate(void); // below, by the hip table
+
 /**
  * bondgun.c asks, for the current player's hand: how much faster its clock
  * runs in the state it is in - Speed Cola's reload, Double Tap's fire
@@ -10128,8 +10130,14 @@ f32 zombiesHandRate(s32 handstate)
 		return 1;
 	}
 
-	if (handstate == HANDSTATE_RELOAD && zombiesPlayerHasPerk(playernum, ZOMBIEPERK_SPEEDCOLA)) {
-		return ZOMBIE_SPEEDCOLA_RATE;
+	if (handstate == HANDSTATE_RELOAD) {
+		f32 rate = zombiesReloadRate();
+
+		if (zombiesPlayerHasPerk(playernum, ZOMBIEPERK_SPEEDCOLA)) {
+			rate *= ZOMBIE_SPEEDCOLA_RATE;
+		}
+
+		return rate;
 	}
 
 	if (handstate == HANDSTATE_ATTACK && zombiesPlayerHasPerk(playernum, ZOMBIEPERK_DOUBLETAP)) {
@@ -10462,7 +10470,7 @@ s32 zombiesCrosshair(f32 *spread)
  * by hipSpreadFireAdd, moving by hipSpreadMoveAdd a second at a run, and
  * which falls at hipSpreadDecayRate (times the Ducked or Prone Decay)
  * a second; in the air it is at its widest. Degrees, a shot anywhere in the
- * cone. Perfect Dark's own spread never moved: a gun fired as straight on
+ * cone. And its reloadTime and reloadEmptyTime (zombiesHandRate()). Perfect Dark's own spread never moved: a gun fired as straight on
  * the run as standing, and a tenth round as the first.
  */
 struct zombiehip {
@@ -10476,39 +10484,41 @@ struct zombiehip {
 	f32 moveadd;
 	f32 duckdecay;
 	f32 pronedecay;
+	f32 reload;      // reloadTime, seconds
+	f32 reloadempty; // reloadEmptyTime, the magazine run dry
 };
 
 static const struct zombiehip g_ZombieHip[] = {
-	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1 }, // m1911
-	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
-	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
-	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
-	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
-	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1 }, // beretta93r
-	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // fiveseven
-	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1 }, // kard
-	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1 }, // python
-	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1 }, // python
-	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp5k
-	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp5k
-	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f }, // pdw57
-	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f }, // pdw57
-	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1 }, // evoskorpion
-	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f }, // qcw05
-	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // uzi
-	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1 }, // mp40
-	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // galil
-	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f }, // scar
-	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f }, // tar21
-	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f }, // fnfal
-	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f }, // type95
-	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // ak47
-	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f }, // lsat
-	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f }, // rpd
-	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f }, // 870mcs
-	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1 }, // dsr50
-	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1 }, // barretm82
-	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1 }, // ballista
+	{ WEAPON_FALCON2,            8, 10, { 3, 2.5f, 2 }, { 6, 5, 4 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // m1911
+	{ WEAPON_FALCON2_SILENCER,  12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
+	{ WEAPON_FALCON2_SCOPE,     20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
+	{ WEAPON_PP9I,              20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
+	{ WEAPON_CC13,              12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
+	{ WEAPON_MAGSEC4,           15,  7, { 3, 2.5f, 2 }, { 5, 5, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // beretta93r
+	{ WEAPON_MAULER,            20,  6, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.63f, 1.8f }, // fiveseven
+	{ WEAPON_PHOENIX,           12,  8, { 3, 2.5f, 2 }, { 5, 4, 3 }, 4, 1, 4.5f, 1, 1, 1.5f, 1.85f }, // kard
+	{ WEAPON_DY357MAGNUM,        6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1 }, // python
+	{ WEAPON_DY357LX,            6, 14, { 2, 1.5f, 1 }, { 4, 3, 2 }, 4, 1, 4.5f, 1, 1, 0.65f, 1 }, // python
+	{ WEAPON_CMP150,            30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f }, // mp5k
+	{ WEAPON_DMC,               30,  4, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 2.95f }, // mp5k
+	{ WEAPON_CYCLONE,           50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f }, // pdw57
+	{ WEAPON_RCP45,             50,  4, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.6f, 3.2f }, // pdw57
+	{ WEAPON_CALLISTO,          32,  8, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.6f, 4, 1, 1, 2, 2.5f }, // evoskorpion
+	{ WEAPON_LAPTOPGUN,         40,  3, { 2, 1.75f, 1.5f }, { 4.75f, 4.25f, 4 }, 4, 0.3f, 5, 1.05f, 1.1f, 2.1f, 2.7f }, // qcw05
+	{ WEAPON_KL01313,           25, 11, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2.4f, 3 }, // uzi
+	{ WEAPON_ZZT,               32,  6, { 2, 1.75f, 1.5f }, { 5, 4.5f, 4 }, 4, 0.52f, 4, 1, 1, 2, 2.55f }, // mp40
+	{ WEAPON_DRAGON,            35,  9, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.25f, 2.925f }, // galil
+	{ WEAPON_K7AVENGER,         30,  9, { 3, 2.5f, 2 }, { 6.75f, 5.75f, 5 }, 5, 0.6f, 5, 1.05f, 1.1f, 2.4f, 3 }, // scar
+	{ WEAPON_AR34,              30,  8, { 7, 2.5f, 2 }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.5f, 2.967f }, // tar21
+	{ WEAPON_SUPERDRAGON,       20,  9, { 5, 4.5f, 4 }, { 9, 8, 7 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.4f, 2.9f }, // fnfal
+	{ WEAPON_KF7SPECIAL,        30,  5, { 8, 2.5f, 1.5f }, { 12, 5.75f, 5 }, 4, 0.4f, 5, 1.05f, 1.1f, 2.375f, 2.945f }, // type95
+	{ WEAPON_AR53,              30,  8, { 3, 2.5f, 2 }, { 7, 6, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 2.5f, 3.25f }, // ak47
+	{ WEAPON_RCP120,           100,  4, { 6, 5, 2 }, { 12, 9, 4 }, 4, 0.4f, 5, 1.05f, 1.1f, 7, 7 }, // lsat
+	{ WEAPON_REAPER,           100,  4, { 2.5f, 2, 1.5f }, { 7, 5, 5 }, 4, 0.6f, 5, 1.05f, 1.1f, 7.5f, 7.5f }, // rpd
+	{ WEAPON_SHOTGUN,            6,  8, { 10, 5, 5 }, { 10, 7, 6 }, 4, 0.6f, 2, 1.05f, 1.1f, 0, 0 }, // 870mcs (a shell at a time in Black Ops II: Perfect Dark's own reload)
+	{ WEAPON_SNIPERRIFLE,        4, 12, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.4f, 4.25f }, // dsr50
+	{ WEAPON_FARSIGHT,           5,  6, { 10, 9.5f, 9 }, { 15, 14, 13 }, 5, 1, 5, 1, 1, 3.2f, 3.5f }, // barretm82
+	{ WEAPON_CROSSBOW,           8,  8, { 12, 9.5f, 9 }, { 16, 14, 13 }, 5, 1, 5, 1, 1, 3.1f, 3.75f }, // ballista
 };
 
 static f32 g_ZombieSpreadScale[MAX_PLAYERS];
@@ -10595,6 +10605,47 @@ f32 zombiesHipSpreadDeg(s32 weaponnum)
 	}
 
 	return row->min[stance] + (row->max[stance] - row->min[stance]) * g_ZombieSpreadScale[p];
+}
+
+/**
+ * A reload in Black Ops II's time: Perfect Dark's is its gun's reload
+ * animation's length (a frame a 60th), and the hand's clock is run so that
+ * comes out at the gun's reloadTime - its reloadEmptyTime when it was run dry
+ * (bondgun.c notes which as the reload starts, zombiesNoteReload()). 1 for a
+ * gun with no row; never more than four times or under a quarter
+ */
+static f32 g_ZombieReloadRate[MAX_PLAYERS];
+
+void zombiesNoteReload(s32 weaponnum, s32 animframes, bool empty)
+{
+	const struct zombiehip *row = zombiesHipRow(weaponnum);
+	const s32 p = g_Vars.currentplayernum;
+	f32 rate = 1;
+
+	if (p < 0 || p >= MAX_PLAYERS) {
+		return;
+	}
+
+	if (row && animframes > 0 && row->reload > 0) {
+		const f32 secs = empty ? row->reloadempty : row->reload;
+
+		rate = (animframes / 60.0f) / (secs > 0.1f ? secs : 0.1f);
+		rate = rate < 0.25f ? 0.25f : rate > 4 ? 4 : rate;
+	}
+
+	g_ZombieReloadRate[p] = rate;
+
+	if (sysArgCheck("--zombies-log-reload")) {
+		sysLogPrintf(LOG_NOTE, "zombies: reload of weapon %d, %d frames, %s: rate %.2f", weaponnum, animframes,
+				empty ? "empty" : "not empty", rate);
+	}
+}
+
+static f32 zombiesReloadRate(void)
+{
+	const s32 p = g_Vars.currentplayernum;
+
+	return p >= 0 && p < MAX_PLAYERS && g_ZombieReloadRate[p] > 0 ? g_ZombieReloadRate[p] : 1;
 }
 
 // bondgun.c, every tick: the trigger as the player holds it, before Zombies
@@ -10705,6 +10756,12 @@ void zombiesKickTick(void)
 	g_ZombieKickWeapon[p] = weaponnum;
 
 	zombiesTickSpread(p, weaponnum, shots, dt);
+
+	// --zombies-test-reload F: the magazine emptied at level frame F, for a
+	// reload to be timed (--zombies-log-reload)
+	if (sysArgCheck("--zombies-test-reload") && g_Vars.lvframenum == sysArgGetInt("--zombies-test-reload", 300)) {
+		player->hands[HAND_RIGHT].loadedammo[0] = 0;
+	}
 
 	// --zombies-test-kick N: a shot every N frames, the kick logged with --zombies-log-kick
 	if (sysArgCheck("--zombies-test-kick") && g_Vars.lvframenum > 200 && g_Vars.lvframenum % sysArgGetInt("--zombies-test-kick", 60) == 0) {

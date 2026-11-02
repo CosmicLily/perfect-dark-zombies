@@ -88,6 +88,9 @@ bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
 s32 zombiesClipSize(s32 weaponnum, s32 pdclip); // zombies.inc
 f32 zombiesHipSpreadDeg(s32 weaponnum);
 void zombiesNoteTrigger(bool on);
+void zombiesNoteReload(s32 weaponnum, s32 animframes, bool empty);
+static bool g_ZombieReloadEmpty[2];  // the reload began with the magazine dry
+static bool g_ZombieReloadNoted[2];  // and its rate has been had
 
 // Zombies at the sights: the sights stand this far over the bore, which is put
 // under the middle of the view by as much (bgunTickHand...)
@@ -4277,6 +4280,8 @@ bool bgunSetState(s32 handnum, s32 state)
 		// the reload (zombies.inc)
 		if (state == HANDSTATE_RELOAD && hand->state != HANDSTATE_RELOAD) {
 			zombiesReloadStarted(handnum);
+			g_ZombieReloadEmpty[handnum] = hand->loadedammo[0] == 0;
+			g_ZombieReloadNoted[handnum] = false;
 		}
 #endif
 
@@ -4332,9 +4337,18 @@ void bgunTickHand(s32 handnum)
 
 #ifndef PLATFORM_N64
 	// Zombies' Speed Cola and Double Tap: the hand's own clock runs faster
-	// while it reloads, or fires - its states' time and its animation's
+	// while it reloads, or fires - its states' time and its animation's. A
+	// reload's own rate, to Black Ops II's reloadTime, is had from its
+	// animation once that is on (zombiesNoteReload())
 	if (zombiesIsActive()) {
-		const f32 rate = zombiesHandRate(hand->state);
+		f32 rate;
+
+		if (hand->state == HANDSTATE_RELOAD && !g_ZombieReloadNoted[handnum] && hand->stateframes > 0) {
+			zombiesNoteReload(hand->gset.weaponnum, modelGetNumAnimFrames(&hand->gunmodel), g_ZombieReloadEmpty[handnum]);
+			g_ZombieReloadNoted[handnum] = true;
+		}
+
+		rate = zombiesHandRate(hand->state);
 
 		if (rate != 1.0f) {
 			lvupdate = (s32)(lvupdate * rate + 0.5f);
