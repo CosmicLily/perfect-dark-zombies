@@ -10741,6 +10741,7 @@ struct zombiecodshot {
 struct zombiecodgun {
 	s32 weaponnum;
 	u8 pellets;    // Black Ops II's shotCount, for a shotgun; 0 for a gun
+	u8 pen;        // how many zombies one bullet goes into (zombiesPenetration())
 	struct zombiecodshot base;
 	struct zombiecodshot up;
 };
@@ -10771,41 +10772,73 @@ struct zombiecodgun {
 
 static const struct zombiecodgun g_ZombieCodGuns[] = {
 	// pistols: the Falcon 2 is the starting M1911, Mustang and Sally upgraded
-	{ WEAPON_FALCON2,          0, ZOMBIE_M1911 },
-	{ WEAPON_FALCON2_SILENCER, 0, ZOMBIE_KAP40 },
-	{ WEAPON_FALCON2_SCOPE,    0, ZOMBIE_FIVE7 },
-	{ WEAPON_PP9I,             0, ZOMBIE_FIVE7 },
-	{ WEAPON_CC13,             0, ZOMBIE_KAP40 },
-	{ WEAPON_MAGSEC4,          0, ZOMBIE_B23R },
-	{ WEAPON_MAULER,           0, ZOMBIE_FIVE7 },
-	{ WEAPON_PHOENIX,          0, ZOMBIE_KAP40 },
-	{ WEAPON_DY357MAGNUM,      0, ZOMBIE_PYTHON },
-	{ WEAPON_DY357LX,          0, ZOMBIE_PYTHON },
+	{ WEAPON_FALCON2,          0, 2, ZOMBIE_M1911 },
+	{ WEAPON_FALCON2_SILENCER, 0, 2, ZOMBIE_KAP40 },
+	{ WEAPON_FALCON2_SCOPE,    0, 2, ZOMBIE_FIVE7 },
+	{ WEAPON_PP9I,             0, 2, ZOMBIE_FIVE7 },
+	{ WEAPON_CC13,             0, 2, ZOMBIE_KAP40 },
+	{ WEAPON_MAGSEC4,          0, 2, ZOMBIE_B23R },
+	{ WEAPON_MAULER,           0, 2, ZOMBIE_FIVE7 },
+	{ WEAPON_PHOENIX,          0, 2, ZOMBIE_KAP40 },
+	{ WEAPON_DY357MAGNUM,      0, 3, ZOMBIE_PYTHON },
+	{ WEAPON_DY357LX,          0, 3, ZOMBIE_PYTHON },
 	// sub-machine guns
-	{ WEAPON_CMP150,           0, ZOMBIE_MP5K },
-	{ WEAPON_DMC,              0, ZOMBIE_MP5K },
-	{ WEAPON_CYCLONE,          0, ZOMBIE_PDW57 },
-	{ WEAPON_RCP45,            0, ZOMBIE_PDW57 },
-	{ WEAPON_CALLISTO,         0, ZOMBIE_SKORPION },
-	{ WEAPON_LAPTOPGUN,        0, ZOMBIE_CHICOM },
-	{ WEAPON_KL01313,          0, ZOMBIE_UZI },
-	{ WEAPON_ZZT,              0, ZOMBIE_MP40 },
+	{ WEAPON_CMP150,           0, 2, ZOMBIE_MP5K },
+	{ WEAPON_DMC,              0, 2, ZOMBIE_MP5K },
+	{ WEAPON_CYCLONE,          0, 3, ZOMBIE_PDW57 },
+	{ WEAPON_RCP45,            0, 3, ZOMBIE_PDW57 },
+	{ WEAPON_CALLISTO,         0, 2, ZOMBIE_SKORPION },
+	{ WEAPON_LAPTOPGUN,        0, 3, ZOMBIE_CHICOM },
+	{ WEAPON_KL01313,          0, 2, ZOMBIE_UZI },
+	{ WEAPON_ZZT,              0, 2, ZOMBIE_MP40 },
 	// assault rifles
-	{ WEAPON_DRAGON,           0, ZOMBIE_GALIL },
-	{ WEAPON_K7AVENGER,        0, ZOMBIE_SCAR },
-	{ WEAPON_AR34,             0, ZOMBIE_MTAR },
-	{ WEAPON_SUPERDRAGON,      0, ZOMBIE_FAL },
-	{ WEAPON_KF7SPECIAL,       0, ZOMBIE_TYPE25 },
-	{ WEAPON_AR53,             0, ZOMBIE_AK47 },
+	{ WEAPON_DRAGON,           0, 3, ZOMBIE_GALIL },
+	{ WEAPON_K7AVENGER,        0, 4, ZOMBIE_SCAR },
+	{ WEAPON_AR34,             0, 3, ZOMBIE_MTAR },
+	{ WEAPON_SUPERDRAGON,      0, 3, ZOMBIE_FAL },
+	{ WEAPON_KF7SPECIAL,       0, 3, ZOMBIE_TYPE25 },
+	{ WEAPON_AR53,             0, 3, ZOMBIE_AK47 },
 	// light machine guns
-	{ WEAPON_RCP120,           0, ZOMBIE_LSAT },
-	{ WEAPON_REAPER,           0, ZOMBIE_RPD },
+	{ WEAPON_RCP120,           0, 4, ZOMBIE_LSAT },
+	{ WEAPON_REAPER,           0, 4, ZOMBIE_RPD },
 	// shotguns and snipers
-	{ WEAPON_SHOTGUN,          4, ZOMBIE_870 },
-	{ WEAPON_SNIPERRIFLE,      0, ZOMBIE_DSR50 },
-	{ WEAPON_FARSIGHT,         0, ZOMBIE_BARRETT },
-	{ WEAPON_CROSSBOW,         0, ZOMBIE_BALLISTA },
+	{ WEAPON_SHOTGUN,          4, 1, ZOMBIE_870 },
+	{ WEAPON_SNIPERRIFLE,      0, 4, ZOMBIE_DSR50 },
+	{ WEAPON_FARSIGHT,         0, 4, ZOMBIE_BARRETT },
+	{ WEAPON_CROSSBOW,         0, 4, ZOMBIE_BALLISTA },
 };
+
+/**
+ * prop.c, a player's shot: how many zombies one bullet goes into, Perfect
+ * Dark's own penetration otherwise. Black Ops II's bullets go on through a
+ * zombie by the gun's penetrateType (the weapon files): none a shotgun's
+ * pellet, which stops in the first; small a pistol's or a small sub-machine
+ * gun's, into a second; medium most rifles', a third; large the light
+ * machine guns', the SCAR's and the snipers', a fourth. Each zombie it goes
+ * into is a hit of its own, paying its 10 (zombiesAwardHit()). How far each
+ * type goes into flesh is the engine's table, not in the dump; these are the
+ * three types a zombie apart. Perfect Dark's own when it is more (the
+ * Farsight's five)
+ */
+s32 zombiesPenetration(struct gset *gset, s32 penetration)
+{
+	s32 weaponnum;
+	s32 i;
+
+	if (!zombiesIsActive() || !gset) {
+		return penetration;
+	}
+
+	weaponnum = weaponHost(gset->weaponnum);
+
+	for (i = 0; i < ARRAYCOUNT(g_ZombieCodGuns); i++) {
+		if (g_ZombieCodGuns[i].weaponnum == weaponnum) {
+			return g_ZombieCodGuns[i].pen > penetration ? g_ZombieCodGuns[i].pen : penetration;
+		}
+	}
+
+	return penetration;
+}
 
 /**
  * Down the sights as Black Ops II's: each gun's adsTransInTime and

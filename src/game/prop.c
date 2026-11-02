@@ -65,6 +65,7 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms);
 bool zombiesIsActive(void);
 #endif
 
+s32 zombiesPenetration(struct gset *gset, s32 penetration);
 bool zombiesKnifeStrike(bool landing);
 
 s16 *g_RoomPropListChunkIndexes;
@@ -866,6 +867,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 	if (isshooting) {
 		shotdata.penetration = gsetGetSinglePenetration(&shotdata.gset);
+		shotdata.penetration = zombiesPenetration(&shotdata.gset, shotdata.penetration);
 	} else {
 		shotdata.penetration = 1;
 	}
