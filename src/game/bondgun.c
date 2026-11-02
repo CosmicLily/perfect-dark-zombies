@@ -88,6 +88,7 @@ bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy); // zombies.inc
 s32 zombiesClipSize(s32 weaponnum, s32 pdclip); // zombies.inc
 f32 zombiesHipSpreadDeg(s32 weaponnum);
 void zombiesNoteTrigger(bool on);
+bool zombiesScopeOn(void);
 void zombiesNoteReload(s32 weaponnum, s32 animframes, bool empty);
 static bool g_ZombieReloadEmpty[2];  // the reload began with the magazine dry
 static bool g_ZombieReloadNoted[2];  // and its rate has been had
@@ -13887,6 +13888,13 @@ void bgunRender(Gfx **gdlptr)
 	static bool renderhand = true; // var800702dc
 
 	player = g_Vars.currentplayer;
+
+#ifndef PLATFORM_N64
+	// Zombies' scope up: the view is through it, the gun not drawn
+	if (zombiesScopeOn()) {
+		return;
+	}
+#endif
 
 	if (player->visionmode == VISIONMODE_XRAY) {
 		for (i = 0; i < 2; i++) {

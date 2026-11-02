@@ -10324,6 +10324,7 @@ static f32 g_ZombieXhairFuse[MAX_PLAYERS];   // a beat's pop, falling
 f32 zombiesGunLowerFrac(void);
 bool modIsCodAimingOn(void);
 f32 zombiesHipSpreadDeg(s32 weaponnum);
+bool zombiesScopeOn(void);
 bool modIsWeaponAGun(s32 weaponnum);
 
 // Which beat of the fuse a grenade cooked this long is on, -1 before the pin
@@ -10410,6 +10411,11 @@ s32 zombiesCrosshair(f32 *spread)
 	// Ray Gun's is the ring on its model. A scope's view keeps the game's
 	// sight, and so does aim mode with the gun not raised (COD Style Aiming
 	// off). The count is kept all the same
+	// the Falcon 2's scope up: its own reticle (zombiesRenderScope())
+	if (zombiesScopeOn()) {
+		return 1;
+	}
+
 	if (player->codaimfrac > 0.5f && !bgunScopeCoversView(weaponnum)) {
 		return 1;
 	}
@@ -10658,6 +10664,136 @@ static f32 zombiesReloadRate(void)
 	return p >= 0 && p < MAX_PLAYERS && g_ZombieReloadRate[p] > 0 ? g_ZombieReloadRate[p] : 1;
 }
 
+/**
+ * A scope down the sights, as Black Ops II's: the view through a round window
+ * in black with a reticle (zombiesRenderScope()), the gun not drawn, the zoom
+ * deeper (g_ZombieAds), and the view drifting a little, as a held scope does;
+ * the Sprint button steadies it for ZOMBIE_SCOPE_STEADY60 (Black Ops II's
+ * hold breath). Perfect Dark's own scopes - the Sniper Rifle's, the
+ * Farsight's - keep theirs; this is the Falcon 2's, a pistol's, which had none.
+ */
+#define ZOMBIE_SCOPE_SWAY     0.35f // degrees, the drift's reach
+#define ZOMBIE_SCOPE_STEADY60 240   // the breath held: four seconds
+
+static s32 g_ZombieScopeSteady60[MAX_PLAYERS];
+static f32 g_ZombieScopeSway[MAX_PLAYERS][2]; // as put on the view
+static f32 g_ZombieScopeAmp[MAX_PLAYERS];
+
+bool zombiesScopeOn(void)
+{
+	struct player *player = g_Vars.currentplayer;
+
+	return zombiesIsActive() && player && player->hands[HAND_RIGHT].inuse
+		&& weaponHost(player->gunctrl.weaponnum) == WEAPON_FALCON2_SCOPE
+		&& (player->codaimfrac > 0.85f || (player->insightaimmode && bgunScopeCoversView(player->gunctrl.weaponnum)));
+}
+
+// zombiesKickTick(): the drift moved on and put on the view
+static void zombiesTickScope(s32 p, f32 dt)
+{
+	struct player *player = g_Vars.currentplayer;
+	const bool on = zombiesScopeOn();
+	f32 target = on ? ZOMBIE_SCOPE_SWAY : 0;
+	f32 want[2];
+	f32 t;
+	s32 i;
+
+	if (on && g_ZombieSprintPress[p]) {
+		g_ZombieScopeSteady60[p] = ZOMBIE_SCOPE_STEADY60;
+	}
+
+	if (!on) {
+		g_ZombieScopeSteady60[p] = 0;
+	}
+
+	if (g_ZombieScopeSteady60[p] > 0) {
+		g_ZombieScopeSteady60[p] -= g_Vars.lvupdate60;
+		target = 0;
+	}
+
+	// eased to its reach, so the drift comes and goes without a jump
+	g_ZombieScopeAmp[p] += (target - g_ZombieScopeAmp[p]) * (dt * 4 > 1 ? 1 : dt * 4);
+
+	t = g_Vars.lvframe60 / 60.0f;
+	want[0] = g_ZombieScopeAmp[p] * sinf(t * 1.3f) * 0.7f;
+	want[1] = g_ZombieScopeAmp[p] * sinf(t * 0.8f + 1.0f);
+
+	for (i = 0; i < 2; i++) {
+		const f32 d = want[i] - g_ZombieScopeSway[p][i];
+
+		g_ZombieScopeSway[p][i] = want[i];
+
+		if (i == 0) {
+			player->vv_verta += d;
+		} else {
+			player->vv_theta += d;
+
+			if (player->vv_theta >= 360) {
+				player->vv_theta -= 360;
+			} else if (player->vv_theta < 0) {
+				player->vv_theta += 360;
+			}
+		}
+	}
+}
+
+// The HUD: the scope's black round its window, and its reticle, over all the
+// view's width (HUD units, under G_ASPECT_CENTER_EXT, the wide screen's
+// edges past 0 and 320: zombiesFillQuarter())
+static Gfx *zombiesFillQuarter(Gfx *gdl, f32 x1, f32 y1, f32 x2, f32 y2); // below, with the chalk
+
+static Gfx *zombiesRenderScope(Gfx *gdl)
+{
+	const f32 k = videoGetAspect() / SCREEN_ASPECT;
+	const f32 left = SCREEN_WIDTH_LO / 2 - SCREEN_WIDTH_LO / 2 * k - 2;
+	const f32 right = SCREEN_WIDTH_LO / 2 + SCREEN_WIDTH_LO / 2 * k + 2;
+	const f32 top = viGetViewTop();
+	const f32 bottom = viGetViewTop() + viGetViewHeight();
+	const f32 cx = SCREEN_WIDTH_LO / 2;
+	const f32 cy = (top + bottom) / 2;
+	const f32 r = viGetViewHeight() * 0.46f;
+	f32 y;
+
+	if (!zombiesScopeOn()) {
+		return gdl;
+	}
+
+#ifndef PLATFORM_N64
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+#endif
+	gdl = text0f153628(gdl);
+	gdl = textSetPrimColour(gdl, 0x000000ff);
+
+	// the black, a quarter unit's strip at a time, the window's chord left out
+	for (y = top; y < bottom; y += 0.5f) {
+		const f32 dy = y + 0.25f - cy;
+
+		if (dy * dy >= r * r) {
+			gdl = zombiesFillQuarter(gdl, left, y, right, y + 0.5f);
+		} else {
+			const f32 half = sqrtf(r * r - dy * dy);
+
+			gdl = zombiesFillQuarter(gdl, left, y, cx - half, y + 0.5f);
+			gdl = zombiesFillQuarter(gdl, cx + half, y, right, y + 0.5f);
+		}
+	}
+
+	// the reticle: thick posts from the rim, a fine cross through the middle
+	gdl = zombiesFillQuarter(gdl, cx - 0.75f, cy - r, cx + 0.75f, cy - r * 0.45f);
+	gdl = zombiesFillQuarter(gdl, cx - 0.75f, cy + r * 0.45f, cx + 0.75f, cy + r);
+	gdl = zombiesFillQuarter(gdl, cx - r, cy - 0.75f, cx - r * 0.45f, cy + 0.75f);
+	gdl = zombiesFillQuarter(gdl, cx + r * 0.45f, cy - 0.75f, cx + r, cy + 0.75f);
+	gdl = zombiesFillQuarter(gdl, cx - 0.25f, cy - r * 0.45f, cx + 0.25f, cy + r * 0.45f);
+	gdl = zombiesFillQuarter(gdl, cx - r * 0.45f, cy - 0.25f, cx + r * 0.45f, cy + 0.25f);
+
+	gdl = text0f153780(gdl);
+#ifndef PLATFORM_N64
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+#endif
+
+	return gdl;
+}
+
 // bondgun.c, every tick: the trigger as the player holds it, before Zombies
 // holds it back (a sprint's gun coming up): pulled, the sprint ends
 static bool g_ZombieTriggerWant[MAX_PLAYERS];
@@ -10766,6 +10902,7 @@ void zombiesKickTick(void)
 	g_ZombieKickWeapon[p] = weaponnum;
 
 	zombiesTickSpread(p, weaponnum, shots, dt);
+	zombiesTickScope(p, dt);
 
 	// --zombies-test-reload F: the magazine emptied at level frame F, for a
 	// reload to be timed (--zombies-log-reload)
@@ -11054,7 +11191,7 @@ struct zombieads {
 static const struct zombieads g_ZombieAds[] = {
 	{ WEAPON_FALCON2,          0.1f,   0.1f,   65 }, // m1911
 	{ WEAPON_FALCON2_SILENCER, 0.1f,   0.1f,   60 }, // kard
-	{ WEAPON_FALCON2_SCOPE,    0.125f, 0.125f, 60 }, // fiveseven
+	{ WEAPON_FALCON2_SCOPE,    0.2f,   0.2f,   30 }, // fiveseven's times, its scope's zoom (zombiesScopeOn())
 	{ WEAPON_PP9I,             0.125f, 0.125f, 60 },
 	{ WEAPON_CC13,             0.1f,   0.1f,   60 },
 	{ WEAPON_MAGSEC4,          0.125f, 0.125f, 60 }, // beretta93r
@@ -25718,6 +25855,8 @@ Gfx *zombiesRenderHud(Gfx *gdl)
 #endif
 
 	gdl = zombiesRenderDropMarkers(gdl);
+
+	gdl = zombiesRenderScope(gdl);
 
 	// Black Ops II's ammo prompts under the middle of the view: Reload with a
 	// quarter of the magazine or less and more to load, Low Ammo with none
