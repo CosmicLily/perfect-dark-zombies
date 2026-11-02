@@ -89,6 +89,7 @@ s32 zombiesClipSize(s32 weaponnum, s32 pdclip); // zombies.inc
 f32 zombiesHipSpreadDeg(s32 weaponnum);
 void zombiesNoteTrigger(bool on);
 bool zombiesScopeOn(void);
+f32 zombiesAutoRpm(s32 weaponnum);
 void zombiesNoteReload(s32 weaponnum, s32 animframes, bool empty);
 static bool g_ZombieReloadEmpty[2];  // the reload began with the magazine dry
 static bool g_ZombieReloadNoted[2];  // and its rate has been had
@@ -2405,6 +2406,13 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 		f32 tmp2;
 
 		tmp = autofunc->initialrpm + (autofunc->maxrpm - autofunc->initialrpm) * hand->gs_float1;
+
+#ifndef PLATFORM_N64
+		// Zombies: Black Ops II's rate of fire (zombiesAutoRpm())
+		if (zombiesAutoRpm(hand->gset.weaponnum) > 0) {
+			tmp = zombiesAutoRpm(hand->gset.weaponnum);
+		}
+#endif
 		tmp2 = tmp / 60.0f * (LVUPDATE60FREAL() / 60.0f) + hand->shotremainder;
 
 		hand->shotstotake = tmp2;
