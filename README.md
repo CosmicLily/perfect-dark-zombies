@@ -5,10 +5,9 @@ like Black Ops II's: rounds, boarded windows, the Mystery Box, perk machines,
 Pack-a-Punch, wall buys and power-ups. Pick it as the scenario in the Combat
 Simulator.
 
-**[Download](https://github.com/CosmicLily/perfect-dark-zombies/releases/latest)**
-— Windows, Linux and macOS. There is also a
-[rolling dev build](https://github.com/CosmicLily/perfect-dark-zombies/releases/tag/dabs-mod-dev)
-of the newest changes.
+**[Download the beta](https://github.com/CosmicLily/perfect-dark-zombies/releases/tag/dabs-mod-dev)**
+— Windows, Linux and macOS. It is a work in progress, rebuilt with every fix;
+**Check for Updates** in the game fetches the newest one.
 
 ## You need a ROM
 
