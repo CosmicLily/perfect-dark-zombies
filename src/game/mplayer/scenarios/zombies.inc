@@ -14539,6 +14539,12 @@ static void zombiesNameOwnGuns(void)
 	named = true;
 	raygun->name = raygun->shortname = langAddPortText("Ray Gun\n");
 
+	// its first function, the bolt: the Phoenix's own name for it was
+	// "Explosive Shells"
+	if (raygun->functions[0]) {
+		((struct weaponfunc *)raygun->functions[0])->name = langAddPortText("Plasma Bolts\n");
+	}
+
 	// its second function, the charged burst (invitems.c)
 	if (raygun->functions[1]) {
 		((struct weaponfunc *)raygun->functions[1])->name = langAddPortText("Charged Burst\n");
