@@ -116,13 +116,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pd-dabs-mod-x86_64-windows
+          name: perfect-zombies-x86_64-windows
           path: bin/
           retention-days: 0
       - name: Upload debug info
         uses: actions/upload-artifact@v4
         with:
-          name: pd-dabs-mod-x86_64-windows-debug
+          name: perfect-zombies-x86_64-windows-debug
           path: debug/
           retention-days: 0
 
@@ -184,13 +184,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pd-dabs-mod-x86_64-linux
+          name: perfect-zombies-x86_64-linux
           path: bin/
           retention-days: 0
       - name: Upload debug info
         uses: actions/upload-artifact@v4
         with:
-          name: pd-dabs-mod-x86_64-linux-debug
+          name: perfect-zombies-x86_64-linux-debug
           path: debug/
           retention-days: 0
 
@@ -231,7 +231,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pd-dabs-mod-${{ matrix.arch }}-osx
+          name: perfect-zombies-${{ matrix.arch }}-osx
           path: bin/
           retention-days: 0
 
@@ -251,9 +251,9 @@ jobs:
           pushd ci-artifacts
           # upload-artifact round-trips through a zip and drops the executable
           # bit, so the tarballs would ship a game nobody can start.
-          chmod +x pd-dabs-mod-x86_64-linux/pd.x86_64 \
-                   pd-dabs-mod-x86_64-osx/pd.x86_64 \
-                   pd-dabs-mod-arm64-osx/pd.arm64
+          chmod +x perfect-zombies-x86_64-linux/pd.x86_64 \
+                   perfect-zombies-x86_64-osx/pd.x86_64 \
+                   perfect-zombies-arm64-osx/pd.arm64
           # A download is the game and nothing of anyone's: no ROM, no XBLA
           # or Call of Duty files, no saves or settings, no notes for the
           # agent that helps write it. None of those are in the repository,
@@ -268,10 +268,10 @@ jobs:
             echo "$bad"
             exit 1
           fi
-          tar czf ../ci-release/pd-dabs-mod-x86_64-linux.tar.gz pd-dabs-mod-x86_64-linux
-          tar cJf ../ci-release/pd-dabs-mod-x86_64-osx.tar.xz pd-dabs-mod-x86_64-osx
-          tar cJf ../ci-release/pd-dabs-mod-arm64-osx.tar.xz pd-dabs-mod-arm64-osx
-          zip -r ../ci-release/pd-dabs-mod-x86_64-windows.zip pd-dabs-mod-x86_64-windows
+          tar czf ../ci-release/perfect-zombies-x86_64-linux.tar.gz perfect-zombies-x86_64-linux
+          tar cJf ../ci-release/perfect-zombies-x86_64-osx.tar.xz perfect-zombies-x86_64-osx
+          tar cJf ../ci-release/perfect-zombies-arm64-osx.tar.xz perfect-zombies-arm64-osx
+          zip -r ../ci-release/perfect-zombies-x86_64-windows.zip perfect-zombies-x86_64-windows
           popd
 
       # The bare executables, beside the packages rather than instead of them.
@@ -287,16 +287,16 @@ jobs:
       - name: Lay out the bare builds and write the update manifest
         run: |
           set -eu
-          cp ci-artifacts/pd-dabs-mod-x86_64-windows/pd.x86_64.exe ci-release/pd.x86_64-windows.exe
-          cp ci-artifacts/pd-dabs-mod-x86_64-linux/pd.x86_64         ci-release/pd.x86_64-linux
-          cp ci-artifacts/pd-dabs-mod-x86_64-osx/pd.x86_64           ci-release/pd.x86_64-osx
-          cp ci-artifacts/pd-dabs-mod-arm64-osx/pd.arm64             ci-release/pd.arm64-osx
+          cp ci-artifacts/perfect-zombies-x86_64-windows/pd.x86_64.exe ci-release/pd.x86_64-windows.exe
+          cp ci-artifacts/perfect-zombies-x86_64-linux/pd.x86_64         ci-release/pd.x86_64-linux
+          cp ci-artifacts/perfect-zombies-x86_64-osx/pd.x86_64           ci-release/pd.x86_64-osx
+          cp ci-artifacts/perfect-zombies-arm64-osx/pd.arm64             ci-release/pd.arm64-osx
 
           # The debug info the Windows and Linux builds were stripped of, for
           # symbolising a crash report from this build. Release assets only:
           # update.txt below names the binaries, so no game ever downloads them.
-          cp ci-artifacts/pd-dabs-mod-x86_64-windows-debug/pd.x86_64.exe.debug ci-release/pd.x86_64-windows.exe.debug
-          cp ci-artifacts/pd-dabs-mod-x86_64-linux-debug/pd.x86_64.debug       ci-release/pd.x86_64-linux.debug
+          cp ci-artifacts/perfect-zombies-x86_64-windows-debug/pd.x86_64.exe.debug ci-release/pd.x86_64-windows.exe.debug
+          cp ci-artifacts/perfect-zombies-x86_64-linux-debug/pd.x86_64.debug       ci-release/pd.x86_64-linux.debug
 
           # The patch notes, beside the manifest. Check for Updates fetches
           # them after update.txt to show what the release brings; a release
@@ -346,6 +346,7 @@ jobs:
           gh release view "$VER" >/dev/null 2>&1 || \
             gh release create "$VER" --title "Perfect Zombies $VER" --notes "Test"
           gh release upload --clobber "$VER" ci-release/*
+          for old in arm64-osx.tar.xz x86_64-osx.tar.xz x86_64-linux.tar.gz x86_64-windows.zip; do gh release delete-asset "$VER" "pd-dabs-mod-$old" -y 2>/dev/null || true; done
           gh release edit "$VER" --title "Perfect Zombies $VER" --notes "Test"
 
       # The rolling build. The tag is moved rather than added to, so the
@@ -363,6 +364,8 @@ jobs:
           gh release view dabs-mod-dev >/dev/null 2>&1 || \
             gh release create dabs-mod-dev --prerelease --title "Perfect Zombies (latest build)" --notes "Test"
           gh release upload --clobber dabs-mod-dev ci-release/*
+          # the downloads under their names from before Perfect Zombies, gone
+          for old in arm64-osx.tar.xz x86_64-osx.tar.xz x86_64-linux.tar.gz x86_64-windows.zip; do gh release delete-asset dabs-mod-dev "pd-dabs-mod-$old" -y 2>/dev/null || true; done
           # Its title and text set every time, so a release made before they
           # changed says them too
           gh release edit dabs-mod-dev --title "Perfect Zombies (latest build)" --notes "Test"
