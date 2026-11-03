@@ -35,7 +35,9 @@ env:
   # the rolling dev prerelease and looks for the next one of those. The binary
   # cannot work this out for itself, because the checkout step below forces the
   # branch name to dabs-mod either way.
-  UPDATE_CHANNEL: ${{ github.ref_type == 'tag' && 'stable' || 'dev' }}
+  # Perfect Zombies is a beta: every build, a v* release's too, follows the
+  # rolling build, so a fix pushed reaches whoever has any download.
+  UPDATE_CHANNEL: dev
   # ntsc-final only. The mod has never been tested against PAL or JPN, and
   # building all three would triple the time for two ROMs nobody has asked for.
   ROMID: ntsc-final
