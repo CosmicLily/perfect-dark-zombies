@@ -61,7 +61,7 @@
 // job keeps moving, and "latest" would never point at it.
 #define UPDATE_REPO "https://github.com/CosmicLily/perfect-dark-zombies/releases"
 #define UPDATE_URL_STABLE UPDATE_REPO "/latest/download"
-#define UPDATE_URL_DEV    UPDATE_REPO "/download/dabs-mod-dev"
+#define UPDATE_URL_DEV    UPDATE_REPO "/download/beta"
 
 // The manifest, which is the only thing here that is not a file the CI already
 // had a reason to build. It is written by the release job and read by this.

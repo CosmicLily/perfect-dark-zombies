@@ -356,16 +356,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag --force dabs-mod-dev "$GITHUB_SHA"
-          git push --force origin refs/tags/dabs-mod-dev
+          git tag --force beta "$GITHUB_SHA"
+          git push --force origin refs/tags/beta
+          # the rolling build was called dabs-mod-dev before Perfect Zombies
+          gh release delete dabs-mod-dev --cleanup-tag -y 2>/dev/null || true
           # Upstream's workflow assumes the release already exists, because in
           # its repo someone made it by hand years ago. A fresh repo has no such
           # release and `gh release upload` would fail on the first run.
-          gh release view dabs-mod-dev >/dev/null 2>&1 || \
-            gh release create dabs-mod-dev --prerelease --title "Perfect Zombies (latest build)" --notes "Test"
-          gh release upload --clobber dabs-mod-dev ci-release/*
+          gh release view beta >/dev/null 2>&1 || \
+            gh release create beta --prerelease --title "Perfect Zombies (latest build)" --notes "Test"
+          gh release upload --clobber beta ci-release/*
           # the downloads under their names from before Perfect Zombies, gone
-          for old in arm64-osx.tar.xz x86_64-osx.tar.xz x86_64-linux.tar.gz x86_64-windows.zip; do gh release delete-asset dabs-mod-dev "pd-dabs-mod-$old" -y 2>/dev/null || true; done
+          for old in arm64-osx.tar.xz x86_64-osx.tar.xz x86_64-linux.tar.gz x86_64-windows.zip; do gh release delete-asset beta "pd-dabs-mod-$old" -y 2>/dev/null || true; done
           # Its title and text set every time, so a release made before they
           # changed says them too
-          gh release edit dabs-mod-dev --title "Perfect Zombies (latest build)" --notes "Test"
+          gh release edit beta --title "Perfect Zombies (latest build)" --notes "Test"
