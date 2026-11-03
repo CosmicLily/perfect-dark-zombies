@@ -364,10 +364,11 @@ jobs:
           # its repo someone made it by hand years ago. A fresh repo has no such
           # release and `gh release upload` would fail on the first run.
           gh release view beta >/dev/null 2>&1 || \
-            gh release create beta --prerelease --title "Perfect Zombies (latest build)" --notes "Test"
+            gh release create beta --latest --title "Perfect Zombies (latest build)" --notes "Test"
           gh release upload --clobber beta ci-release/*
           # the downloads under their names from before Perfect Zombies, gone
           for old in arm64-osx.tar.xz x86_64-osx.tar.xz x86_64-linux.tar.gz x86_64-windows.zip; do gh release delete-asset beta "pd-dabs-mod-$old" -y 2>/dev/null || true; done
           # Its title and text set every time, so a release made before they
           # changed says them too
-          gh release edit beta --title "Perfect Zombies (latest build)" --notes "Test"
+          # a full release marked Latest, so the repository page shows it
+          gh release edit beta --prerelease=false --latest --title "Perfect Zombies (latest build)" --notes "Test"
