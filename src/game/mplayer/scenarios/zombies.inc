@@ -14377,7 +14377,7 @@ static bool g_ZombieBoxNeedsRelease[MAX_PLAYERS];
  * muzzle the way the host's points (ZOMBIE_ZMGUN_FLIP); without the OBJ the
  * host's prop is drawn.
  */
-#define ZOMBIE_ZMGUN_FLIP 1 // 1: the host prop's muzzle at the low end of its long side, as the mesh's is; -1 the high
+#define ZOMBIE_ZMGUN_FLIP -1 // -1: the host prop's muzzle at the high end of its long side (1 had the Ray Gun over the box pointing the other way to every other gun); 1 the low
 
 struct zombiezmworld {
 	s32 weaponnum;
