@@ -344,12 +344,9 @@ jobs:
           VER: ${{ github.ref_name }}
         run: |
           gh release view "$VER" >/dev/null 2>&1 || \
-            gh release create "$VER" \
-              --title "Dab's Mod $VER" \
-              --notes "Perfect Dark with jump, a combat roll, melee combos, a third person camera, up to 80 simulants, a spectator camera, screenshots and video recording.
-
-          You need your own Perfect Dark \`ntsc-final\` ROM — see README.md inside the download for where it goes."
+            gh release create "$VER" --title "Perfect Zombies $VER" --notes "Test"
           gh release upload --clobber "$VER" ci-release/*
+          gh release edit "$VER" --title "Perfect Zombies $VER" --notes "Test"
 
       # The rolling build. The tag is moved rather than added to, so the
       # prerelease always describes the tip of the branch and nothing else.
@@ -364,13 +361,8 @@ jobs:
           # its repo someone made it by hand years ago. A fresh repo has no such
           # release and `gh release upload` would fail on the first run.
           gh release view dabs-mod-dev >/dev/null 2>&1 || \
-            gh release create dabs-mod-dev --prerelease \
-              --title "Dab's Mod (latest dev build)" \
-              --notes "Automatic build of the latest \`dabs-mod\` commit, which may be ahead of the stable release and less tested. You need your own Perfect Dark \`ntsc-final\` ROM — see README.md inside the download."
+            gh release create dabs-mod-dev --prerelease --title "Perfect Zombies (latest build)" --notes "Test"
           gh release upload --clobber dabs-mod-dev ci-release/*
-          # The release page says what the build brings: the newest patch
-          # notes entries, the same lines Check for Updates shows in game.
-          if [ -f patchnotes.txt ]; then
-            sh tools/patchnotes-md.sh patchnotes.txt "Automatic build of the latest \`dabs-mod\` commit, which may be ahead of the stable release and less tested. You need your own Perfect Dark \`ntsc-final\` ROM - see README.md inside the download." 5 > dev-notes.md
-            gh release edit dabs-mod-dev --notes-file dev-notes.md
-          fi
+          # Its title and text set every time, so a release made before they
+          # changed says them too
+          gh release edit dabs-mod-dev --title "Perfect Zombies (latest build)" --notes "Test"
