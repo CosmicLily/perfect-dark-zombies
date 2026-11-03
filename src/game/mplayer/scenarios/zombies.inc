@@ -4439,6 +4439,13 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 		return true;
 	}
 
+	// the Mystery Box's teddy bear, in place of the gun over it - before
+	// Zombies' own guns, or a spin that landed on the Ray Gun showed the Ray
+	// Gun flying off instead of the bear
+	if (zombiesRenderTeddy(renderdata, obj)) {
+		return true;
+	}
+
 	// one of Zombies' own guns, as Black Ops II's world model
 	if (zombiesRenderZmGun(renderdata, obj)) {
 		return true;
@@ -4446,11 +4453,6 @@ bool zombiesRenderMachine(struct modelrenderdata *renderdata, struct defaultobj 
 
 	// a power-up, as Black Ops II's own model
 	if (zombiesRenderPowerup(renderdata, obj)) {
-		return true;
-	}
-
-	// the Mystery Box's teddy bear, in place of the gun over it
-	if (zombiesRenderTeddy(renderdata, obj)) {
 		return true;
 	}
 
