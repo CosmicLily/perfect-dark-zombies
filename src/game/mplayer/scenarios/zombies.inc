@@ -10624,11 +10624,22 @@ static f32 g_ZombieSpreadScale[MAX_PLAYERS];
 
 #define ZOMBIE_AMMO_CLIPS 8 // (again below, where the ammunition is: the same)
 
+/**
+ * The gun a Black Ops II table looks a gun up by: its host (a GoldenEye gun
+ * as the Perfect Dark one it stands for), but the Ray Gun as itself. It is
+ * a gun of its own on the Phoenix's model, and by its host it took the
+ * Phoenix's twelve rounds, rate, kick and the KAP-40's damage.
+ */
+static s32 zombiesTableGun(s32 weaponnum)
+{
+	return weaponnum == WEAPON_ZM_RAYGUN ? weaponnum : weaponHost(weaponnum);
+}
+
 static const struct zombiehip *zombiesHipRow(s32 weaponnum)
 {
 	s32 i;
 
-	weaponnum = weaponHost(weaponnum);
+	weaponnum = zombiesTableGun(weaponnum);
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieHip); i++) {
 		if (g_ZombieHip[i].weaponnum == weaponnum) {
@@ -11030,7 +11041,7 @@ void zombiesKickTick(void)
 	}
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieKicks); i++) {
-		if (g_ZombieKicks[i].weaponnum == weaponHost(weaponnum)) {
+		if (g_ZombieKicks[i].weaponnum == zombiesTableGun(weaponnum)) {
 			row = &g_ZombieKicks[i];
 			break;
 		}
@@ -11310,7 +11321,7 @@ s32 zombiesPenetration(struct gset *gset, s32 penetration)
 		return penetration;
 	}
 
-	weaponnum = weaponHost(gset->weaponnum);
+	weaponnum = zombiesTableGun(gset->weaponnum);
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieCodGuns); i++) {
 		if (g_ZombieCodGuns[i].weaponnum == weaponnum) {
@@ -11378,7 +11389,7 @@ bool zombiesAdsInfo(s32 weaponnum, f32 *in, f32 *out, f32 *fovy)
 		return false;
 	}
 
-	weaponnum = weaponHost(weaponnum);
+	weaponnum = zombiesTableGun(weaponnum);
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieAds); i++) {
 		if (g_ZombieAds[i].weaponnum == weaponnum) {
@@ -11421,7 +11432,7 @@ f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gs
 		return damage * zombiesBulletScale(aprop);
 	}
 
-	weaponnum = weaponHost(gset->weaponnum);
+	weaponnum = zombiesTableGun(gset->weaponnum);
 
 	for (i = 0; i < ARRAYCOUNT(g_ZombieCodGuns); i++) {
 		if (g_ZombieCodGuns[i].weaponnum == weaponnum) {
@@ -17501,7 +17512,7 @@ static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaul
 	pos[1] = obj->prop->pos.y;
 	pos[2] = g_ZombieBox && g_ZombieBox->prop ? g_ZombieBox->prop->pos.z : obj->prop->pos.z;
 
-	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI, &world);
+	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &world); // its snout along its x: out of the box's front
 
 	for (i = 0; i < 3; i++) {
 		for (j = 0; j < 3; j++) {
@@ -17542,15 +17553,25 @@ static void zombiesCacheBoxFakes(void)
 		return;
 	}
 
-	for (k = 0; k < g_ZombieBoxNumPads; k++) {
-		zombiesBoxPutAt(g_ZombieBoxPads[k]);
-		g_ZombieBoxFakePos[k] = g_ZombieBox->prop->pos;
-		g_ZombieBoxFakePos[k].y = g_ZombieBoxFloor;
-		g_ZombieBoxFakeYaw[k] = g_ZombieBoxYaw;
-		memcpy(g_ZombieBoxFakeRooms[k], g_ZombieBox->prop->rooms, sizeof(g_ZombieBoxFakeRooms[k]));
+	// The place it stands at last, once it has been stood elsewhere: put at
+	// the place it was already at, it stood on its own lid (Skedar's first
+	// place came out 3 m up, and its fake hung there after the box moved)
+	for (k = 0; k <= g_ZombieBoxNumPads; k++) {
+		const s32 at = k < g_ZombieBoxNumPads ? k : g_ZombieBoxAt;
+
+		if (k < g_ZombieBoxNumPads && k == g_ZombieBoxAt) {
+			continue;
+		}
+
+		zombiesBoxPutAt(g_ZombieBoxPads[at]);
+		g_ZombieBoxFakePos[at] = g_ZombieBox->prop->pos;
+		g_ZombieBoxFakePos[at].y = g_ZombieBoxFloor;
+		g_ZombieBoxFakeYaw[at] = g_ZombieBoxYaw;
+		memcpy(g_ZombieBoxFakeRooms[at], g_ZombieBox->prop->rooms, sizeof(g_ZombieBoxFakeRooms[at]));
+		sysLogPrintf(LOG_NOTE, "zombies: the box's place %d at %.0f %.0f %.0f, its floor %.0f", at,
+				g_ZombieBox->prop->pos.x, g_ZombieBox->prop->pos.y, g_ZombieBox->prop->pos.z, g_ZombieBoxFloor);
 	}
 
-	zombiesBoxPutAt(g_ZombieBoxPads[g_ZombieBoxAt]);
 	g_ZombieBoxFakeCount = g_ZombieBoxNumPads;
 }
 
@@ -17592,7 +17613,7 @@ Gfx *zombiesRenderBoxFakes(Gfx *gdl, s32 roomnum)
 		}
 
 		centre[0] = zm->midx * ZOMBIE_MESH_FIXED;
-		centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
+		centre[1] = fake->ymin * ZOMBIE_MESH_FIXED; // its own bottom on the floor
 		centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
 
 		pos[0] = g_ZombieBoxFakePos[k].x;
