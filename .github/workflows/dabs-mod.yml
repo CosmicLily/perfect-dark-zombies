@@ -252,6 +252,20 @@ jobs:
           chmod +x pd-dabs-mod-x86_64-linux/pd.x86_64 \
                    pd-dabs-mod-x86_64-osx/pd.x86_64 \
                    pd-dabs-mod-arm64-osx/pd.arm64
+          # A download is the game and nothing of anyone's: no ROM, no XBLA
+          # or Call of Duty files, no saves or settings, no notes for the
+          # agent that helps write it. None of those are in the repository,
+          # but if one ever got into a package the release stops here.
+          bad=$(find . -type f \( -iname '*.z64' -o -iname '*.n64' -o -iname '*.v64' -o -iname '*.rom' \
+                -o -iname '*.xex' -o -iname '*.iso' -o -iname '*.xbe' -o -iname '*.dds' -o -iname '*.glb' \
+                -o -iname '*.obj' -o -iname '*.zan' -o -iname '*.zpd' -o -iname '*.ff' -o -iname '*.ipak' \
+                -o -iname '*.gsc' -o -iname '*.ini' -o -iname 'eeprom.bin' -o -iname '*.sav' \
+                -o -iname 'CLAUDE*' -o -iname 'HANDOFF*' -o -iname 'DabDavisGitHub.md' -o -path '*/.claude/*' \))
+          if [ -n "$bad" ]; then
+            echo "A download would carry files it must not:"
+            echo "$bad"
+            exit 1
+          fi
           tar czf ../ci-release/pd-dabs-mod-x86_64-linux.tar.gz pd-dabs-mod-x86_64-linux
           tar cJf ../ci-release/pd-dabs-mod-x86_64-osx.tar.xz pd-dabs-mod-x86_64-osx
           tar cJf ../ci-release/pd-dabs-mod-arm64-osx.tar.xz pd-dabs-mod-arm64-osx
