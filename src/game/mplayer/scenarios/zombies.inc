@@ -11709,6 +11709,8 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms)
  */
 #define ZOMBIE_BLAST_CAP    75.0f
 #define ZOMBIE_BLAST_ONCE60 120   // a blast this long at one place is the one hit
+#define ZOMBIE_BLAST_NEAR60 30    // and any blast this soon after it, wherever: one blast is two of
+                                  // Perfect Dark's a tick apart, not at one place (tester's log, 75 then the down)
 
 static s32 g_ZombieBlastAt60[MAX_PLAYERS];      // lvframe60 + 1 of the last blast taken, 0 none
 static struct coord g_ZombieBlastPos[MAX_PLAYERS];
@@ -11734,16 +11736,21 @@ f32 zombiesBlastOnPlayer(f32 damage, struct coord *pos)
 		return 0;
 	}
 
-	if (pos) {
-		if (g_ZombieBlastAt60[playernum] > 0
-				&& g_Vars.lvframe60 + 1 - g_ZombieBlastAt60[playernum] < ZOMBIE_BLAST_ONCE60
-				&& g_ZombieBlastPos[playernum].x == pos->x
-				&& g_ZombieBlastPos[playernum].y == pos->y
-				&& g_ZombieBlastPos[playernum].z == pos->z) {
+	if (g_ZombieBlastAt60[playernum] > 0) {
+		const s32 since = g_Vars.lvframe60 + 1 - g_ZombieBlastAt60[playernum];
+
+		if (since >= 0 && (since < ZOMBIE_BLAST_NEAR60
+					|| (pos && since < ZOMBIE_BLAST_ONCE60
+						&& g_ZombieBlastPos[playernum].x == pos->x
+						&& g_ZombieBlastPos[playernum].y == pos->y
+						&& g_ZombieBlastPos[playernum].z == pos->z))) {
 			return 0;
 		}
+	}
 
-		g_ZombieBlastAt60[playernum] = g_Vars.lvframe60 + 1;
+	g_ZombieBlastAt60[playernum] = g_Vars.lvframe60 + 1;
+
+	if (pos) {
 		g_ZombieBlastPos[playernum] = *pos;
 	}
 
@@ -11760,7 +11767,8 @@ f32 zombiesBlastOnPlayer(f32 damage, struct coord *pos)
 		}
 	}
 
-	sysLogPrintf(LOG_NOTE, "zombies: player %d caught in a blast at %.0f of %.0f health", playernum, points, full);
+	sysLogPrintf(LOG_NOTE, "zombies: player %d caught in a blast at %.0f of %.0f health (at %.0f %.0f %.0f, tick %d)",
+			playernum, points, full, pos ? pos->x : 0, pos ? pos->y : 0, pos ? pos->z : 0, g_Vars.lvframe60);
 
 	// 75 of it, or the whole of it (a little over, to be sure of the down)
 	return (points > ZOMBIE_BLAST_CAP ? ZOMBIE_BLAST_CAP : points + 1) * 8.0f * max / 100;
