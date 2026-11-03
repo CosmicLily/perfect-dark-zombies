@@ -14901,6 +14901,21 @@ static void zombiesBoxPutAt(s32 padnum)
 		g_ZombieBoxFloor = min.y;
 	}
 
+	// the ground under it, where there is one near: the host's bottom is
+	// the pad's height, and a pad stands over the floor at some places (the
+	// box hung in the air on Skedar's after it moved)
+	{
+		struct coord at = obj->prop->pos;
+		f32 ground;
+
+		at.y += 50;
+		ground = cdFindGroundAtCyl(&at, 20, obj->prop->rooms, NULL, NULL);
+
+		if (ground > g_ZombieBoxFloor - 200 && ground < g_ZombieBoxFloor + 50) {
+			g_ZombieBoxFloor = ground;
+		}
+	}
+
 	if (zombiesBoxMesh()) {
 		g_ZombieBoxTop = g_ZombieBoxFloor + 40 * 2.54f - 8 - ZOMBIE_BOX_RISE;
 	}
@@ -17481,9 +17496,10 @@ static bool zombiesRenderTeddy(struct modelrenderdata *renderdata, struct defaul
 	centre[1] = zm->ymin * ZOMBIE_MESH_FIXED;
 	centre[2] = (zm->zmin + zm->depth / 2) * ZOMBIE_MESH_FIXED;
 
-	pos[0] = obj->prop->pos.x;
+	// over the middle of the box, not where the last gun's middle put it
+	pos[0] = g_ZombieBox && g_ZombieBox->prop ? g_ZombieBox->prop->pos.x : obj->prop->pos.x;
 	pos[1] = obj->prop->pos.y;
-	pos[2] = obj->prop->pos.z;
+	pos[2] = g_ZombieBox && g_ZombieBox->prop ? g_ZombieBox->prop->pos.z : obj->prop->pos.z;
 
 	mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI, &world);
 
