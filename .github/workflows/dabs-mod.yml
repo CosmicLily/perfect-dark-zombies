@@ -9,7 +9,7 @@ on:
   push:
     # A branch push refreshes the rolling dev prerelease; a v* tag cuts a
     # stable release that is never rewritten afterwards.
-    branches: [ "dabs-mod" ]
+    branches: [ "dabs-mod", "zombies-dabs" ]
     tags: [ "v*" ]
     # Four builds and a new executable offered to every dev-channel player is
     # too much to ask for a change to a file that is not in the download and
@@ -29,7 +29,7 @@ env:
   # CMakeLists.txt puts `git rev-parse --abbrev-ref HEAD` on the title screen as
   # "Perfect Dark (<branch>)". actions/checkout leaves a detached HEAD, which it
   # reads as "port-custom", so each job names the checked out commit first.
-  MOD_BRANCH: dabs-mod
+  MOD_BRANCH: zombies-dabs
   # Which release the built copy's Check for Updates follows. A tag build is a
   # stable release and looks for the next stable release; everything else is
   # the rolling dev prerelease and looks for the next one of those. The binary
