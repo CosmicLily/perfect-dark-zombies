@@ -98,6 +98,7 @@ f32 zombiesBulletScale(struct prop *aprop);
 f32 zombiesBulletDamage(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, f32 damage);
 bool zombiesPhdShrugs(struct chrdata *chr);
 f32 zombiesBlowDamage(void);
+f32 zombiesBlastOnPlayer(f32 damage, struct coord *pos);
 bool zombiesZombieSwipe(struct chrdata *zchr, struct prop *vprop);
 bool zombiesCodOwnsBlows(void);
 s32 zombiesDeadshotHitpart(struct chrdata *chr, struct prop *aprop, struct gset *gset, s32 hitpart, bool explosion);
@@ -5587,6 +5588,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			// turned by its side, the torso, the handicap or a slider
 			if (zombiesBlowDamage() >= 0) {
 				damage = zombiesBlowDamage();
+			}
+
+			// and a blast is Black Ops II's: 75, or the down, once a blast
+			if (explosion && zombiesIsActive()) {
+				damage = zombiesBlastOnPlayer(damage, explosionpos);
 			}
 #endif
 

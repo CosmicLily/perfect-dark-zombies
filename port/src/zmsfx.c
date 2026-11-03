@@ -85,6 +85,7 @@ static const char *const g_ZmSfxFixed[ZMSFX_FIXED_COUNT] = {
 	"swiped_2",
 	"pu_loop",
 	"game_over",
+	"tinnitus",
 #define ZMSFX_PERKS(kind) \
 	kind "_juggernog", kind "_quickrevive", kind "_speedcola", kind "_doubletap", kind "_staminup", \
 	kind "_mulekick", kind "_deadshot", kind "_phdflopper", kind "_electriccherry"
@@ -115,7 +116,8 @@ struct zmsfxbank {
 // A machine's hum goes round and round until it is stopped
 static bool zmSfxLoops(s32 slot)
 {
-	return slot == ZMSFX_PERK_HUM || slot == ZMSFX_PAP_HUM || slot == ZMSFX_LASTSTAND || slot == ZMSFX_PU_LOOP;
+	return slot == ZMSFX_PERK_HUM || slot == ZMSFX_PAP_HUM || slot == ZMSFX_LASTSTAND || slot == ZMSFX_PU_LOOP
+		|| slot == ZMSFX_TINNITUS;
 }
 
 static s16 g_ZmSfxSound[ZMSFX_COUNT];   // the game's number, 0 not yet, -1 not there

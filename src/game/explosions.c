@@ -39,6 +39,10 @@
 #include "killfeed.h"
 
 #define GE_EXPLOSION_HARMLESS_TICKS 8
+
+// Zombies' camera shake, Black Ops II's (zombies.inc)
+void zombiesExplosionQuake(struct coord *pos);
+bool zombiesShakeView(struct coord *look, struct coord *offset);
 #endif
 
 #ifdef PLATFORM_N64
@@ -350,6 +354,9 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 
 		if (type != EXPLOSIONTYPE_16 && type != EXPLOSIONTYPE_BULLETHOLE) {
 			g_ExplosionShakeTotalTimer = SHAKE_TIME;
+#ifndef PLATFORM_N64
+			zombiesExplosionQuake(exppos);
+#endif
 		}
 
 		if (expprop) {
@@ -626,6 +633,13 @@ void explosionsUpdateShake(struct coord *arg0, struct coord *arg1, struct coord 
 	f32 sp50;
 	s32 i;
 	f32 intensity;
+
+#ifndef PLATFORM_N64
+	// Zombies shakes the view as Black Ops II does, the option still its say
+	if (modIsExplosionShakeOn() && zombiesShakeView(arg1, arg2)) {
+		return;
+	}
+#endif
 
 	if (g_ExplosionShakeTotalTimer == 0) {
 		viShake(0);

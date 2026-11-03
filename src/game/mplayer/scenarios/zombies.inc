@@ -396,6 +396,7 @@ static void zombiesNetKeepSound(s32 sound, f32 pitch, s32 chr);
 static s32 g_ZombieAtBarrier[MAX_BOTS]; // below: the barrier each zombie is held at
 static bool g_ZombieReachThrough = false; // a swipe through a barrier's boards landing (zombiesReachHit())
 static f32 g_ZombieBlowDamage = -1;       // a zombie's blow landing: what chrDamage() is to take, -1 none
+static bool g_ZombieSwiped[MAX_PLAYERS];  // a zombie's blow landed this tick: its sound to come
 
 // chrDamage(), about to take a player's health: a zombie's blow's damage, as
 // it is, or -1 when this is no blow of a zombie's (zombiesReachHit())
@@ -436,6 +437,17 @@ bool zombiesZombieSwipe(struct chrdata *zchr, struct prop *vprop)
 
 	if (NET_CLIENT) {
 		return false;
+	}
+
+	// Black Ops II's swipe taken (playswipesound(): evt_player_swiped, to
+	// the one hit alone), once the blow is seen not to down them
+	// (zombiesTickLastStandSound())
+	if (vprop && vprop->type == PROPTYPE_PLAYER) {
+		const s32 playernum = playermgrGetPlayerNumByProp(vprop);
+
+		if (playernum >= 0 && playernum < MAX_PLAYERS) {
+			g_ZombieSwiped[playernum] = true;
+		}
 	}
 
 	// the Groans setting is every zombie voice's
@@ -11614,13 +11626,19 @@ static s32 zombiesHurtAround(s32 playernum, struct coord *pos, f32 radius, f32 c
  */
 #define ZOMBIE_RAYGUN_RADIUS 163.0f
 #define ZOMBIE_RAYGUN_DAMAGE 1500.0f
-#define ZOMBIE_RAYGUN_SELF   0.6f    // the shooter's own, of their full health, at the blast's middle
+#define ZOMBIE_RAYGUN_QUAKE  512.0f  // its explosionCameraShakeRadius, inches
+
+static void zombiesQuake(struct coord *pos, f32 inches);
+static bool g_ZombieBlastNoShock = false; // the Ray Gun's own (MOD_PROJECTILE_SPLASH): no shellshock
 
 bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms)
 {
 	if (!zombiesIsActive() || !gset || gset->weaponnum != WEAPON_ZM_RAYGUN) {
 		return false;
 	}
+
+	// its camera shake, every machine's
+	zombiesQuake(pos, ZOMBIE_RAYGUN_QUAKE);
 
 	// its look is the bolt's landing (zombiesRenderRayFx()), on every machine
 	if (!NET_CLIENT) {
@@ -11640,7 +11658,8 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms)
 		g_ZombieHurtNoThrow = false;
 
 		// too close, or at the feet: the shooter's own blast, as Black Ops
-		// II's splash hurts its own (PhD Flopper shrugs it, chrDamage())
+		// II's splash hurts its own (PhD Flopper shrugs it, chrDamage()), by
+		// what zombiesBlastOnPlayer() makes of any blast
 		if (me && me->chr && !g_Vars.currentplayer->isdead) {
 			struct coord dir;
 			f32 dist;
@@ -11657,15 +11676,244 @@ bool zombiesShellBlast(struct gset *gset, struct coord *pos, RoomNum *rooms)
 					dir.z /= dist;
 				}
 
-				// chrDamage() takes a player's at an eighth, over its health scale
-				chrDamageByExplosion(me->chr, ZOMBIE_RAYGUN_SELF * (1.0f - dist / ZOMBIE_RAYGUN_RADIUS)
-						* g_ZombieMaxHealth[g_Vars.currentplayernum] * 8.0f * g_Vars.currentplayer->healthscale,
-						&dir, me, pos);
+				g_ZombieBlastNoShock = true;
+				chrDamageByExplosion(me->chr, 1.0f, &dir, me, pos);
+				g_ZombieBlastNoShock = false;
 			}
 		}
 	}
 
 	return true;
+}
+
+/**
+ * A blast on a player, Black Ops II's (_zm.gsc, player_damage_override()):
+ * PhD Flopper takes none of it (zombiesPhdShrugs()), anyone else with more
+ * than 75 health loses 75 of it, and anyone with 75 or less is downed (the
+ * raw splash, the frag's 300 to 75 and the Ray Gun's 1500 to 300, is never
+ * under 75 inside its radius). One blast is one hit: Perfect Dark's goes on
+ * hurting a little every tick it grows, which here would be 75 each tick.
+ *
+ * A grenade's that hurts (shock_onpain(), not the Ray Gun's projectile) is
+ * then the "explosion" shellshock (shock_onexplosion()): 4 seconds for 90%
+ * of full health or more, 3 for 50%, 2 for 25%, 1 over 10% - 75 is 3 seconds
+ * alone, 2 with Juggernog's 160. Its ringing (chr_tinitus_loop) fades in
+ * over 0.1 s and out over its last 2; its view kick (a .75 s period) fades
+ * over 3 (explosion.shock). Its blur is not drawn: there is no blur pass.
+ *
+ * chrDamage(), the victim the current player, after its own scales: what it
+ * is to take instead. A player's damage is an eighth, over its health scale,
+ * of a bar of g_ZombieMaxHealth: 100 points a scale.
+ */
+#define ZOMBIE_BLAST_CAP    75.0f
+#define ZOMBIE_BLAST_ONCE60 120   // a blast this long at one place is the one hit
+
+static s32 g_ZombieBlastAt60[MAX_PLAYERS];      // lvframe60 + 1 of the last blast taken, 0 none
+static struct coord g_ZombieBlastPos[MAX_PLAYERS];
+static s32 g_ZombieShock60[MAX_PLAYERS];        // the shellshock's ticks left
+static s32 g_ZombieShockLen60[MAX_PLAYERS];     // and its whole length
+static struct sndstate *g_ZombieShockSnd[MAX_PLAYERS];
+
+f32 zombiesBlastOnPlayer(f32 damage, struct coord *pos)
+{
+	const s32 playernum = g_Vars.currentplayernum;
+	struct player *player = g_Vars.currentplayer;
+	f32 max;
+	f32 full;
+	f32 points;
+	f32 scaled;
+	s32 secs;
+
+	if (!zombiesIsActive() || playernum < 0 || playernum >= MAX_PLAYERS || !player) {
+		return damage;
+	}
+
+	if (g_ZombieDowned[playernum]) {
+		return 0;
+	}
+
+	if (pos) {
+		if (g_ZombieBlastAt60[playernum] > 0
+				&& g_Vars.lvframe60 + 1 - g_ZombieBlastAt60[playernum] < ZOMBIE_BLAST_ONCE60
+				&& g_ZombieBlastPos[playernum].x == pos->x
+				&& g_ZombieBlastPos[playernum].y == pos->y
+				&& g_ZombieBlastPos[playernum].z == pos->z) {
+			return 0;
+		}
+
+		g_ZombieBlastAt60[playernum] = g_Vars.lvframe60 + 1;
+		g_ZombieBlastPos[playernum] = *pos;
+	}
+
+	max = g_ZombieMaxHealth[playernum] > 0 ? g_ZombieMaxHealth[playernum] : 1;
+	full = 100 * player->healthscale;
+	points = player->bondhealth / max * full;
+
+	if (!g_ZombieBlastNoShock) {
+		scaled = 100 * ZOMBIE_BLAST_CAP / full;
+		secs = scaled >= 90 ? 4 : scaled >= 50 ? 3 : scaled >= 25 ? 2 : scaled > 10 ? 1 : 0;
+
+		if (secs * 60 > g_ZombieShock60[playernum]) {
+			g_ZombieShock60[playernum] = g_ZombieShockLen60[playernum] = secs * 60;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "zombies: player %d caught in a blast at %.0f of %.0f health", playernum, points, full);
+
+	// 75 of it, or the whole of it (a little over, to be sure of the down)
+	return (points > ZOMBIE_BLAST_CAP ? ZOMBIE_BLAST_CAP : points + 1) * 8.0f * max / 100;
+}
+
+/**
+ * An explosion's camera shake, Black Ops II's (the weapon's
+ * explosionCameraShake*: the frag's and the Ray Gun's 0.5 for 500 ms, within
+ * 800 and 512 inches), as earthquake() falls off: its scale less in a line
+ * with the distance to nothing at the radius, then less in a line with time.
+ * Every player near enough, PhD Flopper or not, on every machine; Perfect
+ * Dark's own shake is not used in Zombies (explosionsUpdateShake()).
+ */
+#define ZOMBIE_QUAKE_SCALE  0.5f
+#define ZOMBIE_QUAKE_LEN60  30
+#define ZOMBIE_QUAKE_INCHES 800.0f // a grenade's (frag_grenade_zm)
+#define ZOMBIE_QUAKE_PIXELS 28.0f  // the screen's jolt at scale 1 (viShake()): a pick
+#define ZOMBIE_SHOCK_KICK   1.5f   // the shellshock's sway, degrees round at its start: a pick
+#define ZOMBIE_SHOCK_KICK60 45     // and once round in its viewKickPeriod, .75 s
+
+static f32 g_ZombieQuake[MAX_PLAYERS];   // the shake's scale as it began
+static s32 g_ZombieQuake60[MAX_PLAYERS]; // its ticks left
+static f32 g_ZombieKickYaw[MAX_PLAYERS]; // the sway's turn, as it stands, to take back
+static f32 g_ZombieKickPitch[MAX_PLAYERS];
+
+static void zombiesQuake(struct coord *pos, f32 inches)
+{
+	s32 p;
+
+	for (p = 0; p < PLAYERCOUNT() && p < MAX_PLAYERS; p++) {
+		struct prop *prop = g_Vars.players[p] ? g_Vars.players[p]->prop : NULL;
+		f32 dx, dy, dz;
+		f32 scale;
+
+		if (!prop) {
+			continue;
+		}
+
+		dx = prop->pos.x - pos->x;
+		dy = prop->pos.y - pos->y;
+		dz = prop->pos.z - pos->z;
+		scale = ZOMBIE_QUAKE_SCALE * (1 - sqrtf(dx * dx + dy * dy + dz * dz) / (inches * 2.65f)); // ZOMBIE_EYE_INCH, below
+
+		if (scale > g_ZombieQuake[p] * g_ZombieQuake60[p] / ZOMBIE_QUAKE_LEN60) {
+			g_ZombieQuake[p] = scale;
+			g_ZombieQuake60[p] = ZOMBIE_QUAKE_LEN60;
+		}
+	}
+}
+
+// explosionCreate(): one of Perfect Dark's, a grenade's in Zombies
+void zombiesExplosionQuake(struct coord *pos)
+{
+	if (zombiesIsActive()) {
+		zombiesQuake(pos, ZOMBIE_QUAKE_INCHES);
+	}
+}
+
+/**
+ * explosionsUpdateShake(), the current player's view: the shake above, in
+ * place of Perfect Dark's. True when it is Zombies'.
+ */
+bool zombiesShakeView(struct coord *look, struct coord *offset)
+{
+	const s32 p = g_Vars.currentplayernum;
+	f32 quake = 0;
+
+	if (!zombiesIsActive()) {
+		return false;
+	}
+
+	if (p >= 0 && p < MAX_PLAYERS && g_ZombieQuake60[p] > 0) {
+		quake = g_ZombieQuake[p] * g_ZombieQuake60[p] / ZOMBIE_QUAKE_LEN60;
+	}
+
+	viShake(quake * ZOMBIE_QUAKE_PIXELS);
+
+	return true;
+}
+
+/**
+ * Each tick, every machine's: the shake and the shellshock run down, and the
+ * shellshock's ringing and sway follow it on the player's own machine. The
+ * sway turns the view round a small circle, all of it fading over the
+ * shock's last three seconds (viewKickFadeTime): each tick turns it by the
+ * change in where it stands, so it ends where it began.
+ */
+static void zombiesTickShock(void)
+{
+	s32 p;
+
+	for (p = 0; p < MAX_PLAYERS; p++) {
+		const bool mine = p < PLAYERCOUNT() && (g_NetMode == NETMODE_NONE || netIsLocalSlot(p));
+		struct player *player = p < PLAYERCOUNT() ? g_Vars.players[p] : NULL;
+
+		if (g_Vars.lvupdate60 > 0) {
+			g_ZombieQuake60[p] = g_ZombieQuake60[p] > g_Vars.lvupdate60 ? g_ZombieQuake60[p] - g_Vars.lvupdate60 : 0;
+			g_ZombieShock60[p] = g_ZombieShock60[p] > g_Vars.lvupdate60 ? g_ZombieShock60[p] - g_Vars.lvupdate60 : 0;
+		}
+
+		if (player && mine) {
+			f32 radius = 0;
+			f32 yaw;
+			f32 pitch;
+
+			if (g_ZombieShock60[p] > 0 && !g_ZombieDowned[p] && !player->isdead) {
+				const f32 angle = g_Vars.lvframe60 * (2 * M_PI / ZOMBIE_SHOCK_KICK60);
+
+				radius = ZOMBIE_SHOCK_KICK * (g_ZombieShock60[p] < 180 ? g_ZombieShock60[p] / 180.0f : 1);
+				yaw = radius * cosf(angle);
+				pitch = radius * sinf(angle);
+			}
+
+			if (radius <= 0) {
+				yaw = pitch = 0;
+			}
+
+			player->vv_theta += yaw - g_ZombieKickYaw[p];
+			player->vv_verta += pitch - g_ZombieKickPitch[p];
+			g_ZombieKickYaw[p] = yaw;
+			g_ZombieKickPitch[p] = pitch;
+		}
+
+		if (!mine || g_ZombieShock60[p] <= 0 || g_ZombieGameOver || g_ZombieDowned[p]) {
+			if (g_ZombieShockSnd[p]) {
+				audioStop(g_ZombieShockSnd[p]);
+				g_ZombieShockSnd[p] = NULL;
+			}
+
+			continue;
+		}
+
+		if (g_ZombieShockSnd[p] == NULL) {
+			const s32 loop = zmSfxSound(ZMSFX_TINNITUS);
+
+			if (loop > 0) {
+				sndStart(var80095200, loop, &g_ZombieShockSnd[p], -1, -1, -1, -1, -1);
+			}
+		}
+
+		if (g_ZombieShockSnd[p]) {
+			const s32 gone = g_ZombieShockLen60[p] - g_ZombieShock60[p];
+			f32 vol = 1;
+
+			if (gone < 6) {
+				vol = gone / 6.0f;
+			}
+
+			if (g_ZombieShock60[p] < 120) {
+				vol *= g_ZombieShock60[p] / 120.0f;
+			}
+
+			sndAdjust(&g_ZombieShockSnd[p], false, (s32)(AL_VOL_FULL * vol), -1, -1, -1.0f, 0, -1, false);
+		}
+	}
 }
 
 /**
@@ -20603,15 +20851,7 @@ static void zombiesReachHit(struct chrdata *zchr, s32 playernum)
 			zchr->prop, HITPART_TORSO);
 	g_ZombieBlowDamage = -1;
 
-	// Black Ops II's swipe taken, for the one hit alone; the blow that downs
-	// them has its own (zombiesTickLastStandSound())
-	if (!g_ZombieDowned[playernum]) {
-		const s32 prevfor = g_ZombieSoundFor;
-
-		g_ZombieSoundFor = playernum;
-		zombiesPlayCodSound(ZMSFX_SWIPED + rngRandom() % 3, NULL);
-		g_ZombieSoundFor = prevfor;
-	}
+	// its swipe sound is every blow's (zombiesZombieSwipe())
 	g_ZombieReachThrough = false;
 }
 
@@ -23388,6 +23628,20 @@ static void zombiesTickLastStandSound(void)
 		// first down is it)
 		const bool bleeding = down && !g_ZombieGameOver;
 
+		// a blow taken (zombiesZombieSwipe()), the host's: its swipe, for
+		// the one hit alone; the blow that downs has its own, below
+		if (g_ZombieSwiped[p] && !NET_CLIENT) {
+			g_ZombieSwiped[p] = false;
+
+			if (!g_ZombieDowned[p]) {
+				const s32 prevfor = g_ZombieSoundFor;
+
+				g_ZombieSoundFor = p;
+				zombiesPlayCodSound(ZMSFX_SWIPED + rngRandom() % 3, NULL);
+				g_ZombieSoundFor = prevfor;
+			}
+		}
+
 		// the blow that downs, whatever comes of it
 		if (down && !g_ZombieWasDownSnd[p]) {
 			const s32 hit = zmSfxSound(ZMSFX_FINAL_HIT);
@@ -24202,6 +24456,7 @@ void zombiesTick(void)
 	}
 
 	zombiesTickLastStandSound();
+	zombiesTickShock();
 	zombiesTickDropHums();
 
 
@@ -27475,6 +27730,7 @@ void zombiesClientTick(void)
 	// each machine's own sounds (zombiesTick() has the host's)
 	zombiesTickHums();
 	zombiesTickLastStandSound();
+	zombiesTickShock();
 	zombiesTickDropHums();
 
 	// between the host's blocks its clocks run on here as they do there
