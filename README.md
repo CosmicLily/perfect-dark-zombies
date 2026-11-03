@@ -1,17 +1,22 @@
-# Dab's Mod
+# Perfect Zombies
 
-**[Download](https://github.com/DabDavis/perfect-dark-dabs-mod/releases/latest)**
+**[Download](https://github.com/CosmicLily/perfect-dark-zombies/releases/latest)**
 — Windows, Linux and macOS. You supply the ROM; see [You need a ROM](#you-need-a-rom).
-There is also a [rolling dev build](https://github.com/DabDavis/perfect-dark-dabs-mod/releases/tag/dabs-mod-dev)
+There is also a [rolling dev build](https://github.com/CosmicLily/perfect-dark-zombies/releases/tag/dabs-mod-dev)
 of the newest commit, if you want fixes before they reach a release.
 
-A fork of the [Perfect Dark PC port](https://github.com/perfect-dark-pc-port/perfect_dark),
-which is itself a port of the [Perfect Dark decompilation](https://github.com/n64decomp/perfect_dark).
+A Call of Duty style **Zombies** mode for the Perfect Dark PC port, made to play
+like Black Ops II's: rounds, windows to board up, the Mystery Box, perk machines,
+Pack-a-Punch, wall buys and power-ups. Pick it as the scenario in the Combat
+Simulator.
 
-It adds movement the N64 game never had — jump, a combat roll, melee combos, a
-third person camera — raises the Combat Simulator simulant cap from 8 to 80,
-keeps bodies lying where they fell, and gives you a free-flying spectator
-camera, a screenshot key and a video recorder for watching the results.
+It is built on [Dab's Mod](https://github.com/DabDavis/perfect-dark-dabs-mod) by
+DabDavis, a fork of the [Perfect Dark PC port](https://github.com/perfect-dark-pc-port/perfect_dark),
+which is itself a port of the [Perfect Dark decompilation](https://github.com/n64decomp/perfect_dark).
+Everything Dab's Mod adds is here too: movement the N64 game never had (jump, a
+combat roll, melee combos, a third person camera), a Combat Simulator simulant
+cap raised from 8 to 80, bodies that stay where they fell, a free-flying
+spectator camera, a screenshot key and a video recorder.
 
 Everything here is engine-side and lives in the executable. No custom levels or
 assets are bundled, and none are needed - but mods drop in, see [Mods](#mods).
@@ -567,7 +572,7 @@ the source tree does the same conversion of a console patch outside the game.
 ## Sharing a machine with the stock port
 
 The config file is called `pd.ini` regardless of which build wrote it, so a
-Dab's Mod build unpacked into the same folder as a stock port will share its
+Perfect Zombies build unpacked into the same folder as a stock port will share its
 settings and saves. The `Mod.` keys are ignored by builds that don't know them,
 and MP setups stay in the base format unless they need more than 8 simulants, so
 nothing breaks — but if you want them kept apart, unpack into separate folders,
@@ -578,8 +583,8 @@ or pass `--savedir <path>`.
 Same as the stock port:
 
 ```sh
-git clone --recursive https://github.com/DabDavis/perfect-dark-dabs-mod.git
-cd perfect-dark-dabs-mod
+git clone --recursive https://github.com/CosmicLily/perfect-dark-zombies.git
+cd perfect-dark-zombies
 cmake -G"Unix Makefiles" -Bbuild .
 cmake --build build -j8
 ```
@@ -608,6 +613,7 @@ what is shipped and what is not, and how the claims in it can be checked.
 
 MIT, same as the port and the decompilation it came from — see `LICENSE`.
 
+- Dab's Mod, which this is built on: [DabDavis/perfect-dark-dabs-mod](https://github.com/DabDavis/perfect-dark-dabs-mod), DabDavis
 - The decompilation: [n64decomp/perfect_dark](https://github.com/n64decomp/perfect_dark), Ryan Dwyer and contributors
 - The PC port: [perfect-dark-pc-port/perfect_dark](https://github.com/perfect-dark-pc-port/perfect_dark) and contributors
 - Perfect Dark is © Rare / Microsoft. This project ships no game assets and is
