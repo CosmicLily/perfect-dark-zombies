@@ -15039,6 +15039,23 @@ static void zombiesBoxPlaceGun(void)
 
 	mtx00015f04(obj->model->scale, &mtx);
 
+	// its middle over the box's, not its origin: a gun's origin is near its
+	// grip, and a long gun sat well to one side of the box
+	{
+		struct modelrodata_bbox *bbox = objFindBboxRodata(obj);
+
+		if (bbox) {
+			const f32 mid[3] = {
+				(bbox->xmin + bbox->xmax) * 0.5f,
+				(bbox->ymin + bbox->ymax) * 0.5f,
+				(bbox->zmin + bbox->zmax) * 0.5f,
+			};
+
+			pos.x -= mtx.m[0][0] * mid[0] + mtx.m[1][0] * mid[1] + mtx.m[2][0] * mid[2];
+			pos.z -= mtx.m[0][2] * mid[0] + mtx.m[1][2] * mid[1] + mtx.m[2][2] * mid[2];
+		}
+	}
+
 	func0f06a580(obj, &pos, &mtx, g_ZombieBox->prop->rooms);
 }
 
@@ -17044,6 +17061,8 @@ static Gfx *zombiesRenderPowerupGlows(Gfx *gdl, Mtxf *cam, struct coord *campos,
 #define ZOMBIE_BOX_BEAM_HIGH  1600.0f // how far up the beam reaches
 #define ZOMBIE_BOX_BEAM_WIDE  70.0f   // and its half width
 #define ZOMBIE_BOX_GLOW_WIDE  110.0f  // the open box's glow, half its size
+#define ZOMBIE_BOX_BEAM_GONE  250.0f  // the beam not drawn this near the box
+#define ZOMBIE_BOX_BEAM_FULL  600.0f  // and whole from this far
 
 static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, const f32 right[3], const f32 up[3], bool draw)
 {
@@ -17057,6 +17076,7 @@ static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, con
 	f32 a[3];
 	f32 b[3];
 	f32 pulse;
+	f32 near;
 	s32 k;
 
 	// nothing to draw: asked whether there is, none (NULL); drawing, the list
@@ -17078,6 +17098,11 @@ static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, con
 	side[2] = g_ZombieBox->prop->pos.x - campos->x;
 	len = sqrtf(side[0] * side[0] + side[2] * side[2]);
 
+	// gone up close, as Black Ops II's is: it is for finding the box across
+	// the map, and stood at it the beam was a wall of light over the guns
+	near = (len - ZOMBIE_BOX_BEAM_GONE) / (ZOMBIE_BOX_BEAM_FULL - ZOMBIE_BOX_BEAM_GONE);
+	near = near < 0 ? 0 : near > 1 ? 1 : near;
+
 	if (len < 1) {
 		side[0] = right[0];
 		side[2] = right[2];
@@ -17092,12 +17117,12 @@ static Gfx *zombiesRenderBoxGlows(Gfx *gdl, Mtxf *cam, struct coord *campos, con
 
 	// in pieces up its length, overlapping: the sprite is brightest in its
 	// middle, and one quad the beam's height was all but clear at the box
-	{
+	if (near > 0) {
 		const f32 piece = 100;
 		f32 y;
 
 		for (y = top + piece * 0.5f; y < top + ZOMBIE_BOX_BEAM_HIGH; y += piece) {
-			const f32 fade = 1.0f - (y - top) / ZOMBIE_BOX_BEAM_HIGH;
+			const f32 fade = (1.0f - (y - top) / ZOMBIE_BOX_BEAM_HIGH) * near;
 
 			centre.y = y;
 
