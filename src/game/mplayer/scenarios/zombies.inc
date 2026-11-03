@@ -15032,7 +15032,7 @@ static void zombiesBoxPlaceGun(void)
 		Mtxf yaw;
 		Mtxf roll;
 
-		mtx4LoadYRotation(g_ZombieBoxYaw + M_BADPI / 2, &yaw);
+		mtx4LoadYRotation(g_ZombieBoxYaw, &yaw); // the box mesh is long in its x, turned by the same yaw
 		mtx4LoadXRotation(-M_BADPI / 2, &roll);
 		mtx4MultMtx4(&yaw, &roll, &mtx);
 	}
