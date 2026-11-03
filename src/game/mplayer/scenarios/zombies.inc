@@ -15087,9 +15087,18 @@ static void zombiesBoxShowGun(s32 index)
 {
 	struct defaultobj *obj = &g_ZombieBoxGunObjs[g_ZombieBoxGunNext];
 	struct prop *prop;
+	s32 k;
 
-	// one still being taken away is not taken again yet
+	// One still being taken away is not taken again yet: the next free one
+	// is. Waiting on the one slot left the box on one gun for good once that
+	// slot's gun was never taken (the teddy bear's, up out of every room)
+	for (k = 0; k < ARRAYCOUNT(g_ZombieBoxGunObjs) && obj->prop; k++) {
+		g_ZombieBoxGunNext = (g_ZombieBoxGunNext + 1) % ARRAYCOUNT(g_ZombieBoxGunObjs);
+		obj = &g_ZombieBoxGunObjs[g_ZombieBoxGunNext];
+	}
+
 	if (obj->prop) {
+		sysLogPrintf(LOG_WARNING, "zombies: the Mystery Box has no gun free to show");
 		return;
 	}
 
@@ -16394,6 +16403,11 @@ static void zombiesTickBox(void)
 
 	zombiesCacheBoxFakes();
 
+	if (sysArgCheck("--zombies-test-respin") && g_Vars.lvframenum % 30 == 0) {
+		sysLogPrintf(LOG_NOTE, "zombies: box state %d time %d shown %d gun %p prop %p next %d", g_ZombieBoxState, g_ZombieBoxTime60,
+				g_ZombieBoxShown, (void *)g_ZombieBoxGun, g_ZombieBoxGun ? (void *)g_ZombieBoxGun->prop : NULL, g_ZombieBoxGunNext);
+	}
+
 	// its clips going on
 	g_ZombieBoxLid60 += g_Vars.lvupdate60;
 	g_ZombieBoxBody60 += g_Vars.lvupdate60;
@@ -16401,10 +16415,12 @@ static void zombiesTickBox(void)
 	// --zombies-test-teddy F: at level frame F player 1 spins the box after
 	// eight guns and no move, which Black Ops II's rule makes the teddy bear
 	// --zombies-test-boxspin F: the same, after no guns, so it lands on one
+	// --zombies-test-respin F2: a spin again at F2, wherever the box is then
 	if ((sysArgCheck("--zombies-test-teddy") || sysArgCheck("--zombies-test-boxspin")) && g_ZombieBoxState == ZOMBIEBOX_IDLE
-			&& g_Vars.lvframenum == (sysArgCheck("--zombies-test-teddy") ? sysArgGetInt("--zombies-test-teddy", 300)
-				: sysArgGetInt("--zombies-test-boxspin", 300))) {
-		g_ZombieBoxAccessed = sysArgCheck("--zombies-test-teddy") ? 8 : 0;
+			&& (g_Vars.lvframenum == (sysArgCheck("--zombies-test-teddy") ? sysArgGetInt("--zombies-test-teddy", 300)
+				: sysArgGetInt("--zombies-test-boxspin", 300))
+				|| g_Vars.lvframenum == sysArgGetInt("--zombies-test-respin", -1))) {
+		g_ZombieBoxAccessed = sysArgCheck("--zombies-test-teddy") && g_Vars.lvframenum != sysArgGetInt("--zombies-test-respin", -1) ? 8 : 0;
 		g_ZombieBoxMoves = 0;
 		g_ZombieBoxPaid = zombiesBoxCost();
 		g_ZombieBoxBySale = false;
@@ -16593,7 +16609,17 @@ static void zombiesTickBox(void)
 		}
 
 		if (g_ZombieBoxTime60 >= ZOMBIE_BOX_TEDDYWAIT60 + ZOMBIE_BOX_TEDDYFLY60) {
-			// the bear gone: the box leaves, its own clip (o_zombie_magic_box_leave)
+			// the bear gone: the box leaves, its own clip (o_zombie_magic_box_leave).
+			// Put back in the box first: flown up out of every room it is never
+			// ticked, so never taken, and held its slot of the box's guns
+			if (g_ZombieBoxGun && g_ZombieBoxGun->prop && g_ZombieBoxGun->model) {
+				Mtxf mtx;
+
+				mtx4LoadIdentity(&mtx);
+				mtx00015f04(g_ZombieBoxGun->model->scale, &mtx);
+				func0f06a580(g_ZombieBoxGun, &box->pos, &mtx, box->rooms);
+			}
+
 			zombiesBoxHideGun();
 
 			if (g_ZombieBoxNumPads > 1) {

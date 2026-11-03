@@ -1367,3 +1367,15 @@ Pistols (all the same rig): 29° down, 16° right, 20°, and the grip 8 inches d
 Perfect Dark's Falcon already sits 33° under the eye, so the full drop takes it off screen; half
 is used. `--zombies-test-hold` with `--zombies-test-third 0` draws no first-person gun in a
 headless run, so the pose has not been seen on screen yet.
+
+## The box stuck on one gun after it moved (2026-11-02)
+
+The box shows its guns from a ring of four objects (`g_ZombieBoxGunObjs`); a gun
+taken away is only marked `OBJHFLAG_DELETING`, and the game frees it on a later
+tick. The teddy bear rides on one of them and flies some 12 m up, out of every
+room, where it is never ticked, so never freed: `zombiesBoxShowGun()` waited on
+that slot for good, and after a move the box sat on one gun, then on none, and
+nothing could be taken. The teddy's object is now put back on the box before it
+is hidden, and ShowGun takes the next free slot. `--zombies-test-respin F2`
+spins again at F2 (after `--zombies-test-teddy`'s move; the box comes down some
+3000 frames in at `--exit-frame` pace) and logs the box's state every 30 frames.
